@@ -347,6 +347,7 @@ This is controlled by virtual directories — each directory carries a `mounts` 
 | **`notification` as a first-class document type with stable deduplication keys** | Notifications from agents, bridges, the control plane, and plugins all share a single document type rather than being surfaced only through `agent_status` error arrays. This gives the browser a single PouchDB query to watch for all system events, enables real-time delivery via the live changes feed without polling, and allows the UI to show a unified notification bell across all pages. The deterministic `_id` scheme — `notification::{source_id}::{condition_key}` — means a recurring condition is an upsert rather than an accumulation of duplicates. Separating `first_seen` from `last_seen` and tracking `occurrence_count` gives the UI enough information to say "this condition has occurred 47 times since Feb 14" without storing a full event log per notification. Auto-resolving notifications (written by the source when the condition clears) keeps the active notification set clean without requiring manual user intervention for transient issues. |
 | **Bridge nodes unify data-source adapters with the existing agent model** | Rather than introducing a separate node kind or a dedicated bridge process, external data sources (email, calendar, cloud APIs) are modeled as standard agents with no watch paths and a `provides_filesystem` plugin acting as their filesystem implementation. This means bridge nodes participate in the same document model, replication flows, health monitoring, notification system, and plugin infrastructure as physical nodes — no new code paths for the control plane or browser. The `role: "bridge"` field is purely a UI hint; it has no effect on agent behavior. Bridge storage is permanent data storage, not a cache — the user controls retention via plugin settings (`auto_delete_days: 0` to keep everything), and the agent monitors both disk and inode utilization and writes notifications when either approaches capacity. |
 | **Plugin materialize via VFS cache staging path** | Filesystem-providing plugins that use aggregate storage (Option B) materialize files on demand by writing to `cache/tmp/` — the same staging directory used for Tier 4 remote downloads. The agent moves the staged file into the VFS cache using the standard atomic rename and path-keyed cache entry, then serves from cache. This means all subsequent accesses hit the cache without plugin involvement, range requests and LRU eviction work identically to remote files, and the plugin implementation is trivial — write bytes to a path, return the size. No new streaming protocol, no in-process byte handling, no Digest trailer to compute. The cache `source` column distinguishes plugin-materialized entries from remote downloads for diagnostic purposes only. |
+| **DELETE /api/system/data gated by developer mode** | Database wipes are dangerous in production and should require destroying the Docker Compose stack. But during development and testing, being able to quickly cycle between backup/restore states via an API call is valuable. The `--developer-mode` flag on the control plane binary gates access to `DELETE /api/system/data` — enabled for development workflows, disabled by default for production safety. The web UI never exposes this operation; it's API-only and requires a confirmation token in the request body. The intended use is scripted integration tests and local development, not production operation. |
 | **Plugin health checks via pull, not push** | Socket plugins are polled for health status on a configurable interval rather than being given a mechanism to push notifications at arbitrary times. The agent's existing heartbeat loop provides the natural cadence; the health check message is a small addition to the socket protocol. This is simpler than managing unsolicited inbound messages on the socket in v1, tolerates the latency of a polling interval (acceptable for operational health reporting), and the socket remains available for a future push extension — an unsolicited `{ "type": "notification" }` message from the plugin would require only a small addition to the inbound message handler without changing the document model or notification lifecycle. |
 | **Parent controls step inheritance** | The `enforce_steps_on_children` flag lives on the parent directory, not on child mounts. A parent that sets this flag prepends its steps to every mount evaluation in all descendant directories. Children cannot opt out. This matches how filesystem permissions feel to users — a parent sets policy for its subtree. A child can always add further restrictions on top; it cannot bypass what the parent has decided. |
 | **64-bit only** | Inode numbers are random 64-bit integers assigned at document creation time. Supporting 32-bit platforms would reduce the inode space to 32 bits, making collisions a real concern at scale. A compile-time error on 32-bit platforms is cleaner than a silent correctness problem. |
@@ -1459,6 +1460,7 @@ Mounts are embedded in the node document. These endpoints update the `network_mo
 | `GET` | `/api/system/backup?type=minimal\|full` | Generate and download a backup. `minimal` includes only essential user-generated data (virtual directories, labels, annotations, credentials, plugin configurations). `full` includes the entire CouchDB database. Returns a JSON file in CouchDB `_bulk_docs` format, streamed as `Content-Disposition: attachment`. Filename: `mosaicfs-backup-{type}-{timestamp}.json`. |
 | `POST` | `/api/system/restore` | Restore from a backup file. Requires an empty database — the endpoint checks the document count and rejects the restore if any documents exist. Request body is the JSON backup file. Validates that all documents have recognized `type` fields. For minimal backups, the restore process writes documents directly and merges `network_mounts` into existing node documents. For full backups, performs a bulk write of all documents. Returns a summary: document count restored, errors encountered. |
 | `GET` | `/api/system/backup/status` | Check whether the database is empty (restorable). Returns `{ empty: true\|false, document_count: N }`. Used by the web UI to conditionally show the restore button. |
+| `DELETE` | `/api/system/data` | **Developer mode only.** Delete all documents from CouchDB to enable restore into a non-empty database. Returns 403 Forbidden unless the control plane was started with `--developer-mode`. Requires a confirmation token in the request body: `{ "confirm": "DELETE_ALL_DATA" }`. Returns `{ deleted_count: N }` on success. This endpoint is intended for development and testing workflows where quickly cycling between backup/restore states is useful. It should never be enabled in production — the safer path is to destroy and recreate the Docker Compose stack. |
 
 ### Agent Internal
 
@@ -2207,6 +2209,8 @@ Concurrent reads for the same uncached block range share a single in-flight fetc
 
 The control plane runs as a Docker Compose stack. CouchDB is bound to localhost only and is not directly reachable from outside the host. The Axum API server is the only externally-accessible process — it serves the REST API, proxies the CouchDB replication endpoint for authenticated agent connections, issues PouchDB session tokens for browser clients, and terminates TLS. On first start, the Compose stack initialises CouchDB with an admin credential and creates the `mosaicfs_browser` CouchDB role with read-only access to the `mosaicfs` database. TLS is enabled by default using an automatically generated self-signed CA and server certificate.
 
+**Developer mode:** The control plane binary accepts a `--developer-mode` flag. When enabled, the `DELETE /api/system/data` endpoint becomes accessible, allowing complete database wipes without destroying the Docker Compose stack. This is intended for development and testing workflows where quickly cycling between backup/restore states is useful. Developer mode should never be enabled in production — a production database wipe should be done by destroying and recreating the Compose stack, not via an API endpoint. The flag is disabled by default.
+
 ### Agents
 
 Agents are distributed as single static binaries. The `MosaicFS-agent init` command configures the agent, registers it with the control plane, installs the systemd unit (or launchd plist on macOS), and starts the service. The secret key is never passed as a CLI argument; it is read from stdin with echo disabled via the `rpassword` crate, or from the `MOSAICFS_SECRET_KEY` environment variable for scripted deployments.
@@ -2492,9 +2496,118 @@ Plugins without a `settings_schema` do not appear on this tab — they are confi
 
 **Backup section.** Two download buttons side by side: "Download minimal backup" and "Download full backup". Clicking either calls `GET /api/system/backup?type=minimal` or `?type=full` and streams the JSON file as a download. The button labels include a file size estimate when available. A note below the buttons explains the difference: "Minimal: essential user data only (fast restore, small file). Full: complete database including history (disaster recovery)."
 
-**Restore section.** Conditionally displayed based on `GET /api/system/backup/status`. If the database is empty (`{ empty: true }`), a file upload control appears with the label "Restore from backup". The user selects a JSON backup file, clicks "Restore", and the UI uploads it via `POST /api/system/restore`. A progress indicator shows during the upload and restore. On success, a banner appears prompting the user to restart all agents, with a "Restart all agents" button that calls `POST /api/system/reindex`. On error, the validation errors are shown inline. If the database is not empty, the restore section shows a disabled upload control with a tooltip: "Restore is only permitted into an empty database. Delete all data to enable restore." A "Delete all data" button with a scary confirmation dialog calls `DELETE /api/system/data` (hypothetical endpoint, not yet defined — this is a destructive operation requiring explicit design).
+**Restore section.** Conditionally displayed based on `GET /api/system/backup/status`. If the database is empty (`{ empty: true }`), a file upload control appears with the label "Restore from backup". The user selects a JSON backup file, clicks "Restore", and the UI uploads it via `POST /api/system/restore`. A progress indicator shows during the upload and restore. On success, a banner appears prompting the user to restart all agents, with a "Restart all agents" button that calls `POST /api/system/reindex`. On error, the validation errors are shown inline. If the database is not empty, the restore section shows a disabled upload control with a tooltip: "Restore is only permitted into an empty database. To enable restore in a non-empty database, use the DELETE /api/system/data endpoint (requires --developer-mode)."
 
 **System actions.** A "Trigger full reindex" button with a confirmation dialog, calling `POST /api/system/reindex`. A link to the project documentation.
+
+---
+
+## Open Questions
+
+This section captures design decisions that were discussed but remain unresolved or deserve reconsideration before implementation.
+
+### Virtual Directory and Label Event Hooks for Plugins
+
+**Context:** Plugins currently subscribe to file lifecycle events (`file.added`, `file.modified`, `file.deleted`). During design, we considered additional event types: `vfs.directory.created`, `vfs.directory.modified`, `vfs.directory.deleted`, and `label.assigned`, `label.removed`, `label.rule.created`, `label.rule.deleted`.
+
+**Question:** Should these be added to v1, or held for later? 
+
+**Arguments for deferral:** No concrete plugin use case exists yet. Virtual directory changes are user-driven and infrequent — a plugin reacting to them is more like a webhook than an annotation pipeline. Label hooks feel like workflow automation ("when labelled X, do Y") which is a different category of extension.
+
+**Arguments for inclusion:** A hypothetical "sync to external DMS when labelled `archive`" plugin is genuinely useful. A plugin maintaining an external catalog mirroring the virtual tree structure could use directory events.
+
+**Current state:** Deferred from v1. Easy to add later without breaking changes.
+
+---
+
+### Plugin Query Result Streaming
+
+**Context:** The `POST /api/query` endpoint fans out to all nodes advertising a capability, collects responses, and returns them as an array. Currently specified as gather-then-return.
+
+**Question:** Should query results stream back to the browser as nodes respond, or wait until all nodes have responded (or timed out)?
+
+**Tradeoffs:**
+- Gather-then-return: Simple, predictable, works for v1 where plugin-agents are co-located with the control plane on fast local network
+- Streaming (server-sent events or chunked JSON): Faster perceived latency, more complex to implement, better for geographically distributed nodes
+
+**Current state:** v1 uses gather-then-return. Note added that streaming could be a future improvement.
+
+---
+
+### Bridge Node Storage: Option A vs Option B Threshold
+
+**Context:** Bridge nodes can use Option A (one file per record, direct Tier 1 serving) or Option B (aggregate SQLite storage with Tier 5 materialize on demand).
+
+**Question:** At what point should a deployment switch from Option A to Option B? Is there a file count threshold, or should it always be the plugin author's choice?
+
+**Considerations:**
+- Inode exhaustion on ext4 starts becoming a concern around 500K-1M small files
+- Date-based sharding helps but doesn't eliminate the problem
+- Option B adds materialize latency on first access, but VFS cache makes subsequent accesses fast
+- Plugin implementation complexity: Option B requires maintaining SQLite schema and materialize logic; Option A is just "write .eml files"
+
+**Current state:** Option A recommended for v1, with Option B documented as the upgrade path. No specific guidance on when to switch. Volume formatting with high inode count (`mkfs.ext4 -N 2000000`) mentioned as a mitigation.
+
+---
+
+### Scheduled Automatic Backups
+
+**Context:** Backup and restore are on-demand in v1 via the REST API and Settings page. User downloads the JSON file and stores it wherever they want.
+
+**Question:** Should MosaicFS support scheduled automatic backups to a configured destination (S3 bucket, local directory, NAS share)?
+
+**Considerations:**
+- Natural extension of the backup feature
+- Requires destination configuration (credentials, paths)
+- Rotation policy (keep last N backups, delete older than X days)
+- Notification on backup failure
+
+**Current state:** Explicitly noted as "not implemented in v1 but are a natural future extension."
+
+---
+
+### Global Settings Scope for Bridge Plugins
+
+**Context:** Bridge plugins (email-fetch, caldav-sync) might be deployed on multiple nodes. Settings like "Gmail API endpoint URL" or "Meilisearch connection string" are likely the same across all instances of a plugin.
+
+**Question:** Should plugin settings support a `settings_scope` field distinguishing between `"node"` (per-node configuration) and `"global"` (shared across all instances)?
+
+**Considerations:**
+- Per-node is consistent with the current model but tedious if every node needs identical settings
+- Global settings would be stored in a synthetic `plugin::{plugin_name}` document without a node ID
+- Agent falls back to global settings when no node-specific override exists
+- Adds complexity to the settings merge logic
+
+**Current state:** Noted as "worth noting as a future direction but probably not v1" in the conversation. Not documented in the architecture.
+
+---
+
+### Networked Socket Plugins (TCP)
+
+**Context:** Socket plugins currently use Unix domain sockets. The architecture notes that "the Unix socket model extends naturally to networked plugins: replacing the socket path with a TCP address would allow plugins to run on a different machine from the agent."
+
+**Question:** Is this a planned v2 feature, or just a noted possibility?
+
+**Considerations:**
+- Enables plugin deployment on dedicated hardware (GPU servers for AI plugins)
+- Requires rethinking security — TCP sockets need authentication, Unix sockets inherit filesystem permissions
+- Event delivery over TCP needs TLS
+
+**Current state:** Noted in Future Directions but not committed to.
+
+---
+
+### Push-based Plugin Notifications
+
+**Context:** Socket plugins are polled for health status on a configurable interval (default 5 minutes). Plugins can report notifications in the health check response.
+
+**Question:** Should socket plugins be able to push notifications at arbitrary times, rather than waiting for the next health check poll?
+
+**Tradeoffs:**
+- Pull (current): Simple agent implementation, tolerates latency, plugin can't overwhelm agent
+- Push (future): Lower latency for urgent notifications, requires unsolicited message handling on socket
+
+**Current state:** V1 uses pull. Noted that "the socket remains available for a future push extension — an unsolicited `{ \"type\": \"notification\" }` message from the plugin would require only a small addition to the inbound message handler."
 
 ---
 
