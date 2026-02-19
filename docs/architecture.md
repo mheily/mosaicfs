@@ -156,6 +156,21 @@
 
 Modern power users accumulate data across laptops, desktops, NAS devices, virtual machines, and multiple cloud services. No single tool provides a unified view of all that data or a consistent way to access it. MosaicFS solves this with a peer-to-peer mesh of agents that index every file in every location, a central control plane that aggregates that knowledge, and a virtual filesystem layer that presents everything as a single coherent tree — accessible from any device, to any application that can open a file.
 
+**Target scale ("home-deployment scale").** MosaicFS is designed for a single power user managing their personal data. The architecture assumes and is tested against the following scale envelope:
+
+| Dimension | Target | Notes |
+|---|---|---|
+| Indexed files | Up to 500,000 | Total across all nodes. CouchDB indexes and rule engine evaluation are designed for this range. |
+| Nodes | Up to 20 | Physical agents, cloud bridges, and bridge nodes combined. |
+| Virtual directories | Up to 500 | Including nested children. |
+| Mount sources per directory | Up to 20 | More is possible but readdir latency grows linearly with mount count. |
+| Label rules | Up to 200 per node | Effective label computation is O(rules) per file. |
+| Concurrent VFS users | 1–3 | The FUSE mount is single-user; multiple applications on the same machine is fine. |
+| Plugin configurations | Up to 10 per node | Each plugin adds a worker pool; too many compete for CPU and I/O. |
+| Browser sessions | Up to 5 | PouchDB replication multiplied across many sessions increases CouchDB load. |
+
+Performance beyond these limits is not guaranteed but is not expected to fail catastrophically — degradation is gradual (slower readdir, longer replication sync times, higher CouchDB CPU usage). The phrase "home-deployment scale" used throughout this document refers to this envelope.
+
 ---
 
 ## PART ONE — High-Level Architecture
@@ -532,9 +547,11 @@ This section contains the detailed technical specifications for the MosaicFS sys
 
 All state in MosaicFS is stored as JSON documents in CouchDB and replicated between agents and the control plane. There are no separate relational tables or sidecar databases for core metadata — everything lives in one document store, which is what makes the replication model so clean. Understanding the document types and how they relate to each other is the key to understanding how the system works.
 
+**Atomicity model.** CouchDB does not provide multi-document transactions. Each document write is atomic in isolation, but `_bulk_docs` batches are not transactional — individual documents in a batch can succeed or fail independently. MosaicFS is designed around this constraint: no operation requires atomically updating two documents simultaneously. When related state spans multiple documents (e.g. a file document and its label assignment), the system tolerates temporary inconsistency — the rule engine and search API will see one update before the other, which produces correct (if briefly incomplete) results. The SQLite sidecar databases (`cache/index.db`, `plugin_jobs.db`) do use transactions internally for their own consistency, but these are local to the agent and not replicated.
+
 ### Document Types at a Glance
 
-MosaicFS uses twelve document types in v1, each with a distinct role in the system. Two additional types — `peering_agreement` and `federated_import` — are designed but not implemented; they are described in the Federation section.
+MosaicFS uses eleven document types in v1, each with a distinct role in the system. Two additional types — `peering_agreement` and `federated_import` — are designed but not implemented; they are described in the Federation section.
 
 | Document Type | `_id` Prefix | Purpose |
 |---|---|---|
@@ -585,6 +602,32 @@ Not all documents are replicated to all nodes. The replication topology is filte
 MosaicFS uses soft deletes for file documents rather than CouchDB's native deletion mechanism. When a file is removed from a node's filesystem, its document is updated with `status: "deleted"` and a `deleted_at` timestamp rather than being deleted outright. This preserves the inode number if the file reappears, ensures other nodes learn about the deletion through normal replication, and maintains a deletion history for debugging.
 
 Virtual directory documents are explicitly created and deleted by the user. They are never created or tombstoned automatically. Node and credential documents are never deleted; they are disabled via a `status` or `enabled` flag to preserve the audit trail and prevent orphaned references.
+
+### CouchDB Document Conflict Resolution
+
+CouchDB's multi-master replication model means that two nodes can update the same document concurrently, producing a conflict. CouchDB automatically picks a deterministic winner (based on revision tree depth, then lexicographic `_rev`), but the losing revision persists as a conflict marker until explicitly resolved. MosaicFS handles conflicts with a simple strategy tailored to each document type's write ownership model:
+
+**File documents** — owned exclusively by the source node's agent crawler. Conflicts should not occur in normal operation because only one agent writes to a given file document. If a conflict does occur (e.g. after a network partition where the same agent reconnected with a stale checkpoint), the agent resolves it on the next crawl cycle: the crawler always writes the current filesystem state, so the latest write is authoritative. On detecting a `_conflicts` array, the agent deletes the losing revisions.
+
+**Virtual directory documents** — written only by the control plane API in response to user actions. Conflicts are possible if two browser sessions edit the same directory simultaneously. The control plane API uses optimistic concurrency: the PUT request includes the current `_rev`, and CouchDB rejects the update if the revision has changed. The UI re-fetches and prompts the user to retry. No automatic merge is attempted.
+
+**Node documents** — written by both the owning agent (status, heartbeat, storage, capabilities) and the control plane API (network_mounts, friendly_name). These are the most conflict-prone documents. The resolution strategy is last-write-wins using CouchDB's automatic winner selection, which is acceptable because the two writers update disjoint field sets and the agent will overwrite its fields on the next heartbeat cycle. To reduce conflict frequency, the control plane API uses `_rev`-conditional updates and the agent avoids writing unchanged fields.
+
+**Label assignment and label rule documents** — written only via the control plane API. Same optimistic concurrency as virtual directories.
+
+**Credential documents** — written only via the control plane API. Same optimistic concurrency.
+
+**Plugin documents** — written only via the control plane API. Same optimistic concurrency.
+
+**Agent status documents** — written exclusively by the owning agent. No conflicts expected.
+
+**Utilization snapshot documents** — written exclusively by the owning agent. No conflicts expected (each snapshot has a unique timestamp-based `_id`).
+
+**Annotation documents** — written exclusively by the plugin runner on the owning agent. No conflicts expected.
+
+**Notification documents** — written by the source (agent, bridge, or control plane) and updated by the control plane API (acknowledgement). Conflicts are possible if a source updates a notification while the user acknowledges it. Resolution is last-write-wins; the worst case is a re-fired notification that the user acknowledges again.
+
+**Conflict monitoring.** The control plane runs a periodic background task (every 60 seconds) that queries for documents with `_conflicts` and logs them. Persistent conflicts that are not auto-resolved within 5 minutes generate a notification document (`notification::control_plane::persistent_conflicts`).
 
 ### CouchDB Indexes
 
@@ -684,11 +727,76 @@ The browser replication filter excludes documents the browser has no need for:
 
 `credential` documents are excluded — the browser never needs to see secret key hashes, and the `mosaicfs_browser` role does not have read access to them even if the filter were misconfigured. `utilization_snapshot` documents are excluded because the browser fetches snapshot history on demand via the REST API rather than syncing the full time series into PouchDB.
 
+**Browser replica size.** The browser replicates all active `file` documents, which at 500K files (~500 bytes each) is approximately 250 MB of IndexedDB storage. Modern browsers typically allow 1–2 GB per origin before prompting the user. At the target scale this is within budget, but warrants monitoring. The web UI displays the PouchDB replica size on the Settings page. If the replica approaches 500 MB, the UI displays a warning suggesting the user reduce indexed file counts or await a future version with server-side pagination that eliminates the need for full file document replication in the browser. v1 does not implement client-side purging because PouchDB purge support is limited and could interfere with the replication checkpoint.
+
 **Deleted file tombstone propagation**
 
 Excluding `status: "deleted"` files from agent replication creates a subtle problem: if a file is deleted on node A, agents on other nodes never receive the updated document and their VFS backends continue to list the deleted file indefinitely. The v1 approach sidesteps this by replicating deleted file documents to agents without filtering on `status` — accepting a modestly larger agent replica in exchange for correct deletion propagation. Deleted files are excluded at query time by the `status: "active"` condition applied in rule engine evaluation. The flow 2 filter above reflects this: the `file` selector omits `status: "active"` intentionally, so both active and deleted file documents replicate to agents.
 
 When a file document transitions to `status: "deleted"`, it immediately drops out of any directory listing on the next `readdir` evaluation — the rule engine's step pipeline checks `status: "active"` before evaluating mount steps, so deleted files never appear as virtual directory contents regardless of what the mount sources say.
+
+**Replication document setup**
+
+Each agent sets up two continuous replication jobs on startup by writing documents to its local CouchDB `_replicator` database. If replication documents already exist (from a previous run), the agent leaves them in place — CouchDB resumes replication automatically from the last checkpoint.
+
+Flow 1 (push) replication document:
+
+```json
+{
+  "_id": "mosaicfs-push",
+  "source": "mosaicfs",
+  "target": "https://<control_plane_host>:<port>/api/replication/mosaicfs",
+  "continuous": true,
+  "selector": {
+    "$or": [
+      { "type": "file",                 "source.node_id": "<this_node_id>" },
+      { "type": "node",                 "_id":            "node::<this_node_id>" },
+      { "type": "agent_status",         "node_id":        "<this_node_id>" },
+      { "type": "utilization_snapshot", "node_id":        "<this_node_id>" },
+      { "type": "label_assignment",     "node_id":        "<this_node_id>" },
+      { "type": "label_rule",           "node_id":        "<this_node_id>" },
+      { "type": "annotation",           "node_id":        "<this_node_id>" },
+      { "type": "notification",         "source.node_id": "<this_node_id>" }
+    ]
+  },
+  "create_target": false,
+  "_replication_state_reason": null
+}
+```
+
+Flow 2 (pull) replication document:
+
+```json
+{
+  "_id": "mosaicfs-pull",
+  "source": "https://<control_plane_host>:<port>/api/replication/mosaicfs",
+  "target": "mosaicfs",
+  "continuous": true,
+  "selector": {
+    "$or": [
+      { "type": "file" },
+      { "type": "virtual_directory" },
+      { "type": "node" },
+      { "type": "credential",       "enabled": true },
+      { "type": "label_assignment" },
+      { "type": "label_rule" },
+      { "type": "plugin" },
+      { "type": "annotation" },
+      { "type": "notification" }
+    ]
+  },
+  "create_target": false,
+  "_replication_state_reason": null
+}
+```
+
+The `target` URL for push and the `source` URL for pull point to the Axum replication proxy endpoint, which forwards CouchDB replication protocol requests to the local CouchDB instance after validating the agent's HMAC-signed request headers. The agent reads the control plane URL and its own node ID from `agent.toml`. TLS verification uses the CA certificate stored in the agent's `certs/ca.crt`.
+
+Flow 3 (browser pull) is not configured by the agent. The browser's PouchDB client initiates replication directly against the CouchDB `_changes` feed, authenticating with the short-lived `mosaicfs_browser` session token issued by the Axum login endpoint.
+
+**Replication health monitoring**
+
+The agent monitors replication state by watching the `_replication_state` field on both replication documents. If either enters the `error` state, the agent logs the `_replication_state_reason`, writes a notification document (`notification::<node_id>::replication_error`), and waits for CouchDB's built-in retry mechanism to re-establish the connection. The agent does not delete and recreate replication documents on transient errors — CouchDB handles retry internally with exponential backoff.
 
 ---
 
@@ -704,8 +812,8 @@ Represents a single file on a physical node or cloud service. Created and update
 |---|---|---|
 | `_id` | string | Format: `"file::{node_id}::{uuid}"`. The UUID is generated at document creation time. Unique across the system. |
 | `type` | string | Always `"file"`. |
-| `inode` | uint64 | Random 64-bit integer assigned at creation time. Stable for the lifetime of the file. Used as the inode number by the FUSE backend, and as the equivalent stable identity token by other VFS backends. A file appearing in multiple virtual directories presents the same inode in each — the OS treats these as hard links. |
-| `name` | string | Filename component only (no directory path). |
+| `inode` | uint64 | Random 64-bit integer assigned at creation time. Stable for the lifetime of the file. Used as the inode number by the FUSE backend, and as the equivalent stable identity token by other VFS backends. A file appearing in multiple virtual directories presents the same inode in each — the OS treats these as hard links. Collision probability at 500K files is ~7×10⁻⁹ (birthday paradox with 2⁶⁴ space); no collision detection is implemented. If a collision did occur, the VFS layer would return the first matching document — an acceptable degradation at this probability. |
+| `name` | string | Filename component only (no directory path). Stored as-is from the filesystem — no Unicode normalization is applied, preserving round-trip fidelity on case-sensitive filesystems. Names containing null bytes, forward slashes, or control characters (U+0000–U+001F) are rejected by the crawler and not indexed. The VFS layer does not perform additional sanitization — names valid in CouchDB are presented to the OS as-is, and the OS rejects any that violate its own rules (e.g. `:` on Windows). |
 | `source.node_id` | string | ID of the node that owns this file. |
 | `source.export_path` | string | The path this node uses to identify this file. For physical agents: absolute filesystem path. For cloud bridges: path within the cloud service namespace. For federated peers: virtual path on the peer instance. |
 | `source.export_parent` | string | Parent directory component of `export_path`. Used by the rule engine when evaluating `prefix_replace` mount sources — enables efficient lookup of all files under a given real directory. |
@@ -752,7 +860,7 @@ Represents a device or cloud bridge participating in the MosaicFS network. For p
 | `_id` | string | Format: `"node::{node_id}"`. |
 | `type` | string | Always `"node"`. |
 | `node_kind` | string | `"physical"`, `"cloud_bridge"`, or `"federated_peer"` (reserved for federation, not used in v1). v1 components encountering `"federated_peer"` should treat the node as inactive. |
-| `role` | string? | Optional. `"bridge"` for bridge nodes — agents with no watch paths whose filesystem is provided by plugins. Null for standard physical nodes. Used by the web UI to render bridge-specific controls on the node detail page. Has no effect on agent behavior; bridge nodes are operationally identical to physical nodes except for their plugin configuration. |
+| `role` | string? | Optional. `"bridge"` for bridge nodes — agents with no watch paths whose filesystem is provided by plugins. Omitted (not present in the JSON document) for standard physical nodes. Code should treat both absent and `null` as equivalent. Used by the web UI to render bridge-specific controls on the node detail page. Has no effect on agent behavior; bridge nodes are operationally identical to physical nodes except for their plugin configuration. |
 | `friendly_name` | string | Human-readable display name, e.g. `"MacBook Pro"`. |
 | `platform` | string | `"linux"`, `"darwin"`, or `"windows"`. |
 | `status` | string | `"online"`, `"offline"`, or `"degraded"`. |
@@ -929,7 +1037,7 @@ Configures one plugin on one agent node. Created and managed via the web UI and 
 | `plugin_type` | string | `"executable"` or `"socket"`. Determines the invocation model. |
 | `enabled` | bool | Disabled plugins receive no events and enqueue no jobs. |
 | `name` | string | Human-readable display name shown in the web UI (e.g. `"AI Document Summariser"`). |
-| `subscribed_events` | string[] | Events this plugin receives. Valid values: `"file.added"`, `"file.modified"`, `"file.deleted"`, `"sync.started"`, `"sync.completed"`, `"crawl_requested"` (bridge nodes only — delivered instead of a filesystem crawl), `"materialize"` (bridge nodes only — delivered when a file under `file_path_prefix` is not on disk and must be synthesized). A plugin that does not subscribe to an event type never receives it. |
+| `subscribed_events` | string[] | Events this plugin receives. Valid values: `"file.added"`, `"file.modified"`, `"file.deleted"`, `"sync.started"`, `"sync.completed"`, `"crawl_requested"` (bridge nodes only — delivered instead of a filesystem crawl), `"materialize"` (bridge nodes only — delivered when a file under `file_path_prefix` is not on disk and must be synthesized). A plugin that does not subscribe to an event type never receives it. The API does not reject `crawl_requested` or `materialize` subscriptions on non-bridge nodes — the events simply never fire, so the subscription is harmless. This avoids coupling plugin document validation to node configuration, which can change independently. |
 | `mime_globs` | string[] | Optional MIME type filter. If non-empty, only files whose `mime_type` matches at least one glob are enqueued. e.g. `["application/pdf", "text/*"]`. Files with no `mime_type` do not match. |
 | `config` | object | Arbitrary JSON object passed to the plugin in the `config` field of every event's stdin payload. The plugin reads whatever keys it needs; extra keys are ignored. |
 | `workers` | int | Number of concurrent workers for this plugin. Default 2. For executable plugins, this is the number of simultaneous child processes. Socket plugins use a single connection with a sliding acknowledgement window. |
@@ -1068,6 +1176,23 @@ The plugin writes a single JSON object to stdout and exits 0 for success, non-ze
 ```json
 { "summary": "Quarterly earnings report for Q3 2025.", "language": "en" }
 ```
+
+**Executable plugin invocation contract:**
+
+The agent invokes the plugin binary directly via `execv`, not via a shell. The complete invocation environment is:
+
+| Aspect | Value |
+|---|---|
+| Working directory | The agent's state directory (`/var/lib/mosaicfs/` on Linux, `~/Library/Application Support/MosaicFS/` on macOS). Plugins that need persistent state should write to a subdirectory named after themselves under this path. |
+| User/group | Same as the agent process. On Linux this is typically `root` (required for FUSE). Plugins inherit these privileges. |
+| Stdin | A single JSON object (the event envelope), followed by EOF. |
+| Stdout | A single JSON object (the response), followed by EOF. Maximum 10 MB — responses exceeding this are treated as a permanent error. |
+| Stderr | Free-form text, captured by the agent and written to the agent log at `WARN` level. Stderr is not parsed. Maximum 1 MB captured; excess is discarded. |
+| Exit code | 0 = success (stdout parsed as JSON response). Non-zero = failure (retried up to `max_attempts`). Exit code 78 (`EX_CONFIG`) is treated as a permanent error and not retried — used when the plugin detects a misconfiguration. |
+| Timeout | Controlled by `timeout_s` on the plugin document (default 60s). On timeout, the process is sent `SIGTERM`, then `SIGKILL` after 5 seconds. Treated as a transient failure. |
+| Environment | Inherits the agent's environment. No additional environment variables are set — all configuration is passed via the `config` field in the stdin payload. |
+| Arguments | None. The binary is invoked with no command-line arguments. |
+| File descriptors | Only stdin, stdout, and stderr. No additional file descriptors are passed. |
 
 **Socket plugin ack protocol:**
 
@@ -1238,9 +1363,19 @@ When the VFS layer needs to open a file, it evaluates access tiers in order of i
 
 **Tier 3 — Local cloud sync directory.** The owning node's document contains a `network_mounts` entry of type `icloud_local` or `gdrive_local` covering this file. Open via the local sync directory, with eviction check for iCloud. If the file is evicted from local iCloud storage, fall through to Tier 4 rather than triggering an implicit cloud download.
 
-**Tier 4 — Control plane bridge fetch.** No local access path is available. Request the file from the control plane's transfer endpoint. Stream to the path-keyed cache, verify the `Digest` trailer, serve from cache.
+**Tier 4 — Remote fetch.** No local access path is available. The requesting agent fetches the file from the owning agent's transfer server, caches it locally, and serves from cache. The discovery sequence is:
 
-**Tier 5 — Plugin materialize.** The file's `export_path` matches the `file_path_prefix` of a `provides_filesystem` plugin on the owning node. The transfer server on the owning node invokes the plugin's `materialize` action, which writes the file to `cache/tmp/`. The agent moves it into the VFS cache and serves from there. Subsequent requests hit the cache directly without involving the plugin.
+1. Look up the file document in the local CouchDB replica to get `source.node_id`.
+2. Look up `node::<source.node_id>` in the local replica to get `transfer.endpoint` (host:port) and `status`.
+3. If the owning node is `online`, send `GET http://<transfer.endpoint>/api/agent/transfer/{file_id}` with HMAC-signed request headers.
+4. If the owning node is `offline` or the transfer request fails with a connection error, return `EIO` to the caller. There is no fallback to the control plane — the control plane does not proxy file bytes for physical nodes.
+5. Stream the response to `cache/tmp/{cache_key}`, verify the `Digest` trailer (SHA-256), atomic-rename into `cache/{shard}/{cache_key}`, and serve from cache.
+
+For cloud bridge nodes, the transfer endpoint is the control plane's own agent transfer server (cloud bridge agents run within the control plane Docker Compose stack and are reachable at the control plane's address).
+
+**Tier 5 — Plugin materialize.** The file's `export_path` matches the `file_path_prefix` of a `provides_filesystem` plugin on the owning node. The transfer server on the owning node invokes the plugin's `materialize` action, which writes the file to `cache/tmp/`. The agent moves it into the VFS cache and serves from there. Subsequent requests hit the cache directly without involving the plugin. Tier 5 is not evaluated by the requesting agent — it is triggered on the owning agent when a Tier 4 transfer request arrives for a file that requires materialization.
+
+**`export_path` containment check.** When the transfer server opens a local file (Tier 1), it verifies that the resolved `export_path` is under one of the agent's configured `watch_paths` after canonicalization (resolving symlinks via `realpath`). This prevents a malicious or corrupted file document from tricking the agent into serving arbitrary files outside the watched directories. The check is: `canonical_export_path.starts_with(canonical_watch_path)` for at least one watch path. Files that fail this check are rejected with a 403. Bridge nodes skip this check — their files are served from the VFS cache or materialized by plugins, not read from arbitrary paths.
 
 The full transfer server logic on the owning agent:
 
@@ -1285,7 +1420,9 @@ Secret Key:     mosaicfs_<43 url-safe base64 chars>  (shown once)
 
 ### Agent-to-Server: HMAC Request Signing
 
-Agents authenticate to the control plane using HMAC-SHA256 request signing. The signed string is a canonical concatenation of the HTTP method, path, ISO 8601 timestamp, and SHA-256 body hash. Requests with a timestamp older than 5 minutes are rejected to prevent replay attacks.
+Agents authenticate to the control plane using HMAC-SHA256 request signing. The signed string is a canonical concatenation of the HTTP method, path, ISO 8601 timestamp, and SHA-256 body hash. Requests whose timestamp differs from the server's clock by more than 5 minutes in either direction are rejected to prevent replay attacks.
+
+**Clock skew handling.** The 5-minute window accommodates typical NTP-synchronized clocks. Agents that fail authentication due to clock skew will see a persistent `401` error. The agent logs the server's `Date` response header alongside the local timestamp on authentication failures, making clock skew obvious in the logs. The agent does not automatically adjust its clock — clock management is the responsibility of the host OS (NTP, chrony, systemd-timesyncd). If an agent is consistently failing with timestamp errors, the notification system surfaces it via `notification::<node_id>::auth_timestamp_rejected`.
 
 ```
 Authorization: MOSAICFS-HMAC-SHA256
@@ -1297,6 +1434,8 @@ Authorization: MOSAICFS-HMAC-SHA256
 ### Web UI: JWT Sessions
 
 The browser authenticates by presenting access key credentials to `POST /api/auth/login`. On success, the server issues a short-lived JWT (24-hour expiry) stored in memory — never in `localStorage`. All subsequent API requests include the JWT as a Bearer token.
+
+**JWT signing key.** The JWT signing secret is a 256-bit random key generated at first control plane startup and stored in `jwt_secret` within the Docker Compose volume alongside the CouchDB data. The key is loaded into memory on startup and never exposed through the API. If the key is lost (volume destroyed), all existing JWTs become invalid — users must log in again, which is the correct behavior after a data loss event. v1 does not implement key rotation; the key is stable for the lifetime of the deployment. If rotation is needed in a future version, the server can accept tokens signed by both the current and previous key during a transition window.
 
 ### Agent-to-Agent: Credential Presentation
 
@@ -1314,12 +1453,13 @@ The control plane exposes a single REST API consumed by all clients — the web 
 - Errors: `{ "error": { "code": "...", "message": "..." } }`
 - Pagination: `?limit=` (default 100, max 500) and `?offset=` on all list endpoints
 - No CouchDB internals (`_rev`, `_id` prefixes, CouchDB error codes) are exposed through the API
+- **Versioning:** The v1 API is unversioned — all endpoints live under `/api/`. If a breaking change is needed in a future version, a `/api/v2/` prefix will be introduced and the original `/api/` endpoints will continue to work as aliases for v1 for at least one release cycle. Additive changes (new fields in responses, new optional query parameters, new endpoints) are not considered breaking and may be added at any time. Clients should ignore unknown fields in responses.
 
 ### Auth
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/api/auth/login` | Exchange access key credentials for a JWT. Request body: `{ access_key_id, secret_key }`. Returns `{ token, expires_at }`. |
+| `POST` | `/api/auth/login` | Exchange access key credentials for a JWT. Request body: `{ access_key_id, secret_key }`. Returns `{ token, expires_at }`. Rate-limited to 5 attempts per minute per source IP. Failed attempts return a generic 401 regardless of whether the access key ID exists, to prevent credential enumeration. |
 | `POST` | `/api/auth/logout` | Invalidate the current JWT. |
 | `GET` | `/api/auth/whoami` | Return the current credential's name, type, and last-seen timestamp. |
 
@@ -1515,6 +1655,8 @@ The full backup is generated via `GET /mosaicfs/_all_docs?include_docs=true` and
 
 Both backup types use the same format: a JSON file containing an array of CouchDB documents, matching the `_bulk_docs` request format. This means the restore operation is a straightforward bulk write with no transformation required.
 
+**Secret redaction.** Plugin `settings` fields declared as `type: "secret"` in the plugin's `settings_schema` are redacted in backup files — replaced with the sentinel value `"__REDACTED__"`. After restoring from a backup, the user must re-enter secret values via the web UI. The restore endpoint detects `"__REDACTED__"` values and preserves them as-is; the plugin runner treats `"__REDACTED__"` as a missing value and logs a warning. Credential documents are safe — `secret_key_hash` is a one-way Argon2id hash, not the original secret.
+
 ```json
 {
   "docs": [
@@ -1569,6 +1711,8 @@ The agent walks all configured watch paths and emits `file` documents. For each 
 ### Incremental Watching
 
 After the initial crawl, the agent uses the OS native filesystem event API (`inotify` on Linux, `FSEvents` on macOS, `ReadDirectoryChangesW` on Windows) via the Rust `notify` crate. Events are debounced over a 500ms window per path to handle noisy editor saves. Rename events are correlated into a single path-update operation rather than a delete-and-create pair.
+
+**Event storm throttling.** When the filesystem event rate exceeds 1,000 events per second sustained over 5 seconds, the agent switches from incremental watching to a full reconciliation crawl. This handles bulk operations like extracting a large archive or running `git checkout` across thousands of files — processing each event individually would be slower than a single crawl pass. The agent logs the transition, completes the crawl, and resumes incremental watching. Plugin job enqueuing is batched during the crawl to avoid flooding the plugin queue.
 
 ### inotify Watch Limit
 
@@ -1703,6 +1847,8 @@ When an ancestor directory has `enforce_steps_on_children: true`, its mount step
 
 When two mount sources within the same directory produce a file with the same name, the `conflict_policy` on the originating mount determines the outcome. `"last_write_wins"` keeps the file with the most recent `mtime`. `"suffix_node_id"` appends the node ID to the losing file's name, making both visible.
 
+When the colliding files come from mounts with *different* conflict policies, the more conservative policy wins: if either mount specifies `"suffix_node_id"`, both files are made visible with suffixed names. `"last_write_wins"` only applies when both mounts agree on it. This prevents a mount with `"last_write_wins"` from silently hiding a file that another mount intended to keep visible.
+
 ### Readdir Cache
 
 The VFS layer caches the output of `readdir` for each virtual directory with a short TTL (default 5 seconds). This prevents re-evaluating mount sources on every `lookup` within a directory during rapid directory traversal. The cache is invalidated when the directory document changes via the PouchDB live changes feed — so edits to a directory's mounts take effect within one TTL window on agents that have already cached the listing, and immediately on the next `readdir` on agents that have not.
@@ -1735,6 +1881,8 @@ The plugin runner is a subsystem of the agent responsible for delivering file li
 For executable plugins, workers poll the `pending` queue, set status to `in_flight`, invoke the binary, and on success write the annotation document and mark the job `acked`. On failure they increment `attempts` and set `next_attempt` with exponential backoff. After `max_attempts`, the job moves to `failed` and is surfaced in `agent_status`.
 
 For socket plugins, the runner maintains one connection per plugin. Events are written to the socket in sequence order as soon as the socket is connected. When an ack arrives, the corresponding job row is updated to `acked`. On disconnect, all `in_flight` rows are reset to `pending` for replay on reconnect.
+
+**Queue size limit.** The job queue is capped at 100,000 pending jobs per plugin. When the cap is reached, new events for that plugin are dropped and a notification is written (`notification::<node_id>::plugin_queue_full:<plugin_name>`). The notification includes guidance to either fix the plugin or trigger a full sync after the plugin is healthy again (which will re-process any files missed during the drop window). Completed (`acked`) and permanently failed jobs are purged from the queue after 24 hours to prevent unbounded database growth.
 
 ### Plugin Full Sync
 
@@ -1958,7 +2106,7 @@ Bridge nodes self-identify via a `role` field added to the node document. The we
 }
 ```
 
-The `role: "bridge"` field is optional and defaults to `null` on physical nodes. Bridge nodes set it to `"bridge"`. The UI checks this field to conditionally show bridge-specific controls; all other agent logic treats bridge nodes identically to physical nodes.
+The `role: "bridge"` field is optional and omitted on physical nodes. Bridge nodes set it to `"bridge"`. The UI checks this field to conditionally show bridge-specific controls; all other agent logic treats bridge nodes identically to physical nodes.
 
 **Agent main loop for bridge nodes**
 
@@ -2026,6 +2174,8 @@ The agent's hourly utilization check covers both disk space and inode utilizatio
 ```
 
 Other plugins on the same bridge node (annotators, search indexers) are configured identically to plugins on physical nodes — they subscribe to `file.added`, `file.modified`, and `file.deleted` events that the agent emits as the email-fetch plugin's crawl responses are applied to CouchDB.
+
+**Privilege model.** Executable plugins run with the same user and group as the agent process. On Linux, this is typically `root` because FUSE mounting requires elevated privileges. This means a plugin binary has full system access. The security boundary is the plugin directory — only binaries placed there by a local administrator can be executed. v1 does not implement additional sandboxing (seccomp, namespaces, capability drops). If fine-grained plugin isolation is needed in a future version, the agent could spawn plugins inside a restricted namespace or use a dedicated unprivileged user with bind-mounted access to the cache and plugin state directories.
 
 The plugin directory is the security boundary. An entry in a `plugin` CouchDB document cannot cause the agent to execute a binary outside the plugin directory, regardless of what `plugin_name` contains. The agent resolves `plugin_name` by joining it to the plugin directory path and checking that the resulting path is a regular, executable file — path traversal characters (`.`, `/`) in `plugin_name` are rejected as a permanent error. A malicious `plugin_name` value of `../../bin/sh` fails immediately rather than executing a shell.
 
@@ -2128,6 +2278,8 @@ This representation is efficient for the home media use case. A typical viewing 
 
 *Mark blocks [A, B) as present:* Insert the interval, then merge with any adjacent or overlapping intervals to maintain the sorted, non-overlapping invariant. O(k) worst case, O(1) for the common case of appending to the last interval (sequential playback).
 
+**Fragmentation guard.** If pathological access patterns cause the interval count to exceed 1,000, the block map is promoted to a full-file download: the agent fetches all missing ranges, coalesces the intervals into a single `[(0, total_blocks)]`, and updates the cache entry. This caps the block map blob size at ~16 KB and prevents unbounded growth. The threshold is checked after each block map update.
+
 A roaring bitmap is a suitable future upgrade if access patterns turn out to be more fragmented than the home media use case produces — for example, random-access reads against large database files. For now the interval list is simpler, debuggable, and amply fast.
 
 ### Full-File Mode Request Flow
@@ -2205,6 +2357,8 @@ Concurrent reads for the same uncached block range share a single in-flight fetc
 
 ## Deployment
 
+**Tunable defaults.** Numeric defaults mentioned throughout this document (readdir cache TTL, cache size cap, health check interval, retry parameters, etc.) are initial values chosen for typical home deployments. All are configurable via `agent.toml` or the control plane's configuration file. The architecture document specifies defaults to communicate intent and typical operating parameters, not to mandate fixed values. Implementers should expose these as configuration options with the documented defaults.
+
 ### Control Plane
 
 The control plane runs as a Docker Compose stack. CouchDB is bound to localhost only and is not directly reachable from outside the host. The Axum API server is the only externally-accessible process — it serves the REST API, proxies the CouchDB replication endpoint for authenticated agent connections, issues PouchDB session tokens for browser clients, and terminates TLS. On first start, the Compose stack initialises CouchDB with an admin credential and creates the `mosaicfs_browser` CouchDB role with read-only access to the `mosaicfs` database. TLS is enabled by default using an automatically generated self-signed CA and server certificate.
@@ -2252,15 +2406,28 @@ All components use the Rust `tracing` crate for structured logging with consiste
 
 ### Health Checks
 
-Each agent exposes `GET /health` returning a JSON object with per-subsystem status (`pouchdb`, `replication`, `vfs_mount`, `watcher`, `transfer_server`, `plugins`). The `plugins` subsystem reports the status of each configured plugin: connected/disconnected for socket plugins, failed job counts and last-error for executable plugins. The control plane polls agents every 30 seconds. A node missing three consecutive checks is marked offline in its node document, which flows through to the web UI status dashboard.
+Each agent exposes `GET /health` returning a JSON object with per-subsystem status (`pouchdb`, `replication`, `vfs_mount`, `watcher`, `transfer_server`, `plugins`). The `plugins` subsystem reports the status of each configured plugin: connected/disconnected for socket plugins, failed job counts and last-error for executable plugins. The control plane polls agents every 30 seconds. A node missing three consecutive checks (90 seconds with no successful health check) is marked `offline` in its node document, which flows through to the web UI status dashboard.
+
+**Stale status detection.** The control plane is the sole authority on node online/offline status. Agents write `last_heartbeat` timestamps to their node documents, but the control plane sets the `status` field based on its own polling. This means an agent that crashes without a clean shutdown is detected within 90 seconds. On clean shutdown, the agent sets its own `status` to `"offline"` immediately for faster UI feedback. When the control plane itself restarts, it treats all nodes as unknown and begins polling — nodes that respond are marked `online`; nodes that don't respond within 90 seconds are marked `offline`. There is no scenario where a node is stuck in `"online"` indefinitely without being polled.
 
 ### Error Classification
 
 Errors are classified as:
 
-- **Transient** — expected to resolve; retried with exponential backoff up to 60 seconds.
+- **Transient** — expected to resolve; retried with exponential backoff.
 - **Permanent** — require intervention; immediately surfaced to `ERROR` log and web UI.
 - **Soft** — partial success; logged but operation continues.
+
+**Retry parameters.** All transient retries across the agent use the same backoff algorithm: initial delay 1 second, multiplied by 2 on each attempt, capped at 60 seconds, with ±25% random jitter to prevent thundering herds. Specific retry contexts:
+
+| Context | Max attempts | On exhaustion |
+|---|---|---|
+| Plugin executable job | Configured via `max_attempts` (default 3) | Job marked `failed`, surfaced in `agent_status` and as a notification |
+| Socket plugin reconnect | Unlimited | Retries indefinitely; `plugin_disconnected` notification remains active |
+| HTTP transfer request (Tier 4) | 3 | Returns `EIO` to the VFS caller; next file access retries from scratch |
+| CouchDB replication | Managed by CouchDB internally | Agent monitors `_replication_state` and writes notification on persistent error |
+| Agent heartbeat | Unlimited | Continues retrying; control plane marks node offline after 3 missed polls (90 seconds) |
+| Cloud bridge polling | 3 per poll cycle | Logged as soft error; next poll cycle retries. Persistent failures (e.g. expired OAuth) generate a notification |
 
 The last 50 errors per agent are stored in the agent's status document for quick access without log parsing.
 
@@ -2289,6 +2456,8 @@ Google Drive and OneDrive support delta/changes APIs that return only what has c
 ## Web Interface
 
 The web interface is a React single-page application. PouchDB syncs a filtered subset of the CouchDB database directly into the browser, so most data updates arrive via the live changes feed without explicit polling — file counts increment as agents index, node status badges update when heartbeats arrive, and rule match counts change as the rule engine processes new files. API calls are made via TanStack Query; shadcn/ui provides the component library.
+
+*Note: The UI descriptions below are design guidance for the implementer, not a rigid specification. Layout details, component choices, and interaction patterns may be adjusted during implementation as long as the functional requirements are met.*
 
 ### Cross-Cutting Design Patterns
 
@@ -2504,7 +2673,7 @@ Plugins without a `settings_schema` do not appear on this tab — they are confi
 
 ## Open Questions
 
-This section captures design decisions that were discussed but remain unresolved or deserve reconsideration before implementation.
+This section captures design decisions that were discussed during the design phase. Each question has been resolved with a decision for v1 implementation.
 
 ### Virtual Directory and Label Event Hooks for Plugins
 
@@ -2516,7 +2685,7 @@ This section captures design decisions that were discussed but remain unresolved
 
 **Arguments for inclusion:** A hypothetical "sync to external DMS when labelled `archive`" plugin is genuinely useful. A plugin maintaining an external catalog mirroring the virtual tree structure could use directory events.
 
-**Current state:** Deferred from v1. Easy to add later without breaking changes.
+**Decision:** Deferred to v2. No schema or implementation changes needed for v1. Adding new event types is a backwards-compatible change — existing plugins simply won't subscribe to them.
 
 ---
 
@@ -2530,7 +2699,7 @@ This section captures design decisions that were discussed but remain unresolved
 - Gather-then-return: Simple, predictable, works for v1 where plugin-agents are co-located with the control plane on fast local network
 - Streaming (server-sent events or chunked JSON): Faster perceived latency, more complex to implement, better for geographically distributed nodes
 
-**Current state:** v1 uses gather-then-return. Note added that streaming could be a future improvement.
+**Decision:** v1 uses gather-then-return. At home-deployment scale with plugin-agents co-located on the control plane's Docker network, the latency difference is negligible. Streaming can be added as a backwards-compatible enhancement if geographically distributed nodes become a use case.
 
 ---
 
@@ -2546,7 +2715,7 @@ This section captures design decisions that were discussed but remain unresolved
 - Option B adds materialize latency on first access, but VFS cache makes subsequent accesses fast
 - Plugin implementation complexity: Option B requires maintaining SQLite schema and materialize logic; Option A is just "write .eml files"
 
-**Current state:** Option A recommended for v1, with Option B documented as the upgrade path. No specific guidance on when to switch. Volume formatting with high inode count (`mkfs.ext4 -N 2000000`) mentioned as a mitigation.
+**Decision:** Option A is the default for v1. Plugin authors choose based on their data characteristics. Guidance: use Option A for data sources producing fewer than 500K files with an average size above 1 KB (email, documents, photos). Use Option B for data sources producing millions of tiny records or where on-demand extraction from an API is natural (chat messages, calendar events, social media). The `mkfs.ext4 -N 2000000` recommendation for bridge volumes remains as a practical mitigation for Option A deployments approaching inode limits.
 
 ---
 
@@ -2562,7 +2731,7 @@ This section captures design decisions that were discussed but remain unresolved
 - Rotation policy (keep last N backups, delete older than X days)
 - Notification on backup failure
 
-**Current state:** Explicitly noted as "not implemented in v1 but are a natural future extension."
+**Decision:** Deferred to v2. The backup API and format are stable — automated scheduling is a pure addition with no impact on existing backup/restore functionality. Users who need automated backups in v1 can script `curl` against the backup endpoint.
 
 ---
 
@@ -2578,7 +2747,7 @@ This section captures design decisions that were discussed but remain unresolved
 - Agent falls back to global settings when no node-specific override exists
 - Adds complexity to the settings merge logic
 
-**Current state:** Noted as "worth noting as a future direction but probably not v1" in the conversation. Not documented in the architecture.
+**Decision:** Deferred to v2. Per-node settings are sufficient for v1 where bridge plugins are typically deployed on a single node. If a user deploys the same plugin on multiple nodes, they can copy settings via the API. The `plugin::` ID scheme reserves room for a future `plugin::{plugin_name}` global settings document without conflicting with `plugin::{node_id}::{plugin_name}` per-node documents.
 
 ---
 
@@ -2593,7 +2762,7 @@ This section captures design decisions that were discussed but remain unresolved
 - Requires rethinking security — TCP sockets need authentication, Unix sockets inherit filesystem permissions
 - Event delivery over TCP needs TLS
 
-**Current state:** Noted in Future Directions but not committed to.
+**Decision:** Deferred to v2. The event envelope and ack protocol are transport-agnostic by design. A future `plugin_type: "tcp"` variant would add `socket_address` and `tls_cert` fields to the plugin document. No v1 schema changes needed — the `plugin_type` enum is open to extension.
 
 ---
 
@@ -2607,7 +2776,7 @@ This section captures design decisions that were discussed but remain unresolved
 - Pull (current): Simple agent implementation, tolerates latency, plugin can't overwhelm agent
 - Push (future): Lower latency for urgent notifications, requires unsolicited message handling on socket
 
-**Current state:** V1 uses pull. Noted that "the socket remains available for a future push extension — an unsolicited `{ \"type\": \"notification\" }` message from the plugin would require only a small addition to the inbound message handler."
+**Decision:** v1 uses pull-based health checks. The socket protocol is designed to accept unsolicited messages in a future version — adding an inbound `{ "type": "notification" }` message handler is a small, backwards-compatible change. v1 plugins that need to surface urgent issues should write directly to the plugin's state directory and let the next health check pick it up.
 
 ---
 

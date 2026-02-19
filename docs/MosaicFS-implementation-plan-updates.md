@@ -5,7 +5,7 @@ This document describes changes needed to bring the implementation plan into syn
 ## Document Count Correction
 
 **Current:** "Define Rust structs for all eight v1 document types"  
-**Should be:** Twelve document types in v1: `file`, `virtual_directory`, `node`, `credential`, `agent_status`, `utilization_snapshot`, `label_assignment`, `label_rule`, `plugin`, `annotation`, `notification`.
+**Should be:** Eleven document types in v1: `file`, `virtual_directory`, `node`, `credential`, `agent_status`, `utilization_snapshot`, `label_assignment`, `label_rule`, `plugin`, `annotation`, `notification`.
 
 **Fix applied:** Phase 1.3 updated to mention core types for Phase 1, with additional types added in later phases.
 
@@ -73,7 +73,7 @@ The current plan has 8 phases. The updated plan should have 11 phases with the f
 - [ ] Settings page renders plugin forms from schema
 - [ ] Annotations appear in file detail drawer
 
-**Dependencies:** Requires Phase 5 (Web UI) complete for UI integration. Plugin runner can be built immediately after Phase 2.
+**Dependencies:** Substeps 6.1–6.6 (plugin backend) can be built immediately after Phase 2, in parallel with Phases 3–5. Substep 6.7 (Web UI integration) requires Phase 5 complete. Recommended approach: build the plugin backend during Phases 3–4, then wire up UI integration after Phase 5.
 
 ---
 
@@ -265,6 +265,46 @@ Should say:
 
 ---
 
+## Testing Strategy
+
+The original implementation plan says "test the hard invariants, not the plumbing." This section expands on that with concrete guidance.
+
+**Unit tests** — each phase's completion checklist implies unit test coverage. Test document serialization round-trips, rule engine evaluation with known inputs, cache key computation, HMAC signature generation/validation, and block map interval operations. Use `#[test]` in Rust with no external dependencies.
+
+**Integration tests** — require a real CouchDB instance. Use a Docker Compose test environment with a throwaway CouchDB container. Key integration tests:
+- Replication filter correctness: write documents, replicate, verify only expected documents arrive
+- Backup/restore round-trip: backup, wipe, restore, verify document fidelity
+- Plugin invocation: deploy a test plugin binary, trigger events, verify annotations written
+- Transfer server: start two agents, request a file from one to the other, verify bytes match
+
+**Development environment** — a single-machine setup for local development:
+- `docker-compose.dev.yml` runs CouchDB + control plane
+- A local agent instance configured with `watch_paths` pointing to a test directory
+- A `scripts/seed-test-data.sh` script that creates sample files, virtual directories, labels, and plugin configurations
+- `--developer-mode` flag enables database wipe between test cycles
+
+**Mock mode for cloud bridges** — bridge plugins should accept a `mock: true` config flag that generates synthetic files instead of calling real cloud APIs. This enables testing the bridge pipeline end-to-end without OAuth credentials.
+
+**Performance benchmarks (Phase 11)** — seed CouchDB with 500K file documents and measure:
+- Full crawl time for 100K files on disk
+- `readdir` latency for a directory with 10 mount sources
+- Replication sync time from cold start
+- Search query latency
+- Cache eviction throughput
+
+---
+
+## Migration Between Phases
+
+Each phase builds on the previous database state. No migration scripts are needed between phases — the CouchDB schema is additive:
+- New document types are simply new documents in the same database
+- New fields on existing documents use `Option<T>` in Rust (absent = None)
+- New CouchDB indexes are created at startup if they don't exist
+
+If a phase changes the structure of an existing document type (unlikely but possible), the phase's implementation notes should include a one-time migration function that runs at startup, detects old-format documents, and rewrites them. The `--developer-mode` database wipe is always available as a fallback during development.
+
+---
+
 ## Summary
 
 **New structure:**
@@ -290,4 +330,4 @@ Should say:
 - Plugin query routing with capability advertisement
 - Plugin health checks with notification integration
 
-**Document count:** Updated from 8 to 12 types total.
+**Document count:** Updated from 8 to 11 types total.

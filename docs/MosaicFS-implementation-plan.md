@@ -78,7 +78,7 @@ Write the initial `docker-compose.yml` for the control plane. At this stage it c
 
 ### 1.3 — CouchDB Document Types
 
-Define Rust structs for all eight v1 document types in `mosaicfs-common`, with `serde` serialization and deserialization. Pay attention to the `_id` format conventions from the architecture document — they are load-bearing. Include unit tests that round-trip each document type through JSON serialization to catch field name mismatches early.
+Define Rust structs for all eleven v1 document types in `mosaicfs-common`, with `serde` serialization and deserialization. Pay attention to the `_id` format conventions from the architecture document — they are load-bearing. Include unit tests that round-trip each document type through JSON serialization to catch field name mismatches early.
 
 ### 1.4 — Agent Configuration
 
