@@ -351,7 +351,7 @@ This is controlled by virtual directories — each directory carries a `mounts` 
 | **Directories own their mount rules** | Rather than maintaining a separate collection of rule documents evaluated against every file, each virtual directory carries a `mounts` array describing what gets mounted inside it. This makes the directory the natural owner of its configuration — editing a directory's mounts is done by navigating to it and changing its properties, not by finding and modifying an abstract rule elsewhere. It also eliminates the global priority ordering problem: mount priorities are local to one directory's `mounts` array, not a system-wide ranking. A file can appear in multiple directories simultaneously, which is an explicit feature rather than a conflict to resolve. |
 | **On-demand rule evaluation, no background worker** | Rules are evaluated when a directory is accessed (`readdir`), not pre-computed and stored on file documents. This means rule changes take effect on the next directory listing rather than after a background recomputation cycle. The VFS layer caches `readdir` results for a short TTL to avoid re-evaluating mounts on every `lookup`, invalidated by the PouchDB live changes feed. The tradeoff is that `readdir` is slightly more expensive than reading pre-indexed values, but at home-deployment scale this is imperceptible. |
 | **`virtual_path` not stored on file documents** | A file's location in the virtual tree is a derived property, not an intrinsic one. Not storing it acknowledges this honestly and avoids a class of staleness bugs where stored virtual paths outlive the rules that generated them. It also enables the multiple-appearances feature naturally — a file that belongs in three directories has no single canonical virtual path to store. Search operates on intrinsic file properties in v1; virtual-path-aware search can be added later if needed. |
-| **Labels stored separately from file documents** | Labels are user-defined metadata that must survive the agent crawler rewriting file documents on every re-crawl. Storing labels on the file document would require the crawler to merge existing labels on every write — a fragile, stateful operation. Separate `label_assignment` documents keyed by `node_id + export_path` are never touched by the crawler, making the invariant simple and the crawler stateless. Label rules are separate documents rather than embedded in virtual directories because labels are a cross-cutting concern — a label rule should apply to a file everywhere it appears, not only when accessed through a particular directory. |
+| **Labels stored separately from file documents** | Labels are user-defined metadata that must survive the agent crawler rewriting file documents on every re-crawl. Storing labels on the file document would require the crawler to merge existing labels on every write — a fragile, stateful operation. Separate `label_assignment` documents keyed by `node_id + export_path` are never touched by the crawler, making the invariant simple and the crawler stateless. Label rules are separate documents rather than embedded in virtual directories because labels are a cross-cutting concern — a label rule should apply to a file everywhere it appears, not only when accessed through a particular directory. The per-file JOIN cost of computing effective labels from two separate document types is eliminated by the materialized label cache — an in-memory hash map maintained incrementally via the CouchDB changes feed. |
 | **Plugin filesystem directory as the security boundary** | Plugin configurations are stored in CouchDB and replicated to agents — any user with write access to the database can create or modify a plugin document. Allowing the `plugin_name` field to be an arbitrary command path would make CouchDB write access equivalent to remote code execution on every agent. Restricting execution to a fixed, admin-controlled directory (`/usr/lib/mosaicfs/plugins/` on Linux) means the database controls which plugins are *configured*, while the filesystem controls which plugins are *permitted to run*. Installing a plugin binary requires local admin access to the machine; this is the appropriate trust boundary. Path traversal in `plugin_name` is rejected as a permanent error. |
 | **Plugin config in CouchDB, not agent.toml** | Storing plugin configuration in the database rather than in per-machine config files enables web UI management, live reloading without agent restarts, and consistent configuration across a fleet without SSH access to individual machines. The agent watches the changes feed for its own node's plugin documents and reloads configuration within seconds of a change. The only local configuration required is the presence of the plugin binary itself in the plugin directory. |
 | **Separate SQLite job queue for plugins** | Plugin jobs need durability across agent restarts — a queue in memory would lose pending jobs on crash. The VFS cache already uses a SQLite sidecar for the block index; a separate `plugin_jobs.db` uses the same infrastructure without mixing concerns. Keeping the plugin queue in a separate file means the cache and the plugin runner can be developed, backed up, and debugged independently. |
@@ -1007,7 +1007,7 @@ Applies one or more labels to all files whose `source.export_path` starts with a
 | `enabled` | bool | Disabled rules are ignored by the rule engine and search API. |
 | `created_at` | string | ISO 8601 creation timestamp. |
 
-**Effective label set.** Given a file document, the effective label set is computed as:
+**Effective label set.** Given a file document, the effective label set is the union of its direct label assignments and all matching label rules:
 
 ```
 effective_labels(file)
@@ -1020,7 +1020,62 @@ effective_labels(file)
   → return result
 ```
 
-This is computed on demand during step pipeline evaluation and search. The two CouchDB indexes on `(type, node_id, export_path)` for assignments and `(type, node_id, path_prefix)` for rules make both lookups efficient.
+### Materialized Label Cache
+
+Computing effective labels on every `readdir` call requires a per-file JOIN across `label_assignment` and `label_rule` documents — O(R) rule prefix comparisons per file, where R is the number of label rules for the node. At the target scale (500K files, 200 rules), this is measurable during directory listings with many files. The materialized label cache eliminates this cost by precomputing effective label sets in memory.
+
+**Data structure.** Each agent maintains an in-memory hash map:
+
+```
+label_cache: HashMap<(node_id, export_path), HashSet<String>>
+```
+
+The cache holds the effective label set for every file that has at least one label (from either a direct assignment or a matching rule). Files with no effective labels are not stored — an absent key means the empty set. At 500K files with 10% having labels, the cache holds ~50K entries, consuming roughly 5–10 MB of memory.
+
+**Initial build.** On agent startup, after the local CouchDB replica is ready:
+
+```
+build_label_cache()
+  → load all label_assignment documents from local replica
+  → load all enabled label_rule documents from local replica
+  → for each label_assignment:
+      cache[(assignment.node_id, assignment.export_path)] ∪= assignment.labels
+  → for each label_rule:
+      query all active file documents where export_path starts with rule.path_prefix
+        AND node_id = rule.node_id (or rule.node_id = "*")
+      for each matching file:
+        cache[(file.node_id, file.export_path)] ∪= rule.labels
+```
+
+The initial build runs once at startup and completes before the VFS mount becomes available. At 500K files and 200 rules, this takes a few seconds — dominated by the CouchDB prefix queries for rules.
+
+**Incremental maintenance.** The agent watches the local CouchDB changes feed for three document types and updates the cache incrementally:
+
+| Change | Cache action |
+|---|---|
+| `label_assignment` created/updated | Recompute entry for `(assignment.node_id, assignment.export_path)`: union of assignment labels + all matching rule labels. |
+| `label_assignment` deleted | Recompute entry: matching rule labels only. Remove entry if result is empty. |
+| `label_rule` created/updated/enabled | For all active files matching `(rule.node_id, rule.path_prefix)`: add `rule.labels` to each entry. |
+| `label_rule` deleted/disabled | For all files matching the rule's scope: recompute from scratch (re-evaluate all remaining rules + direct assignment). |
+| `file` created | Compute effective labels for the new file. If non-empty, insert entry. |
+| `file` deleted | Remove entry. |
+| `file` modified (path change) | Remove old entry, compute and insert new entry. |
+
+Rule changes that affect many files (a broad prefix rule being added or removed) trigger a batch recomputation. The agent processes these asynchronously — the readdir cache TTL (default 5 seconds) means a brief window where the old label set is still served, which is acceptable.
+
+**Usage in readdir.** The rule engine's step pipeline replaces the per-file CouchDB query with a hash map lookup:
+
+```
+resolve effective_labels(file)
+  → return label_cache.get((file.node_id, file.export_path))
+       .unwrap_or(empty_set)
+```
+
+This is O(1) per file regardless of the number of label rules.
+
+**Usage in search.** The control plane's search API also benefits from the label cache. When the search endpoint filters by label, it can check the cache rather than joining against label documents for each candidate file. The control plane maintains its own label cache instance, built from the central CouchDB.
+
+**Why annotations are not cached.** Annotations are loaded lazily during step evaluation — only for files that survive prior filter steps, and only for the specific `plugin_name` referenced in the `annotation` step op. The access pattern is sparse and already indexed. Including annotations in the cache would increase memory usage substantially (annotation `data` objects are arbitrarily large), cause frequent cache churn during plugin processing, and provide minimal benefit since the lazy evaluation already limits the number of lookups. Labels and annotations have fundamentally different access patterns: labels are checked for every file on every readdir; annotations are checked for a small subset of files that reach an annotation step.
 
 ---
 
@@ -1729,6 +1784,8 @@ startup
   → load config
   → connect to local CouchDB
   → start CouchDB replication (bidirectional, continuous)
+  → build materialized label cache from local CouchDB replica
+  → watch changes feed for label_assignment / label_rule / file changes → update label cache incrementally
   → if first run:  full crawl → write notification (first_crawl_complete, info) on completion
                                then start watcher
   → if resuming:   reconciliation crawl → then start watcher
@@ -1790,8 +1847,8 @@ readdir(virtual_path)
       query file documents matching source (node_id, export_path prefix)
       for each candidate file:
           if status != "active": skip
-          resolve effective_labels(file)              ← join label_assignment + label_rules
-          resolve annotations(file)                   ← load annotation docs for this file (lazy, per plugin_name referenced in steps)
+          resolve effective_labels(file)              ← O(1) lookup in materialized label cache
+          resolve annotations(file)                   ← lazy: load annotation docs only for plugin_names referenced in steps
           run inherited step chain → if excluded: skip
           run mount's own steps  → if excluded: skip
           apply mapping strategy to derive filename within this directory
