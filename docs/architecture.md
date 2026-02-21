@@ -61,11 +61,17 @@
   - [Utilization Snapshot Document](#utilization-snapshot-document)
   - [Label Assignment Document](#label-assignment-document)
   - [Label Rule Document](#label-rule-document)
+  - [Materialized Label Cache](#materialized-label-cache)
+  - [Access Tracking Document](#access-tracking-document)
+  - [Materialized Access Cache](#materialized-access-cache)
+  - [Replication Target Document](#replication-target-document)
+  - [Replication Rule Document](#replication-rule-document)
+  - [Replica Document](#replica-document)
   - [Plugin Document](#plugin-document)
   - [Annotation Document](#annotation-document)
   - [Notification Document](#notification-document)
 - [FUSE Inode Space](#fuse-inode-space)
-- [FUSE Tiered Access Strategy](#fuse-tiered-access-strategy)
+- [VFS Tiered Access Strategy](#vfs-tiered-access-strategy)
 - [Authentication](#authentication)
   - [Credential Format](#credential-format)
   - [Agent-to-Server: HMAC Request Signing](#agent-to-server-hmac-request-signing)
@@ -79,6 +85,8 @@
   - [Virtual Filesystem](#virtual-filesystem)
   - [Search](#search)
   - [Labels](#labels)
+  - [Replication](#replication)
+  - [Migration](#migration)
   - [Plugins](#plugins)
   - [Annotations](#annotations)
   - [Query](#query)
@@ -112,6 +120,7 @@
   - [Available Plugins Discovery](#available-plugins-discovery)
   - [Capability Advertisement](#capability-advertisement)
   - [Plugin Query Routing](#plugin-query-routing)
+  - [Storage Backend Plugins](#storage-backend-plugins)
   - [Bridge Nodes](#bridge-nodes)
   - [Plugin Security Model](#plugin-security-model)
   - [Future Directions](#future-directions)
@@ -322,7 +331,7 @@ When an agent starts, it crawls the directories it is configured to watch and wr
 
 ### File Access Flow
 
-When a user (or application) opens a file through the virtual filesystem mount, the layer looks up the relevant virtual directory's mount sources, determines which node owns the file, and resolves the best way to access it. If the file is local, it is opened directly. If a network mount covers the file's location (such as a CIFS share of the NAS), the file is opened through that mount. If the file is on a remote agent, it is downloaded to a local cache and served from there. The cache is keyed by node ID and export path and is invalidated when the file's `mtime` or `size` changes — a cached file is never served stale.
+When a user (or application) opens a file through the virtual filesystem mount, the layer looks up the relevant virtual directory's mount sources, determines which node owns the file, and resolves the best way to access it. If the file is local, it is opened directly. If a network mount covers the file's location (such as a CIFS share of the NAS), the file is opened through that mount. If the file is on a remote agent, it is downloaded to a local cache and served from there. The cache is keyed by file UUID and is invalidated when the file's `mtime` or `size` changes — a cached file is never served stale.
 
 ### Sync Flow
 
@@ -345,13 +354,13 @@ This is controlled by virtual directories — each directory carries a `mounts` 
 | **Rust for agent & VFS layer** | The agent and virtual filesystem backends are filesystem daemons where memory safety bugs can cause data corruption. Rust eliminates this class of bugs at compile time. The primary developer has a C/C++ systems background and is already comfortable with Rust, making it the natural choice over Go (which would require learning a new language while building a complex system). |
 | **React + Vite for web UI** | The developer is an experienced systems programmer, not a frontend specialist, and will rely on AI tooling to generate and maintain the UI. React has the largest corpus of training data among AI models, producing more reliable code generation than newer frameworks like Svelte. Vite provides fast hot-reload during UI iteration. |
 | **CouchDB + PouchDB for sync** | The replication problem between agents and the control plane is a solved problem in CouchDB. Offline-first operation, conflict detection, and incremental sync come for free. The live changes feed enables real-time updates in both the VFS layer and the browser UI without custom WebSocket infrastructure. |
-| **Path-based cache with per-transfer integrity** | The VFS file cache keys entries by `{node_id}::{export_path}`, invalidated when `mtime` or `size` changes in the file document. This eliminates the need to compute a content hash for every file. Transfer integrity is provided by an HTTP `Digest` trailer (RFC 9530, `sha-256`) on full-file responses — the serving agent computes the hash as it streams and appends it as a trailer; the receiving agent verifies after the stream completes. Range responses (HTTP 206) do not carry a `Digest` trailer and rely on TLS for in-transit integrity. This cleanly separates file identity (path + mtime + size) from transfer integrity (per-response digest), avoids storing a property on the file document that is expensive to compute and only used by the cache, and handles the streaming-hash problem by using trailers rather than headers. |
+| **UUID-keyed cache with per-transfer integrity** | The VFS file cache keys entries by `file_uuid` (from the file document's `_id`), invalidated when `mtime` or `size` changes in the file document. This eliminates the need to compute a content hash for every file. Because file identity is location-independent, the cache survives file migration between nodes without invalidation. Transfer integrity is provided by an HTTP `Digest` trailer (RFC 9530, `sha-256`) on full-file responses — the serving agent computes the hash as it streams and appends it as a trailer; the receiving agent verifies after the stream completes. Range responses (HTTP 206) do not carry a `Digest` trailer and rely on TLS for in-transit integrity. This cleanly separates file identity (UUID + mtime + size) from transfer integrity (per-response digest), avoids storing a property on the file document that is expensive to compute and only used by the cache, and handles the streaming-hash problem by using trailers rather than headers. |
 | **`mosaicfs_browser` read-only CouchDB user for browser sync** | The browser is a larger attack surface than an agent — it can be compromised by XSS, a malicious extension, or a hijacked session in ways that a daemon process cannot. Rather than proxying the full CouchDB replication protocol to an authenticated browser session (which would allow push access to the database), the control plane creates a restricted CouchDB role at setup time with read-only access to a scoped document set. The Axum login endpoint issues a short-lived session token for this role alongside the JWT. Push attempts are rejected by CouchDB's own permission model, not by filter logic that could be misconfigured. A compromised browser session can read indexed file metadata but cannot modify rules, disable credentials, or corrupt the database. |
 | **Sorted interval list for block map** | The block cache tracks which regions of a large file are present using a sorted list of non-overlapping `[start, end)` block intervals rather than a raw bitmap. For the home media use case — a user watching a video with a few seeks — this produces 3–15 intervals regardless of file size, serializes to ~40–120 bytes in SQLite, and makes the "find missing ranges to fetch" operation natural. A raw bitmap is O(n) in file size; the interval list is O(k log k) in the number of intervals. A roaring bitmap is a suitable future upgrade for workloads with highly fragmented random access (e.g. large database files), but is unnecessary for video and audio streaming. |
 | **Directories own their mount rules** | Rather than maintaining a separate collection of rule documents evaluated against every file, each virtual directory carries a `mounts` array describing what gets mounted inside it. This makes the directory the natural owner of its configuration — editing a directory's mounts is done by navigating to it and changing its properties, not by finding and modifying an abstract rule elsewhere. It also eliminates the global priority ordering problem: mount priorities are local to one directory's `mounts` array, not a system-wide ranking. A file can appear in multiple directories simultaneously, which is an explicit feature rather than a conflict to resolve. |
 | **On-demand rule evaluation, no background worker** | Rules are evaluated when a directory is accessed (`readdir`), not pre-computed and stored on file documents. This means rule changes take effect on the next directory listing rather than after a background recomputation cycle. The VFS layer caches `readdir` results for a short TTL to avoid re-evaluating mounts on every `lookup`, invalidated by the PouchDB live changes feed. The tradeoff is that `readdir` is slightly more expensive than reading pre-indexed values, but at home-deployment scale this is imperceptible. |
 | **`virtual_path` not stored on file documents** | A file's location in the virtual tree is a derived property, not an intrinsic one. Not storing it acknowledges this honestly and avoids a class of staleness bugs where stored virtual paths outlive the rules that generated them. It also enables the multiple-appearances feature naturally — a file that belongs in three directories has no single canonical virtual path to store. Search operates on intrinsic file properties in v1; virtual-path-aware search can be added later if needed. |
-| **Labels stored separately from file documents** | Labels are user-defined metadata that must survive the agent crawler rewriting file documents on every re-crawl. Storing labels on the file document would require the crawler to merge existing labels on every write — a fragile, stateful operation. Separate `label_assignment` documents keyed by `node_id + export_path` are never touched by the crawler, making the invariant simple and the crawler stateless. Label rules are separate documents rather than embedded in virtual directories because labels are a cross-cutting concern — a label rule should apply to a file everywhere it appears, not only when accessed through a particular directory. The per-file JOIN cost of computing effective labels from two separate document types is eliminated by the materialized label cache — an in-memory hash map maintained incrementally via the CouchDB changes feed. |
+| **Labels stored separately from file documents** | Labels are user-defined metadata that must survive the agent crawler rewriting file documents on every re-crawl. Storing labels on the file document would require the crawler to merge existing labels on every write — a fragile, stateful operation. Separate `label_assignment` documents keyed by `file_uuid` are never touched by the crawler, making the invariant simple and the crawler stateless. Label rules are separate documents rather than embedded in virtual directories because labels are a cross-cutting concern — a label rule should apply to a file everywhere it appears, not only when accessed through a particular directory. The per-file JOIN cost of computing effective labels from two separate document types is eliminated by the materialized label cache — an in-memory hash map maintained incrementally via the CouchDB changes feed. |
 | **Plugin filesystem directory as the security boundary** | Plugin configurations are stored in CouchDB and replicated to agents — any user with write access to the database can create or modify a plugin document. Allowing the `plugin_name` field to be an arbitrary command path would make CouchDB write access equivalent to remote code execution on every agent. Restricting execution to a fixed, admin-controlled directory (`/usr/lib/mosaicfs/plugins/` on Linux) means the database controls which plugins are *configured*, while the filesystem controls which plugins are *permitted to run*. Installing a plugin binary requires local admin access to the machine; this is the appropriate trust boundary. Path traversal in `plugin_name` is rejected as a permanent error. |
 | **Plugin config in CouchDB, not agent.toml** | Storing plugin configuration in the database rather than in per-machine config files enables web UI management, live reloading without agent restarts, and consistent configuration across a fleet without SSH access to individual machines. The agent watches the changes feed for its own node's plugin documents and reloads configuration within seconds of a change. The only local configuration required is the presence of the plugin binary itself in the plugin directory. |
 | **Separate SQLite job queue for plugins** | Plugin jobs need durability across agent restarts — a queue in memory would lose pending jobs on crash. The VFS cache already uses a SQLite sidecar for the block index; a separate `plugin_jobs.db` uses the same infrastructure without mixing concerns. Keeping the plugin queue in a separate file means the cache and the plugin runner can be developed, backed up, and debugged independently. |
@@ -551,27 +560,35 @@ All state in MosaicFS is stored as JSON documents in CouchDB and replicated betw
 
 ### Document Types at a Glance
 
-MosaicFS uses eleven document types in v1, each with a distinct role in the system. Two additional types — `peering_agreement` and `federated_import` — are designed but not implemented; they are described in the Federation section.
+MosaicFS uses fifteen document types in v1, each with a distinct role in the system. Two additional types — `peering_agreement` and `federated_import` — are designed but not implemented; they are described in the Federation section.
 
 | Document Type | `_id` Prefix | Purpose |
 |---|---|---|
-| `file` | `file::` | One document per indexed file. The core unit of the system. Carries real-world location (`source.node_id`, `source.export_path`). Virtual locations are computed on demand by the rule engine; not stored on the document. |
+| `file` | `file::` | One document per indexed file. The core unit of the system. File identity is location-independent — the `_id` is a UUID with no embedded node reference. The file's current location (`source.node_id`, `source.export_path`) is stored as mutable fields, enabling migration between nodes without changing identity. Virtual locations are computed on demand by the rule engine; not stored on the document. |
 | `virtual_directory` | `dir::` | One document per directory in the virtual namespace. Explicitly created and managed by the user. Carries the directory's mount sources — the rules that define what files and subdirectories appear inside it. |
 | `node` | `node::` | One document per participating device or cloud bridge. Describes the node, its transfer endpoint, storage topology, and embedded network mount declarations. |
 | `credential` | `credential::` | Preshared access key pairs used by agents and the web UI to authenticate with the control plane. |
 | `agent_status` | `status::` | Published periodically by each agent. Provides operational health data for the web UI dashboard. |
 | `utilization_snapshot` | `utilization::` | Point-in-time record of storage capacity and usage for a node. Written hourly; used to compute utilization trends over time. |
-| `label_assignment` | `label_file::` | Associates one or more user-defined labels with a specific file, identified by `node_id` and `export_path`. Written by the user via the API; never touched by the agent crawler. Survives file re-indexing. |
+| `label_assignment` | `label_file::` | Associates one or more user-defined labels with a specific file, identified by file UUID. Labels attach to the file's identity, not to a specific copy on a specific node — they survive migration without changes. Written by the user via the API; never touched by the agent crawler. |
 | `label_rule` | `label_rule::` | Applies one or more labels to all files under a given path prefix on a given node. Acts as an inherited label source: a file's effective label set is the union of its direct `label_assignment` labels and all `label_rule` labels whose prefix covers the file's `export_path`. |
 | `plugin` | `plugin::` | Configuration for one plugin on one node. Specifies the plugin type (`executable` or `socket`), the plugin name (resolved to a binary in the node's plugin directory), subscribed events, MIME filter globs, worker count, timeout, and an arbitrary `config` object passed to the plugin at invocation time. Managed via the web UI; the agent watches the changes feed and reloads plugin configuration live. |
-| `annotation` | `annotation::` | Structured metadata written back to CouchDB by executable plugins. One document per `(file, plugin_name)`. The plugin's entire stdout JSON object is stored verbatim in the `data` field. Socket plugins that update external systems typically produce no annotation documents. |
+| `annotation` | `annotation::` | Structured metadata written back to CouchDB by executable plugins. One document per `(file, plugin_name)`, keyed by file UUID. Annotations attach to the file's identity and survive migration without changes. The plugin's entire stdout JSON object is stored verbatim in the `data` field. Socket plugins that update external systems typically produce no annotation documents. |
+| `access` | `access::` | Records the most recent time a file was accessed through MosaicFS (VFS, REST API, or agent transfer). One document per file, written by the agent that served the access. Updated with debouncing to limit replication churn. Used by the `access_age` step pipeline operation. |
+| `replication_target` | `repl_target::` | Defines a destination for file replicas — storage backend type, credentials, schedule, retention policy. Managed via the control plane API. Referenced by replication rules and replica documents. |
+| `replication_rule` | `repl_rule::` | Defines which files should be replicated to which target using the step pipeline vocabulary. Evaluated by the agent's replication subsystem. Analogous to `label_rule` but for replication rather than labeling. |
+| `replica` | `replica::` | Records that a copy of a specific file exists on a specific replication target. Written by the agent after a successful upload via a storage backend plugin. Read by the VFS layer for Tier 4b failover. One document per (file, target) pair. |
 | `notification` | `notification::` | A system event or condition requiring user attention. Written by agents, cloud bridges, the control plane, and plugins. One document per distinct condition — identified by a stable `condition_key` so the same condition updates rather than duplicates. Carries severity, source, message, optional action links, and a lifecycle status (`active`, `resolved`, `acknowledged`). Replicated to the browser via PouchDB for live delivery without polling. |
 
 ### How the Document Types Relate
 
 The relationships between document types reflect the layered architecture of the system. At the bottom is the physical layer: nodes own files on real filesystems. Above that is the virtual layer: virtual directories carry mount sources that define what files appear inside them, and the rule engine evaluates those sources on demand to answer directory listings. Connecting the two is the access layer: network mount documents let the VFS layer find the cheapest path to each file's bytes. Cutting across all layers is the label system: label assignments and label rules attach arbitrary user-defined tags to files, which the rule engine and search API can filter on.
 
-A `file` document is a fact about a real file — where it lives and what it looks like. It has no knowledge of where it appears in the virtual tree, and it carries no labels directly. Labels are stored in separate `label_assignment` documents (keyed by node + path, never overwritten by the crawler) and `label_rule` documents (which apply labels to entire directory subtrees by path prefix). A file's effective label set — the union of its direct assignments and all prefix-matching rules — is computed at query time by the rule engine and search API.
+A `file` document is a fact about a real file — where it lives and what it looks like. Its `_id` is a location-independent UUID, so the file's identity is stable across migrations between nodes. The `source.node_id` and `source.export_path` fields describe where the file currently lives; these are mutable and updated during migration. The file document has no knowledge of where it appears in the virtual tree, and it carries no labels directly. Labels are stored in separate `label_assignment` documents (keyed by file UUID, never overwritten by the crawler) and `label_rule` documents (which apply labels to entire directory subtrees by path prefix). A file's effective label set — the union of its direct assignments and all prefix-matching rules — is computed at query time by the rule engine and search API.
+
+Access times are tracked in separate `access` documents, updated with debouncing whenever a file is accessed through MosaicFS (VFS, REST API, or agent-to-agent transfer). The file document itself does not store access time — this avoids coupling the crawler's write path to read activity and prevents replication churn from frequent file opens.
+
+File replication is managed through three document types that mirror the label system's design. `replication_target` documents define destinations (S3, B2, local directory, another agent) — analogous to defining a storage pool. `replication_rule` documents define which files should be replicated to which targets using the same step pipeline operations as virtual directory mounts. `replica` documents record the fact that a specific file has been copied to a specific target — the VFS layer reads these directly for Tier 4b failover when the owning node is offline. The actual bytes-on-wire interaction with each storage service is handled by thin storage backend plugins; the replication orchestration (rule evaluation, scheduling, state tracking) is core.
 
 `virtual_directory` documents are the primary configuration surface. A directory's `mounts` array describes what gets mounted inside it — each mount entry specifying a source, a filter step pipeline, and a mapping strategy. Directories are created and deleted explicitly by the user; they are not created automatically as a side effect of rules. An empty directory (one with no mounts) is a valid, persistent container for other directories.
 
@@ -582,10 +599,11 @@ Different components of MosaicFS have distinct, non-overlapping write responsibi
 | Component | Writes | Reads |
 |---|---|---|
 | Agent crawler / watcher | `file`, `agent_status`, `utilization_snapshot`, `notification` (crawl events, watch limit, cache pressure) | `credential` (auth), node's `network_mounts` (path hints) |
+| Agent replication subsystem | `replica` (after successful upload/deletion), `notification` (target unreachable, backlog) | `replication_target`, `replication_rule`, `file`, `replica`, `access` (for rule evaluation), `label_assignment`, `label_rule` |
 | Agent plugin runner | `annotation` (from executable plugin stdout), `agent_status` (plugin subsystem health), `notification` (job failures, plugin health check results) | `plugin` (configuration), `file` (event payloads), `annotation` (stale check on re-crawl) |
-| Rule evaluation engine (VFS layer / control plane) | Nothing — read-only evaluation | `file`, `virtual_directory` (mount sources + steps), `node`, `label_assignment`, `label_rule`, `annotation` |
-| VFS backend (FUSE / File Provider / CFAPI) | Nothing — read-only in v1 | `file`, `virtual_directory` (readdir), node's `network_mounts`, `node` |
-| Control plane API (Axum) | `credential`, `node` (registration, network_mounts), `virtual_directory`, `label_assignment`, `label_rule`, `plugin`, `notification` (system-level events, credential activity) | All document types |
+| Rule evaluation engine (VFS layer / control plane) | Nothing — read-only evaluation | `file`, `virtual_directory` (mount sources + steps), `node`, `label_assignment`, `label_rule`, `annotation`, `replica` |
+| VFS backend (FUSE / File Provider / CFAPI) | `access` (debounced, via access tracker) | `file`, `virtual_directory` (readdir), node's `network_mounts`, `node`, `replica` (Tier 4b failover) |
+| Control plane API (Axum) | `credential`, `node` (registration, network_mounts), `virtual_directory`, `label_assignment`, `label_rule`, `replication_target`, `replication_rule`, `plugin`, `notification` (system-level events, credential activity), `access` (from REST API content downloads) | All document types |
 | Cloud bridge runners (control plane) | `file` (cloud files), `node` (bridge docs), `agent_status`, `utilization_snapshot`, `notification` (OAuth expiry, quota warnings, sync failures) | node's `network_mounts` |
 | Web UI (browser / PouchDB) | `virtual_directory` (via API), node's `network_mounts` (via API), `label_assignment` (via API), `label_rule` (via API), `plugin` (via API), `notification` (acknowledge via API) | All document types (via PouchDB live sync) |
 
@@ -593,13 +611,13 @@ Different components of MosaicFS have distinct, non-overlapping write responsibi
 
 Not all documents are replicated to all nodes. The replication topology is filtered to match each node's needs:
 
-- **Physical agents** replicate `file`, `virtual_directory`, `node`, `credential`, `label_assignment`, `label_rule`, `plugin`, `annotation`, and `notification` documents bidirectionally with the control plane. Network mount declarations travel as part of the node document rather than as separate documents. This gives the VFS layer everything it needs to evaluate directory mount sources, resolve label sets, query annotations, and find file locations without a network round trip. Plugin configuration documents replicate to agents so the plugin runner can load them without contacting the control plane. Notification documents replicate bidirectionally so the browser receives notifications from agents in real time via PouchDB, and acknowledgements written by the browser via the REST API propagate back to the originating agent.
+- **Physical agents** replicate `file`, `virtual_directory`, `node`, `credential`, `label_assignment`, `label_rule`, `replication_target`, `replication_rule`, `replica`, `plugin`, `annotation`, `access`, and `notification` documents bidirectionally with the control plane. Network mount declarations travel as part of the node document rather than as separate documents. This gives the VFS layer everything it needs to evaluate directory mount sources, resolve label sets, query annotations, and find file locations without a network round trip. Plugin configuration documents replicate to agents so the plugin runner can load them without contacting the control plane. Notification documents replicate bidirectionally so the browser receives notifications from agents in real time via PouchDB, and acknowledgements written by the browser via the REST API propagate back to the originating agent.
 - **`agent_status`** is pushed from each agent to the control plane only — it is not replicated back out to other agents, since no agent needs to know the health of another agent directly.
 - **The browser (PouchDB)** syncs a read-only subset of the database directly with the control plane's CouchDB instance, enabling live-updating UI without custom WebSocket infrastructure. `credential` documents are excluded from browser replication for security.
 
 ### Soft Deletes and Document Lifecycle
 
-MosaicFS uses soft deletes for file documents rather than CouchDB's native deletion mechanism. When a file is removed from a node's filesystem, its document is updated with `status: "deleted"` and a `deleted_at` timestamp rather than being deleted outright. This preserves the inode number if the file reappears, ensures other nodes learn about the deletion through normal replication, and maintains a deletion history for debugging.
+MosaicFS uses soft deletes for file documents rather than CouchDB's native deletion mechanism. When a file is removed from a node's filesystem, its document is updated with `status: "deleted"` and a `deleted_at` timestamp rather than being deleted outright. This preserves the inode number if the file reappears, ensures other nodes learn about the deletion through normal replication, and maintains a deletion history for debugging. Migration also produces soft deletes on the source node — the file document's `source.node_id` is updated to the destination, and the source agent marks its local copy as deleted after confirming the transfer.
 
 Virtual directory documents are explicitly created and deleted by the user. They are never created or tombstoned automatically. Node and credential documents are never deleted; they are disabled via a `status` or `enabled` flag to preserve the audit trail and prevent orphaned references.
 
@@ -607,7 +625,7 @@ Virtual directory documents are explicitly created and deleted by the user. They
 
 CouchDB's multi-master replication model means that two nodes can update the same document concurrently, producing a conflict. CouchDB automatically picks a deterministic winner (based on revision tree depth, then lexicographic `_rev`), but the losing revision persists as a conflict marker until explicitly resolved. MosaicFS handles conflicts with a simple strategy tailored to each document type's write ownership model:
 
-**File documents** — owned exclusively by the source node's agent crawler. Conflicts should not occur in normal operation because only one agent writes to a given file document. If a conflict does occur (e.g. after a network partition where the same agent reconnected with a stale checkpoint), the agent resolves it on the next crawl cycle: the crawler always writes the current filesystem state, so the latest write is authoritative. On detecting a `_conflicts` array, the agent deletes the losing revisions.
+**File documents** — owned exclusively by the agent whose `node_id` matches `source.node_id`. Conflicts should not occur in normal operation because only one agent writes to a given file document. During migration, `source.node_id` is updated atomically by the control plane, transferring ownership to the destination agent. If a conflict does occur (e.g. after a network partition where the same agent reconnected with a stale checkpoint), the agent resolves it on the next crawl cycle: the crawler always writes the current filesystem state, so the latest write is authoritative. On detecting a `_conflicts` array, the agent deletes the losing revisions.
 
 **Virtual directory documents** — written only by the control plane API in response to user actions. Conflicts are possible if two browser sessions edit the same directory simultaneously. The control plane API uses optimistic concurrency: the PUT request includes the current `_rev`, and CouchDB rejects the update if the revision has changed. The UI re-fetches and prompts the user to retry. No automatic merge is attempted.
 
@@ -623,7 +641,13 @@ CouchDB's multi-master replication model means that two nodes can update the sam
 
 **Utilization snapshot documents** — written exclusively by the owning agent. No conflicts expected (each snapshot has a unique timestamp-based `_id`).
 
+**Replication target and replication rule documents** — written only via the control plane API. Same optimistic concurrency as virtual directories.
+
+**Replica documents** — written exclusively by the agent's replication subsystem after a successful upload or deletion. Each `(file, target)` pair is managed by a single agent (the one running the replication subsystem that targets this file). No conflicts expected in normal operation.
+
 **Annotation documents** — written exclusively by the plugin runner on the owning agent. No conflicts expected.
+
+**Access documents** — each file has at most one access document, written by the agent that most recently served the access. If two agents serve the same file concurrently (e.g. via VFS on two different nodes), both may update the same document. Last-write-wins is acceptable — the only consequence is a `last_access` timestamp that is off by the debounce interval. Access documents carry no critical state; losing a revision loses at most one timestamp update.
 
 **Notification documents** — written by the source (agent, bridge, or control plane) and updated by the control plane API (acknowledgement). Conflicts are possible if a source updates a notification while the user acknowledges it. Resolution is last-write-wins; the worst case is a re-fired notification that the user acknowledges again.
 
@@ -646,9 +670,15 @@ The **Location** column indicates where each index must exist. "Control plane" m
 | `type`, `node_id`, `captured_at` | Control plane only | Storage page, utilization trend charts | Queries utilization snapshots for a given node over a time range. Not replicated to agents; only the control plane and web UI query snapshot history. |
 | `type`, `enabled` | Control plane + Agent local | Authentication middleware, agent-to-agent transfers | Looks up a credential document during request signing validation. Must be local on agents because transfer authentication between two agents is validated against the local replica without involving the control plane. |
 | `type`, `status` (node docs) | Control plane only | Dashboard, health checks | Fetches all nodes with a given status. Used by the dashboard to render node health indicators and by the control plane's health check poller. |
-| `type`, `node_id`, `export_path` | Control plane + Agent local | Rule engine (label step), Search API | Looks up a `label_assignment` document for a specific file by node + path. Used when computing a file's effective label set during step pipeline evaluation and label-based search. Must be local for VFS performance. |
+| `type`, `file_id` (label_assignment docs) | Control plane + Agent local | Rule engine (label step), Search API | Looks up a `label_assignment` document for a specific file by `file_id`. Used when computing a file's effective label set during step pipeline evaluation and label-based search. Must be local for VFS performance. |
 | `type`, `node_id`, `path_prefix` | Control plane + Agent local | Rule engine (label step), Search API | Lists all `label_rule` documents that could cover a given file path on a given node. The rule engine loads all rules for the relevant node and checks which prefixes match. Must be local for VFS performance. |
-| `type`, `node_id`, `export_path`, `plugin_name` | Control plane + Agent local | Rule engine (annotation step), Search API | Looks up an `annotation` document for a specific file and plugin. Used during step pipeline evaluation for the `annotation` op and during annotation-based search. Must be local for VFS performance. |
+| `type`, `file_uuid`, `plugin_name` (annotation docs) | Control plane + Agent local | Rule engine (annotation step), Search API | Looks up an `annotation` document for a specific file and plugin. Used during step pipeline evaluation for the `annotation` op and during annotation-based search. Must be local for VFS performance. |
+| `type`, `file_id` (access docs) | Control plane + Agent local | Rule engine (`access_age` step), access tracker | Looks up the `access` document for a specific file by `file_id`. Used during step pipeline evaluation for the `access_age` op and by the access tracker when flushing debounced updates. Must be local for VFS performance. |
+| `type`, `target_name` (replication target docs) | Control plane + Agent local | Agent replication subsystem, REST API | Looks up a replication target by name. Must be local so the agent can resolve target configurations without a control plane round trip. |
+| `type`, `target_name` (replication rule docs) | Control plane + Agent local | Agent replication subsystem | Fetches all replication rules for a given target. Must be local so rule evaluation runs without network round trips. |
+| `type`, `enabled` (replication rule docs) | Control plane + Agent local | Agent replication subsystem | Fetches all enabled replication rules. Used during periodic re-evaluation scans and on changes feed updates. |
+| `type`, `file_id` (replica docs) | Control plane + Agent local | VFS layer (Tier 4b), rule engine (`replicated` step), REST API | Looks up all replica documents for a specific file. Used by Tier 4b failover to find available replicas when the owning node is offline. Must be local for VFS performance. |
+| `type`, `target_name` (replica docs) | Control plane + Agent local | Agent replication subsystem, REST API | Lists all replicas on a given target. Used for manifest reconciliation and restore operations. |
 | `type`, `node_id` (plugin docs) | Control plane + Agent local | Agent plugin runner | Fetches all enabled plugin configurations for a given node. The agent loads this on startup and reloads on changes feed updates. Must be local so the plugin runner does not require a control plane round trip at startup. |
 | `type`, `status`, `severity` (notification docs) | Control plane only | Notification API, dashboard | Fetches active and unacknowledged notifications sorted by severity for the notification panel and dashboard alert area. The browser receives notification documents via PouchDB live sync and filters client-side, but the REST API uses this index for server-side queries. |
 
@@ -671,9 +701,9 @@ Each agent pushes only the documents it owns or that the user has created locall
     { "type": "node",                 "_id":            "node::<this_node_id>" },
     { "type": "agent_status",         "node_id":        "<this_node_id>" },
     { "type": "utilization_snapshot", "node_id":        "<this_node_id>" },
-    { "type": "label_assignment",     "node_id":        "<this_node_id>" },
-    { "type": "label_rule",           "node_id":        "<this_node_id>" },
-    { "type": "annotation",           "node_id":        "<this_node_id>" },
+    { "type": "annotation",           "source.node_id": "<this_node_id>" },
+    { "type": "access",               "source.node_id": "<this_node_id>" },
+    { "type": "replica",              "source.node_id": "<this_node_id>" },
     { "type": "notification",         "source.node_id": "<this_node_id>" }
   ]
 }
@@ -694,6 +724,10 @@ The agent pulls everything the VFS layer and local authentication need to operat
     { "type": "label_rule" },
     { "type": "plugin" },
     { "type": "annotation" },
+    { "type": "access" },
+    { "type": "replication_target" },
+    { "type": "replication_rule" },
+    { "type": "replica" },
     { "type": "notification" }
   ]
 }
@@ -720,6 +754,10 @@ The browser replication filter excludes documents the browser has no need for:
     { "type": "label_rule" },
     { "type": "plugin" },
     { "type": "annotation" },
+    { "type": "access" },
+    { "type": "replication_target" },
+    { "type": "replication_rule" },
+    { "type": "replica" },
     { "type": "notification" }
   ]
 }
@@ -753,9 +791,9 @@ Flow 1 (push) replication document:
       { "type": "node",                 "_id":            "node::<this_node_id>" },
       { "type": "agent_status",         "node_id":        "<this_node_id>" },
       { "type": "utilization_snapshot", "node_id":        "<this_node_id>" },
-      { "type": "label_assignment",     "node_id":        "<this_node_id>" },
-      { "type": "label_rule",           "node_id":        "<this_node_id>" },
-      { "type": "annotation",           "node_id":        "<this_node_id>" },
+      { "type": "annotation",           "source.node_id": "<this_node_id>" },
+      { "type": "access",               "source.node_id": "<this_node_id>" },
+      { "type": "replica",              "source.node_id": "<this_node_id>" },
       { "type": "notification",         "source.node_id": "<this_node_id>" }
     ]
   },
@@ -782,6 +820,10 @@ Flow 2 (pull) replication document:
       { "type": "label_rule" },
       { "type": "plugin" },
       { "type": "annotation" },
+      { "type": "access" },
+      { "type": "replication_target" },
+      { "type": "replication_rule" },
+      { "type": "replica" },
       { "type": "notification" }
     ]
   },
@@ -810,7 +852,7 @@ Represents a single file on a physical node or cloud service. Created and update
 
 | Field | Type | Description |
 |---|---|---|
-| `_id` | string | Format: `"file::{node_id}::{uuid}"`. The UUID is generated at document creation time. Unique across the system. |
+| `_id` | string | Format: `"file::{uuid}"`. The UUID is generated at document creation time. Unique across the system. The file's location (which node owns it, what path it lives at) is stored in `source` fields, not encoded in the `_id`. This makes file identity location-independent — a file can be migrated between nodes without changing its `_id` or any documents that reference it. |
 | `type` | string | Always `"file"`. |
 | `inode` | uint64 | Random 64-bit integer assigned at creation time. Stable for the lifetime of the file. Used as the inode number by the FUSE backend, and as the equivalent stable identity token by other VFS backends. A file appearing in multiple virtual directories presents the same inode in each — the OS treats these as hard links. Collision probability at 500K files is ~7×10⁻⁹ (birthday paradox with 2⁶⁴ space); no collision detection is implemented. If a collision did occur, the VFS layer would return the first matching document — an acceptable degradation at this probability. |
 | `name` | string | Filename component only (no directory path). Stored as-is from the filesystem — no Unicode normalization is applied, preserving round-trip fidelity on case-sensitive filesystems. Names containing null bytes, forward slashes, or control characters (U+0000–U+001F) are rejected by the crawler and not indexed. The VFS layer does not perform additional sanitization — names valid in CouchDB are presented to the OS as-is, and the OS rejects any that violate its own rules (e.g. `:` on Windows). |
@@ -822,6 +864,7 @@ Represents a single file on a physical node or cloud service. Created and update
 | `mime_type` | string? | MIME type if determinable. |
 | `status` | string | `"active"` or `"deleted"`. Soft deletes preserve history. |
 | `deleted_at` | string? | ISO 8601 timestamp if `status` is `"deleted"`. |
+| `migrated_from` | object? | Present if this file was migrated from another node. Contains `{ node_id, export_path, migrated_at }` — the previous owner's identity and the ISO 8601 timestamp of the migration. Useful for audit trail and debugging. |
 
 ### Virtual Directory Document
 
@@ -984,10 +1027,9 @@ Associates one or more user-defined labels with a specific file. Created and upd
 
 | Field | Type | Description |
 |---|---|---|
-| `_id` | string | Format: `"label_file::{node_id}::{sha256(export_path)}"`. Deterministic — one document per file per node. Enables idempotent creation and upsert. |
+| `_id` | string | Format: `"label_file::{file_uuid}"`. One document per file. Labels attach to the file's identity, not to a location — they survive migration without changes. |
 | `type` | string | Always `"label_assignment"`. |
-| `node_id` | string | ID of the node that owns the file. |
-| `export_path` | string | The file's `source.export_path` on that node. |
+| `file_id` | string | The full `_id` of the file document (e.g. `"file::a3f9..."`). Stored for convenience. |
 | `labels` | string[] | Ordered array of label strings. Labels are arbitrary user-defined strings. No central registry — a label exists when something references it. |
 | `updated_at` | string | ISO 8601 timestamp of last modification. |
 | `updated_by` | string | Access key ID of the credential that last wrote this document. |
@@ -1012,10 +1054,10 @@ Applies one or more labels to all files whose `source.export_path` starts with a
 ```
 effective_labels(file)
   → result = {}
-  → fetch label_assignment where node_id = file.node_id AND export_path = file.export_path
+  → fetch label_assignment where _id = "label_file::{file.uuid}"
       if found: result ∪= assignment.labels
-  → fetch all label_rules where node_id IN [file.node_id, "*"] AND enabled = true
-      for each rule where file.export_path starts with rule.path_prefix:
+  → fetch all label_rules where node_id IN [file.source.node_id, "*"] AND enabled = true
+      for each rule where file.source.export_path starts with rule.path_prefix:
           result ∪= rule.labels
   → return result
 ```
@@ -1027,7 +1069,7 @@ Computing effective labels on every `readdir` call requires a per-file JOIN acro
 **Data structure.** Each agent maintains an in-memory hash map:
 
 ```
-label_cache: HashMap<(node_id, export_path), HashSet<String>>
+label_cache: HashMap<file_uuid, HashSet<String>>
 ```
 
 The cache holds the effective label set for every file that has at least one label (from either a direct assignment or a matching rule). Files with no effective labels are not stored — an absent key means the empty set. At 500K files with 10% having labels, the cache holds ~50K entries, consuming roughly 5–10 MB of memory.
@@ -1039,12 +1081,12 @@ build_label_cache()
   → load all label_assignment documents from local replica
   → load all enabled label_rule documents from local replica
   → for each label_assignment:
-      cache[(assignment.node_id, assignment.export_path)] ∪= assignment.labels
+      cache[assignment.file_uuid] ∪= assignment.labels
   → for each label_rule:
-      query all active file documents where export_path starts with rule.path_prefix
-        AND node_id = rule.node_id (or rule.node_id = "*")
+      query all active file documents where source.export_path starts with rule.path_prefix
+        AND source.node_id = rule.node_id (or rule.node_id = "*")
       for each matching file:
-        cache[(file.node_id, file.export_path)] ∪= rule.labels
+        cache[file.uuid] ∪= rule.labels
 ```
 
 The initial build runs once at startup and completes before the VFS mount becomes available. At 500K files and 200 rules, this takes a few seconds — dominated by the CouchDB prefix queries for rules.
@@ -1053,9 +1095,9 @@ The initial build runs once at startup and completes before the VFS mount become
 
 | Change | Cache action |
 |---|---|
-| `label_assignment` created/updated | Recompute entry for `(assignment.node_id, assignment.export_path)`: union of assignment labels + all matching rule labels. |
+| `label_assignment` created/updated | Recompute entry for `assignment.file_uuid`: union of assignment labels + all matching rule labels. |
 | `label_assignment` deleted | Recompute entry: matching rule labels only. Remove entry if result is empty. |
-| `label_rule` created/updated/enabled | For all active files matching `(rule.node_id, rule.path_prefix)`: add `rule.labels` to each entry. |
+| `label_rule` created/updated/enabled | For all active files matching `(rule.node_id, rule.path_prefix)` against `(file.source.node_id, file.source.export_path)`: add `rule.labels` to each entry. |
 | `label_rule` deleted/disabled | For all files matching the rule's scope: recompute from scratch (re-evaluate all remaining rules + direct assignment). |
 | `file` created | Compute effective labels for the new file. If non-empty, insert entry. |
 | `file` deleted | Remove entry. |
@@ -1067,7 +1109,7 @@ Rule changes that affect many files (a broad prefix rule being added or removed)
 
 ```
 resolve effective_labels(file)
-  → return label_cache.get((file.node_id, file.export_path))
+  → return label_cache.get(file.uuid)
        .unwrap_or(empty_set)
 ```
 
@@ -1076,6 +1118,179 @@ This is O(1) per file regardless of the number of label rules.
 **Usage in search.** The control plane's search API also benefits from the label cache. When the search endpoint filters by label, it can check the cache rather than joining against label documents for each candidate file. The control plane maintains its own label cache instance, built from the central CouchDB.
 
 **Why annotations are not cached.** Annotations are loaded lazily during step evaluation — only for files that survive prior filter steps, and only for the specific `plugin_name` referenced in the `annotation` step op. The access pattern is sparse and already indexed. Including annotations in the cache would increase memory usage substantially (annotation `data` objects are arbitrarily large), cause frequent cache churn during plugin processing, and provide minimal benefit since the lazy evaluation already limits the number of lookups. Labels and annotations have fundamentally different access patterns: labels are checked for every file on every readdir; annotations are checked for a small subset of files that reach an annotation step.
+
+### Access Tracking Document
+
+Records the most recent time a file was accessed through MosaicFS. One document per file — not per node, because the system tracks "when was this file last used by anyone" rather than per-node access history. Written by whichever agent served the access, with debouncing to limit replication churn.
+
+| Field | Type | Description |
+|---|---|---|
+| `_id` | string | Format: `"access::{file_uuid}"`. The `file_uuid` is the UUID portion of the file document's `_id` (e.g. `file::a3f9...` → `a3f9...`). Using the UUID rather than the full file `_id` keeps access documents short and consistent. |
+| `type` | string | Always `"access"`. |
+| `file_id` | string | The full `_id` of the file document (e.g. `"file::a3f9..."`). Stored for convenience — avoids requiring callers to reconstruct the file `_id` from the UUID. |
+| `source.node_id` | string | The node ID of the agent that wrote this document. Used by the replication push filter. This is the node that *served* the access, which may differ from the node that *owns* the file (e.g. a VFS node accessing a remote file records the access locally, then pushes the document). |
+| `last_access` | string | ISO 8601 timestamp of the most recent access. Updated only if the previous value is older than the debounce threshold (default 1 hour). |
+| `access_count` | int | Running count of accesses observed since the document was created. Incremented on each debounced flush, not on every individual access — so this represents the number of flush cycles that observed at least one access, not the true access count. Useful for rough "hot file" identification. |
+
+**Capture points.** Access is recorded at four points in the system, all feeding the same in-memory tracker:
+
+| Access Path | Where Recorded | Semantics |
+|---|---|---|
+| VFS/FUSE `open()` | FUSE backend on the VFS node | A local user opened a file through the virtual filesystem. |
+| REST API `GET /api/files/{file_id}/content` | Axum handler on the control plane | A browser or CLI client downloaded file content. |
+| Agent transfer (Tier 4 requester) | VFS cache layer on the requesting agent | An agent fetched a remote file for local access. The *requesting* agent records the access, not the serving agent — the access semantically belongs to the node where the user is. |
+| Plugin materialize (Tier 5) | Agent handling the materialize event | A bridge plugin extracted a file from external storage. |
+
+All four paths call the same function — `access_tracker.record(file_id)` — which updates an in-memory map. No I/O occurs on the hot path.
+
+**Debounced persistence.** The agent runs a background flush task:
+
+- **Flush interval**: every 5 minutes (configurable via `agent.toml` as `access_tracking.flush_interval_s`, default 300).
+- **Write threshold**: a CouchDB document is written only if the recorded `last_access` in the database is older than the debounce threshold (default 1 hour, configurable as `access_tracking.debounce_threshold_s`). A file opened 50 times in an hour produces one document write, not 50.
+- **Batch writes**: all dirty entries are flushed in a single `_bulk_docs` request.
+- **Graceful shutdown**: the tracker flushes on agent stop to minimize data loss.
+
+At the target scale (500K files), the worst case is 500K / debounce_hours document writes per flush interval — but in practice most files are not accessed in any given hour, so flush batches are small.
+
+**Orphan cleanup.** When the agent observes a file document transition to `status: "deleted"` via the changes feed, it deletes the corresponding access document in the next flush cycle. Access documents for files that no longer exist are harmless (they are simply never queried) but cleaning them up avoids unbounded growth.
+
+---
+
+### Materialized Access Cache
+
+The `access_age` step pipeline operation needs to look up a file's last access time during readdir evaluation. Querying CouchDB per file would be too expensive — the same O(R) problem that motivates the materialized label cache. The access cache eliminates this cost.
+
+**Data structure.** Each agent maintains an in-memory hash map:
+
+```
+access_cache: HashMap<String, DateTime<Utc>>
+```
+
+The key is the `file_id` string (e.g. `"file::a3f9..."`). The value is the `last_access` timestamp. Files with no access document are not stored — an absent key means "never accessed through MosaicFS."
+
+**Memory cost.** At 500K files with 10% having been accessed through MosaicFS, the cache holds ~50K entries. Each entry is a string key (~40 bytes) plus a timestamp (8 bytes), totaling roughly 3–5 MB.
+
+**Initial build.** On agent startup, after the local CouchDB replica is ready:
+
+```
+build_access_cache()
+  → load all access documents from local replica
+  → for each access document:
+      cache[access.file_id] = access.last_access
+```
+
+**Incremental maintenance.** The agent watches the local CouchDB changes feed for `access` documents:
+
+| Change | Cache action |
+|---|---|
+| `access` created/updated | `cache[doc.file_id] = doc.last_access` |
+| `access` deleted | Remove entry for `doc.file_id` |
+
+The local access tracker's flush also updates the in-memory cache directly (before writing to CouchDB), so the cache reflects local accesses within one flush interval even before replication round-trips.
+
+**Multiple VFS nodes.** When the same file is accessed from different nodes, each node writes its own access document update. After replication, the access cache on every node reflects the most recently replicated `last_access` timestamp. The cache uses a simple overwrite — `max(current, incoming)` is not needed because the debounce threshold ensures that only genuinely newer timestamps produce document updates.
+
+**Usage in readdir.**
+
+```
+resolve last_access(file)
+  → return access_cache.get(file._id)
+```
+
+Returns `None` if the file has never been accessed through MosaicFS. The `access_age` step operation uses this to decide whether the file matches.
+
+### Replication Target Document
+
+Defines a destination for file replicas. Replication targets are storage endpoints — S3 buckets, B2 buckets, local directories, or other MosaicFS agents — where copies of files are maintained according to replication rules. Managed via the control plane API and web UI. The agent watches the changes feed and reloads target configurations live.
+
+| Field | Type | Description |
+|---|---|---|
+| `_id` | string | Format: `"repl_target::{target_name}"`. Deterministic — one document per target. |
+| `type` | string | Always `"replication_target"`. |
+| `target_name` | string | Human-readable identifier, unique across the system. Used as the key in replication rules and replica documents. e.g. `"offsite-backup"`, `"local-archive"`, `"nas-mirror"`. |
+| `backend` | string | The storage backend type. Determines which storage backend plugin handles I/O for this target. Values: `"s3"`, `"b2"`, `"directory"`, `"agent"`. |
+| `backend_config` | object | Backend-specific configuration passed to the storage backend plugin. See below. |
+| `credentials_ref` | string? | Reference to a credential or plugin setting containing the authentication material for this target. The agent resolves this to actual credentials before invoking the backend plugin. Not used for `directory` or `agent` backends. |
+| `schedule` | string? | Optional time window in `HH:MM-HH:MM` format (24-hour, local time). When set, the agent queues replication work but only executes uploads during the window. Omit for continuous replication. |
+| `bandwidth_limit_mbps` | int? | Optional upload bandwidth cap in megabits per second. Enforced by the agent via a token bucket rate limiter shared across all concurrent uploads to this target. |
+| `retention.keep_deleted_days` | int | How many days to retain a file on the target after the source file is deleted from MosaicFS. `0` means delete from the target immediately on `file.deleted`. |
+| `remove_unmatched` | bool | Controls behavior when a previously replicated file no longer matches any replication rule for this target. `false` (default): the replica is preserved but no longer maintained (status becomes `"frozen"`). `true`: the replica is moved to the deletion log and purged after the retention window. |
+| `enabled` | bool | When `false`, no new replication work is dispatched for this target. Existing replicas are preserved. |
+| `created_at` | string | ISO 8601 timestamp. |
+
+**Backend-specific configuration:**
+
+| Backend | `backend_config` Fields |
+|---|---|
+| `s3` | `bucket`, `prefix`, `region`, `storage_class` (optional, e.g. `"GLACIER"`) |
+| `b2` | `bucket`, `prefix` |
+| `directory` | `path` (absolute path on the local filesystem; must be in the agent's `excluded_paths` to prevent crawl indexing) |
+| `agent` | `node_id` (destination agent), `path_prefix` (where to write on the destination; must be in that agent's `excluded_paths` and `transfer_serve_paths`) |
+
+---
+
+### Replication Rule Document
+
+Defines which files should be replicated to a specific target. Uses the same step pipeline operations as virtual directory mount sources — the replication subsystem evaluates rules using the same engine and caches (materialized label cache, materialized access cache) that the VFS readdir evaluation uses.
+
+| Field | Type | Description |
+|---|---|---|
+| `_id` | string | Format: `"repl_rule::{uuid}"`. UUID assigned at creation. |
+| `type` | string | Always `"replication_rule"`. |
+| `name` | string | Human-readable name for this rule. Displayed in the web UI and included in notifications. |
+| `target_name` | string | The `target_name` of the replication target this rule replicates to. |
+| `source.node_id` | string | Filter to files from a specific node, or `"*"` for all nodes. |
+| `source.path_prefix` | string? | Optional path prefix filter. Only files whose `export_path` starts with this prefix are considered. Must end with `/`. |
+| `steps` | array | Step pipeline operations — same syntax and semantics as virtual directory mount steps. All ten ops are supported: `glob`, `regex`, `age`, `size`, `mime`, `node`, `label`, `access_age`, `replicated`, `annotation`. |
+| `default_result` | string | `"include"` or `"exclude"`. Applied when no step short-circuits. |
+| `enabled` | bool | When `false`, the rule is not evaluated. |
+| `created_at` | string | ISO 8601 timestamp. |
+| `updated_at` | string | ISO 8601 timestamp. |
+
+A file may match multiple rules targeting different (or the same) targets. Each match produces an independent replication action. The step pipeline evaluation is identical to virtual directory readdir evaluation — same logic, same caches, same short-circuit semantics.
+
+---
+
+### Replica Document
+
+Records the fact that a copy of a specific file exists on a specific replication target. Written by the agent's replication subsystem after a successful upload via a storage backend plugin. Read by the VFS layer for Tier 4b failover and by the `replicated` step pipeline operation.
+
+| Field | Type | Description |
+|---|---|---|
+| `_id` | string | Format: `"replica::{file_uuid}::{target_name}"`. Deterministic — one document per (file, target) pair. The `file_uuid` is the UUID portion of the file document's `_id` (e.g. `file::a3f9...` → `a3f9...`). |
+| `type` | string | Always `"replica"`. |
+| `file_id` | string | The full `_id` of the source file document (e.g. `"file::a3f9..."`). Stored for convenience and indexing. |
+| `target_name` | string | The replication target where this replica is stored. |
+| `source.node_id` | string | The `node_id` of the agent that wrote this document — the agent that performed the upload. Used by the push replication filter. |
+| `backend` | string | The storage backend type (copied from the target document for fast lookup during Tier 4b). |
+| `remote_key` | string | The key or path used to store the file on the target. Backend-specific: S3 object key, B2 file name, local filesystem path, or export path on the destination agent. Used by the VFS and restore operations to locate the replica. |
+| `replicated_at` | string | ISO 8601 timestamp of the most recent successful upload. |
+| `source_mtime` | string | The file's `mtime` at the time of replication. Used to detect staleness — if the file's current `mtime` differs, the replica is stale. |
+| `source_size` | int | The file's `size` at the time of replication. Used alongside `source_mtime` for staleness detection. |
+| `checksum` | string? | SHA-256 checksum of the replicated content, if provided by the storage backend plugin. |
+| `status` | string | `"current"`, `"stale"`, or `"frozen"`. See below. |
+
+**Replica status values:**
+
+| Status | Meaning |
+|---|---|
+| `"current"` | The replica matches the source file's mtime/size. The target copy is up to date. |
+| `"stale"` | The source file has been modified since the last replication. The agent will re-upload on the next replication cycle. |
+| `"frozen"` | The file no longer matches any replication rule for this target (and `remove_unmatched` is `false`). The replica is preserved on the target but not actively maintained — future source modifications will not be synced. |
+
+**Staleness detection.** When the agent's replication subsystem observes a `file.modified` event, it checks all replica documents for that file. Any replica whose `source_mtime` or `source_size` no longer matches the file document is updated to `status: "stale"`. The agent then schedules a re-upload.
+
+**Lifecycle.** When the agent's replication subsystem observes a `file.deleted` event, it handles each replica based on the target's `retention.keep_deleted_days`:
+- `0`: delete the replica from the target immediately (via storage backend plugin), then delete the replica document.
+- `> 0`: update the replica document with `status: "pending_deletion"` and a `delete_after` timestamp. A background sweep purges expired replicas.
+
+**Remote key scheme.** Files are stored on the target using a deterministic key:
+
+```
+{prefix}/{file_uuid_8}/{filename}
+```
+
+The `file_uuid_8` is the first 8 characters of the file's UUID. This provides distribution on object stores while keeping filenames human-readable. The full file metadata is recoverable from the file document via `file_id`.
 
 ---
 
@@ -1092,7 +1307,7 @@ Configures one plugin on one agent node. Created and managed via the web UI and 
 | `plugin_type` | string | `"executable"` or `"socket"`. Determines the invocation model. |
 | `enabled` | bool | Disabled plugins receive no events and enqueue no jobs. |
 | `name` | string | Human-readable display name shown in the web UI (e.g. `"AI Document Summariser"`). |
-| `subscribed_events` | string[] | Events this plugin receives. Valid values: `"file.added"`, `"file.modified"`, `"file.deleted"`, `"sync.started"`, `"sync.completed"`, `"crawl_requested"` (bridge nodes only — delivered instead of a filesystem crawl), `"materialize"` (bridge nodes only — delivered when a file under `file_path_prefix` is not on disk and must be synthesized). A plugin that does not subscribe to an event type never receives it. The API does not reject `crawl_requested` or `materialize` subscriptions on non-bridge nodes — the events simply never fire, so the subscription is harmless. This avoids coupling plugin document validation to node configuration, which can change independently. |
+| `subscribed_events` | string[] | Events this plugin receives. Valid values: `"file.added"`, `"file.modified"`, `"file.deleted"`, `"access.updated"` (emitted when the agent flushes a debounced access document update — useful for plugins that react to file usage patterns), `"sync.started"`, `"sync.completed"`, `"crawl_requested"` (bridge nodes only), `"materialize"` (bridge nodes only), `"replica.upload"`, `"replica.download"`, `"replica.delete"`, `"replica.list"`, `"replica.health"` (storage backend plugins only — dispatched by the agent's replication subsystem, not by the plugin runner's normal event dispatch). A plugin that does not subscribe to an event type never receives it. The API does not reject event subscriptions that cannot fire on a given node type — the events simply never fire, so the subscription is harmless. |
 | `mime_globs` | string[] | Optional MIME type filter. If non-empty, only files whose `mime_type` matches at least one glob are enqueued. e.g. `["application/pdf", "text/*"]`. Files with no `mime_type` do not match. |
 | `config` | object | Arbitrary JSON object passed to the plugin in the `config` field of every event's stdin payload. The plugin reads whatever keys it needs; extra keys are ignored. |
 | `workers` | int | Number of concurrent workers for this plugin. Default 2. For executable plugins, this is the number of simultaneous child processes. Socket plugins use a single connection with a sliding acknowledgement window. |
@@ -1129,7 +1344,7 @@ The agent merges `settings` into `config` before constructing the envelope — `
   "timestamp":  "2026-02-16T09:22:00Z",
   "node_id":    "node-laptop",
   "payload": {
-    "file_id":      "file::node-laptop::a3f9...",
+    "file_id":      "file::a3f9...",
     "export_path":  "/home/mark/documents/report.pdf",
     "name":         "report.pdf",
     "size":         204800,
@@ -1210,7 +1425,7 @@ The agent processes this list and applies it to CouchDB via `_bulk_docs` — cre
 ```json
 {
   "event":        "materialize",
-  "file_id":      "file::bridge-email-01::abc123",
+  "file_id":      "file::abc123",
   "export_path":  "/gmail/2026/02/16/re-project-kickoff.eml",
   "staging_path": "/var/lib/mosaicfs/cache/tmp/plugin-abc123",
   "config":       { }
@@ -1280,7 +1495,7 @@ Query stdout response — a result envelope identifying the plugin and containin
   "description":  "Full-text search powered by Meilisearch",
   "results": [
     {
-      "file_id":   "file::node-laptop::a3f9...",
+      "file_id":   "file::a3f9...",
       "score":     0.94,
       "fragments": ["...quarterly **earnings** report for Q3..."]
     }
@@ -1318,10 +1533,10 @@ Structured metadata written back to CouchDB by an executable plugin. One documen
 
 | Field | Type | Description |
 |---|---|---|
-| `_id` | string | Format: `"annotation::{node_id}::{sha256(export_path)}::{plugin_name}"`. Deterministic — one document per file per plugin. |
+| `_id` | string | Format: `"annotation::{file_uuid}::{plugin_name}"`. Deterministic — one document per file per plugin. Keyed by file UUID, so annotations survive migration without changes. |
 | `type` | string | Always `"annotation"`. |
-| `node_id` | string | ID of the node that owns the annotated file. |
-| `export_path` | string | The file's `source.export_path`. |
+| `file_id` | string | The full `_id` of the file document (e.g. `"file::a3f9..."`). Stored for convenience. |
+| `source.node_id` | string | The node ID of the agent whose plugin runner wrote this annotation. Used by the push replication filter to scope outbound replication. |
 | `plugin_name` | string | Name of the plugin that produced this annotation. Acts as the namespace — two plugins writing `summary` keys produce two separate annotation documents, not a collision. |
 | `data` | object | The plugin's stdout JSON object, stored verbatim. Structure is defined entirely by the plugin. MosaicFS does not interpret or validate the contents. |
 | `status` | string | `"ok"` or `"failed"`. Failed annotations are written when `max_attempts` is exhausted, preserving the failure record in the database. |
@@ -1412,6 +1627,8 @@ The system is explicitly 64-bit only. A compile-time assertion in the Rust build
 
 When the VFS layer needs to open a file, it evaluates access tiers in order of increasing cost, stopping at the first available option. This logic lives in the common `mosaicfs-vfs` crate and is shared across all OS-specific backends:
 
+All tiers record a file access via the access tracker (`access_tracker.record(file_id)`) — an in-memory update with no I/O on the hot path. See the Access Tracking Document section for details on debounced persistence.
+
 **Tier 1 — Local file.** The file lives on this node. Open directly via the real path.
 
 **Tier 2 — Network mount (CIFS/NFS).** The owning node's document contains a `network_mounts` entry covering this file's export path. Translate and open via the local mount point recorded in that entry.
@@ -1423,8 +1640,20 @@ When the VFS layer needs to open a file, it evaluates access tiers in order of i
 1. Look up the file document in the local CouchDB replica to get `source.node_id`.
 2. Look up `node::<source.node_id>` in the local replica to get `transfer.endpoint` (host:port) and `status`.
 3. If the owning node is `online`, send `GET http://<transfer.endpoint>/api/agent/transfer/{file_id}` with HMAC-signed request headers.
-4. If the owning node is `offline` or the transfer request fails with a connection error, return `EIO` to the caller. There is no fallback to the control plane — the control plane does not proxy file bytes for physical nodes.
+4. If the owning node is `offline` or the transfer request fails with a connection error, fall through to Tier 4b.
 5. Stream the response to `cache/tmp/{cache_key}`, verify the `Digest` trailer (SHA-256), atomic-rename into `cache/{shard}/{cache_key}`, and serve from cache.
+
+**Tier 4b — Replica failover.** Evaluated when Tier 4 fails because the owning node is offline or unreachable. The VFS checks for available replicas of the file and attempts to fetch from one:
+
+1. Query the local CouchDB replica for `replica` documents matching this file's `file_id` with `status` of `"current"` or `"frozen"`.
+2. For each available replica, attempt to fetch based on the target's backend type:
+   - **`agent` backend**: send `GET /api/agent/transfer/{file_id}` to the replica agent (same as Tier 4, but targeting a different node). The replica agent serves the file from its replication storage path (configured via `transfer_serve_paths` in `agent.toml`).
+   - **`s3` / `b2` backend**: invoke the storage backend plugin on the local agent via a `replica.download` event, passing the `remote_key` and target configuration. The plugin fetches from the external storage and writes to a staging path. This requires a storage backend plugin for the target's backend type to be installed on the local agent.
+   - **`directory` backend**: if the directory is on a locally accessible filesystem (e.g. a NAS mount available on this node), open the file directly using the `remote_key` as the path. If not locally accessible, skip this replica.
+3. On success, cache the fetched file locally (same as Tier 4) and serve from cache.
+4. If no replicas are available or all fetch attempts fail, return `EIO` to the caller.
+
+Tier 4b is best-effort. It adds resilience when the owning node is down, but does not guarantee availability — it only works when at least one replica exists on a reachable target and the local agent has the means to fetch from it. The control plane does not proxy file bytes for physical nodes.
 
 For cloud bridge nodes, the transfer endpoint is the control plane's own agent transfer server (cloud bridge agents run within the control plane Docker Compose stack and are reachable at the control plane's address).
 
@@ -1436,8 +1665,8 @@ The full transfer server logic on the owning agent:
 
 ```
 GET /api/agent/transfer/{file_id}
-  → look up file document → get node_id, export_path, mtime, size
-  → compute cache_key = SHA-256({node_id}::{export_path})
+  → look up file document → get file_uuid, node_id, export_path, mtime, size
+  → compute cache_key = file_uuid
   → check cache/index.db:
       hit and mtime/size matches → serve from cache/{shard}/{cache_key}  ← fast path
       miss or stale:
@@ -1553,7 +1782,8 @@ Mounts are embedded in the node document. These endpoints update the `network_mo
 |---|---|---|
 | `GET` | `/api/files` | List files. Supports `?node_id=`, `?status=active\|deleted`, `?mime_type=`. Paginated. |
 | `GET` | `/api/files/{file_id}` | Get file metadata document. |
-| `GET` | `/api/files/{file_id}/content` | Download file bytes. Supports `Range` headers for partial content. Sets `Content-Disposition` for browser downloads. Full-file responses (HTTP 200) include a `Digest` trailer (RFC 9530, `sha-256`) computed as the bytes stream — clients may verify after receipt. Range responses (HTTP 206) do not include a `Digest` trailer. The control plane resolves the owning node and proxies bytes transparently — the client does not need to know which node holds the file. |
+| `GET` | `/api/files/{file_id}/content` | Download file bytes. Supports `Range` headers for partial content. Sets `Content-Disposition` for browser downloads. Full-file responses (HTTP 200) include a `Digest` trailer (RFC 9530, `sha-256`) computed as the bytes stream — clients may verify after receipt. Range responses (HTTP 206) do not include a `Digest` trailer. The control plane resolves the owning node and proxies bytes transparently — the client does not need to know which node holds the file. Records a file access via the access tracker. |
+| `GET` | `/api/files/{file_id}/access` | Get the access tracking document for a file. Returns `last_access` and `access_count`. Returns `404` if the file has never been accessed through MosaicFS. |
 | `GET` | `/api/files/by-path?path=...` | Resolve a virtual path to its file document. Returns `404` if no file is mapped to that path. |
 
 ### Virtual Filesystem
@@ -1575,6 +1805,50 @@ Mounts are embedded in the node document. These endpoints update the `network_mo
 | `GET` | `/api/search?q=...` | Search files by filename. Supports substring and glob patterns. Returns `name`, `source.node_id`, `size`, `mtime` per result. Supports `?limit=` and `?offset=`. |
 | `GET` | `/api/search?label=...` | Filter files by label. Returns all active files whose effective label set (direct assignments ∪ matching label rules) contains the specified label. Multiple `?label=` parameters are ANDed. Combinable with `?q=` for label + filename search. |
 | `GET` | `/api/search?annotation[plugin/key]=value` | Filter files by annotation value. `plugin` is the plugin name and `key` is a dot-notation path into the annotation `data` object. `value` is an exact string match; prefix with `~` for regex match. Multiple `?annotation[...]` parameters are ANDed. Combinable with `?q=` and `?label=`. |
+| `GET` | `/api/search?replicated=...` | Filter files by replication status. Value is a `target_name`. Returns all active files that have a `replica` document for the named target with `status: "current"`. Prefix with `!` to negate (files NOT replicated to the target). Combinable with all other search parameters. |
+
+### Replication
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/replication/targets` | List all replication targets. |
+| `POST` | `/api/replication/targets` | Create a replication target. Request body: `{ target_name, backend, backend_config, credentials_ref, schedule, bandwidth_limit_mbps, retention, remove_unmatched }`. |
+| `GET` | `/api/replication/targets/{target_name}` | Get a replication target document. Credentials are not included in the response. |
+| `PATCH` | `/api/replication/targets/{target_name}` | Update a replication target: change schedule, bandwidth, retention, enable/disable. |
+| `DELETE` | `/api/replication/targets/{target_name}` | Delete a replication target. Returns `409` if any replication rules reference this target. Pass `?force=true` to cascade-delete rules and replica documents. |
+| `GET` | `/api/replication/rules` | List all replication rules. Supports `?target_name=` and `?enabled=` filters. |
+| `POST` | `/api/replication/rules` | Create a replication rule. Request body: `{ name, target_name, source, steps, default_result, enabled }`. Returns the created rule document with assigned UUID. |
+| `GET` | `/api/replication/rules/{rule_id}` | Get a replication rule document. |
+| `PATCH` | `/api/replication/rules/{rule_id}` | Update a replication rule: change steps, source, enable/disable. |
+| `DELETE` | `/api/replication/rules/{rule_id}` | Delete a replication rule. Existing replicas created by this rule are not affected. |
+| `GET` | `/api/replication/replicas` | List replica documents. Supports `?file_id=`, `?target_name=`, `?status=` filters. Paginated. |
+| `GET` | `/api/replication/replicas/{file_id}` | Get all replica documents for a specific file. |
+| `GET` | `/api/replication/status` | Replication system overview: per-target statistics (file count, total size, pending count, last sync time). |
+| `POST` | `/api/replication/sync` | Trigger a full re-evaluation of all replication rules. Enqueues replication work for files that match rules but have no current replica, and marks replicas as frozen for files that no longer match any rule. |
+| `POST` | `/api/replication/restore` | Initiate a restore operation. Request body: `{ target_name, source_node_id, destination_node_id, destination_path, filters }`. `filters` is optional: `{ path_prefix, mime_type }`. Returns a job ID. |
+| `GET` | `/api/replication/restore/{job_id}` | Check restore progress: files scanned, downloaded, created, errors. |
+| `POST` | `/api/replication/restore/{job_id}/cancel` | Cancel an in-progress restore. Files already restored remain. |
+
+### Migration
+
+File migration permanently moves file ownership from one agent to another. Because file identity is location-independent (`file::{uuid}`), migration updates `source.node_id` and `source.export_path` on the existing file document rather than creating a new one. All references (label assignments, annotations, replicas, access documents) survive unchanged.
+
+**Migration process:**
+
+1. The control plane validates that both source and destination agents are online.
+2. The destination agent downloads the file content from the source agent via `GET /api/agent/transfer/{file_id}`.
+3. The destination agent writes the file to its local filesystem and confirms receipt.
+4. The control plane updates the file document: `source.node_id` → destination, `source.export_path` → new path, and sets `migrated_from` with the previous owner's details.
+5. The source agent deletes its local copy of the file on the next crawl cycle (it no longer matches `source.node_id`). The crawler treats it as a foreign file and ignores it; a background cleanup task removes the physical file.
+
+**Safety checks:** The source file is not deleted until the destination confirms a successful write and the file document has been updated. If any step fails, the migration is aborted and the file remains at its original location.
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/migration` | Initiate a migration. Request body: `{ file_ids, destination_node_id, destination_path_prefix }`. `file_ids` is an array of file document `_id` values. Returns a job ID. |
+| `GET` | `/api/migration/{job_id}` | Check migration progress: files transferred, pending, errors. |
+| `POST` | `/api/migration/{job_id}/cancel` | Cancel an in-progress migration. Files already migrated remain at the destination; files not yet transferred remain at the source. |
+| `POST` | `/api/migration/evacuate` | Evacuate all files from a node. Request body: `{ source_node_id, destination_node_id, destination_path_prefix }`. Equivalent to migrating all active files from the source. Returns a job ID. |
 
 ### Plugins
 
@@ -1608,24 +1882,24 @@ Mounts are embedded in the node document. These endpoints update the `network_mo
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/api/annotations?node_id=...&path=...` | Get all annotation documents for a specific file (all plugins). Returns an object keyed by `plugin_name`. |
-| `GET` | `/api/annotations?node_id=...&path=...&plugin=...` | Get the annotation document for a specific file and plugin. Returns `404` if no annotation exists. |
-| `DELETE` | `/api/annotations?node_id=...&path=...` | Delete all annotation documents for a file. The next plugin sync or file event will cause the plugin to re-annotate. |
-| `DELETE` | `/api/annotations?node_id=...&path=...&plugin=...` | Delete the annotation document for a specific file and plugin. |
+| `GET` | `/api/annotations?file_id=...` | Get all annotation documents for a specific file (all plugins). Returns an object keyed by `plugin_name`. |
+| `GET` | `/api/annotations?file_id=...&plugin=...` | Get the annotation document for a specific file and plugin. Returns `404` if no annotation exists. |
+| `DELETE` | `/api/annotations?file_id=...` | Delete all annotation documents for a file. The next plugin sync or file event will cause the plugin to re-annotate. |
+| `DELETE` | `/api/annotations?file_id=...&plugin=...` | Delete the annotation document for a specific file and plugin. |
 
 ### Labels
 
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/api/labels` | List all distinct label strings currently in use across all assignments and rules. Useful for autocomplete in the web UI. |
-| `GET` | `/api/labels/assignments?node_id=...&path=...` | Get the `label_assignment` document for a specific file. Returns `404` if no labels are assigned. |
-| `PUT` | `/api/labels/assignments` | Create or replace a label assignment. Request body: `{ node_id, export_path, labels }`. Overwrites any existing assignment for that file. |
-| `DELETE` | `/api/labels/assignments?node_id=...&path=...` | Remove all labels from a specific file. |
+| `GET` | `/api/labels/assignments?file_id=...` | Get the `label_assignment` document for a specific file. Returns `404` if no labels are assigned. |
+| `PUT` | `/api/labels/assignments` | Create or replace a label assignment. Request body: `{ file_id, labels }`. Overwrites any existing assignment for that file. |
+| `DELETE` | `/api/labels/assignments?file_id=...` | Remove all labels from a specific file. |
 | `GET` | `/api/labels/rules` | List all label rules. Supports `?node_id=` and `?enabled=` filters. |
 | `POST` | `/api/labels/rules` | Create a label rule. Request body: `{ node_id, path_prefix, labels, name, enabled }`. |
 | `PATCH` | `/api/labels/rules/{rule_id}` | Update a label rule: change labels, rename, enable/disable. |
 | `DELETE` | `/api/labels/rules/{rule_id}` | Delete a label rule. Does not affect individual file assignments. |
-| `GET` | `/api/labels/effective?node_id=...&path=...` | Compute and return the effective label set for a specific file — the union of its direct assignment and all matching rules. Useful for debugging label configuration. |
+| `GET` | `/api/labels/effective?file_id=...` | Compute and return the effective label set for a specific file — the union of its direct assignment and all matching rules. Useful for debugging label configuration. |
 
 ### Credentials
 
@@ -1688,6 +1962,8 @@ A minimal backup contains only documents that cannot be automatically regenerate
 - `annotation` — plugin-generated metadata. Technically regenerable by running a full plugin sync, but for large deployments this could take hours and incur API costs (AI summarization, OCR services). Safer to preserve.
 - `credential` — access key hashes. Without these, every agent and client would need to be re-registered and re-authorized.
 - `plugin` — plugin configurations including user-entered settings
+- `replication_target` — replication target definitions including backend configuration
+- `replication_rule` — user-defined replication rules
 - Partial `node` documents — specifically the `network_mounts` array from each node. The backup extraction process creates synthetic node documents containing only `_id`, `friendly_name`, and `network_mounts`. On restore, these are merged into the newly-registered node documents via `PATCH /api/nodes/{node_id}`.
 
 **Excluded document types:**
@@ -1695,6 +1971,8 @@ A minimal backup contains only documents that cannot be automatically regenerate
 - `agent_status` — operational snapshot, regenerated on next heartbeat
 - `utilization_snapshot` — historical trend data, nice to have but not essential
 - `notification` — transient state; conditions recur if still active after restore
+- `replica` — regenerable by running a full replication sync; actual file copies on targets are not affected by a CouchDB restore
+- `access` — regenerated as files are accessed; loss of access history is acceptable
 
 **Size:** For a deployment with 50,000 files, a minimal backup is typically under 10 MB — it contains a few hundred virtual directory and plugin documents, plus annotations. The file documents (which represent the bulk of the database) are excluded.
 
@@ -1761,7 +2039,7 @@ Scheduled automatic backups are not implemented in v1 but are a natural future e
 
 ### Initial and Periodic Crawl
 
-The agent walks all configured watch paths and emits `file` documents. For each file, it stats the path and checks whether `(export_path, size, mtime)` matches the existing document — if so, the file is unchanged and the document is skipped. Changed and new files are written in batches of up to 200 documents using CouchDB's `_bulk_docs` endpoint. No content hashing is performed during the crawl — change detection relies entirely on `size` and `mtime`. Full crawls are scheduled nightly as a consistency safety net.
+The agent walks all configured watch paths and emits `file` documents. Paths listed in `excluded_paths` in `agent.toml` are skipped during the walk — this prevents the crawler from indexing replication storage directories or other directories that should not be part of the MosaicFS file index. For each file, it stats the path and checks whether `(export_path, size, mtime)` matches the existing document — if so, the file is unchanged and the document is skipped. Changed and new files are written in batches of up to 200 documents using CouchDB's `_bulk_docs` endpoint. No content hashing is performed during the crawl — change detection relies entirely on `size` and `mtime`. Full crawls are scheduled nightly as a consistency safety net.
 
 ### Incremental Watching
 
@@ -1862,7 +2140,7 @@ The query for candidate files uses the `(type, source.node_id, source.export_par
 
 ### Step Pipeline
 
-Each mount's `steps` array is an ordered list of filter steps evaluated in sequence after any inherited ancestor steps. The eight supported ops are:
+Each mount's `steps` array is an ordered list of filter steps evaluated in sequence after any inherited ancestor steps. The ten supported ops are:
 
 - **`glob`** — matches against the file's `export_path` using a glob pattern. Supports wildcards (`*`, `**`, `?`).
 - **`regex`** — matches against the file's `export_path` using a regular expression. Supports a `flags` field (e.g. `"i"` for case-insensitive).
@@ -1871,6 +2149,8 @@ Each mount's `steps` array is an ordered list of filter steps evaluated in seque
 - **`mime`** — matches against `mime_type`. Accepts an array of type strings with wildcard support (e.g. `"image/*"`).
 - **`node`** — matches files originating from a specific set of nodes by `node_ids` array.
 - **`label`** — matches against the file's effective label set. Accepts a `labels` array; the step matches if the file's effective label set contains **all** of the specified labels (AND semantics). To implement OR semantics, use multiple label steps with `on_match: "include"`.
+- **`replicated`** — matches against a file's replica status. Requires `target_name` (the replication target to check). Optionally accepts `status` (default `"current"`) to match only replicas with a specific status. The step matches if a `replica` document exists for the file on the named target with the specified status. If no replica document exists, the step does not match. Example: `{ "op": "replicated", "target_name": "offsite-backup", "on_match": "exclude" }` excludes files already backed up, while `{ "op": "replicated", "target_name": "offsite-backup", "invert": true, "on_match": "include" }` includes only files that are NOT yet replicated.
+- **`access_age`** — compares a file's last access time (from the materialized access cache) against the current time. `max_days` requires the file to have been accessed within N days; `min_days` requires it to have been accessed more than N days ago. Both may be specified for a date range. Accepts a `missing` field (`"include"` or `"exclude"`, default `"include"`) that controls behavior when no access document exists for the file — i.e. the file has never been accessed through MosaicFS. `"include"` treats unaccessed files as matching (useful for archival rules that target old/unused files); `"exclude"` skips them.
 - **`annotation`** — matches against a value in a file's annotation data. Requires `plugin_name` (identifies which annotation document to inspect) and `key` (a dot-notation path into the `data` object, e.g. `"language"` or `"tags.primary"`). Optionally accepts `value` for exact match or `regex` for pattern match against a string value. If only `plugin_name` and `key` are provided, the step matches if the key exists with any non-null value. If the annotation document does not exist (the plugin has not yet processed the file), the step does not match.
 
 Step evaluation logic:
@@ -1926,7 +2206,7 @@ The plugin runner is a subsystem of the agent responsible for delivering file li
     node_id      TEXT
     export_path  TEXT
     plugin_name  TEXT
-    event_type   TEXT        -- file.added | file.modified | file.deleted | sync.started | sync.completed | crawl_requested | materialize
+    event_type   TEXT        -- file.added | file.modified | file.deleted | access.updated | sync.started | sync.completed | crawl_requested | materialize | replica.upload | replica.download | replica.delete | replica.list | replica.health
     payload_json TEXT        -- serialised event payload
     sequence     INTEGER     -- monotonically increasing per plugin
     status       TEXT        -- pending | in_flight | acked | failed
@@ -2043,6 +2323,72 @@ services:
 ```
 
 The `fulltext-search` plugin binary in `/usr/lib/mosaicfs/plugins/` connects to `meilisearch:7700` directly over the Compose network. No external networking, no additional credentials. The indexing plugin (agent side, running on each physical node) and the query plugin (running on the plugin-agent node) are two separate binaries that share the same Meilisearch instance — the indexing plugin writes, the query plugin reads.
+
+### Storage Backend Plugins
+
+Storage backend plugins are thin adapters that move bytes between the agent and external storage services. They are used by the agent's replication subsystem to upload, download, and delete file replicas on replication targets. The replication subsystem handles all orchestration (rule evaluation, scheduling, bandwidth limiting, state tracking); the plugin handles only I/O with a specific storage service.
+
+Storage backend plugins subscribe to a dedicated set of replication events:
+
+| Event | Description |
+|---|---|
+| `replica.upload` | Upload a file to the target. The agent provides the local file path, remote key, and target configuration. The plugin uploads the file and returns the remote key and checksum. |
+| `replica.download` | Download a file from the target. The agent provides the remote key, staging path, and target configuration. The plugin fetches the file and writes it to the staging path. Used by Tier 4b failover. |
+| `replica.delete` | Delete a file from the target by remote key. |
+| `replica.list` | List all objects on the target under the configured prefix. Used for manifest reconciliation and restore operations. Returns a stream of `{ remote_key, size, mtime }` entries. |
+| `replica.health` | Check connectivity and credentials for the target. Returns status and any error details. |
+
+**Example plugin document for a B2 storage backend:**
+
+```json
+{
+  "_id": "plugin::node-laptop::backend-b2",
+  "type": "plugin",
+  "node_id": "node-laptop",
+  "plugin_name": "backend-b2",
+  "plugin_type": "socket",
+  "enabled": true,
+  "name": "Backblaze B2 Storage Backend",
+  "subscribed_events": ["replica.upload", "replica.download", "replica.delete", "replica.list", "replica.health"],
+  "mime_globs": [],
+  "config": {},
+  "workers": 4,
+  "timeout_s": 300,
+  "max_attempts": 3
+}
+```
+
+**Upload event envelope:**
+
+```json
+{
+  "event": "replica.upload",
+  "payload": {
+    "file_id": "file::a3f9...",
+    "source_path": "/var/lib/mosaicfs/cache/a3/f72b1c...",
+    "remote_key": "mosaicfs/node-laptop/a3f92b1c/report.pdf",
+    "target_config": { "bucket": "my-backups", "prefix": "mosaicfs/" },
+    "credentials": { "app_key_id": "...", "app_key": "..." }
+  }
+}
+```
+
+**Upload response:**
+
+```json
+{
+  "status": "ok",
+  "remote_key": "mosaicfs/node-laptop/a3f92b1c/report.pdf",
+  "checksum": "sha256:abc123...",
+  "bytes_uploaded": 204800
+}
+```
+
+The agent resolves credentials from the replication target's `credentials_ref` before invoking the plugin — the plugin never accesses CouchDB directly.
+
+Socket plugins are preferred for storage backends because they maintain authenticated sessions and connection pools across invocations, amortizing OAuth token refresh and TLS handshake costs. The `agent` backend type does not require a plugin — the agent handles agent-to-agent transfer natively using the existing transfer endpoint.
+
+---
 
 ### Bridge Nodes
 
@@ -2282,12 +2628,12 @@ The cache is part of the common `mosaicfs-vfs` layer, shared across all OS-speci
 
 ```
 /var/lib/MosaicFS/cache/
-  a3/f72b1c...          # sparse data file, keyed by SHA-256({node_id}::{export_path})
+  a3/f72b1c...          # sparse data file, keyed by file_uuid
   tmp/                  # in-progress full-file downloads
   index.db              # SQLite: all cache metadata
 ```
 
-Each cache entry is keyed by a SHA-256 hash of the string `{node_id}::{export_path}` — deterministic and derived from file identity, not file contents. The first two characters of this key are used as a shard prefix. All data files are sparse files: the OS allocates disk space only for regions that have been written, and unwritten regions read as zeros without consuming disk space. Sparse file support is available on ext4, APFS, NTFS, and ZFS — all target platforms for MosaicFS agents.
+Each cache entry is keyed by the file's UUID (from the file document `_id`). The first two characters of the UUID are used as a shard prefix. All data files are sparse files: the OS allocates disk space only for regions that have been written, and unwritten regions read as zeros without consuming disk space. Sparse file support is available on ext4, APFS, NTFS, and ZFS — all target platforms for MosaicFS agents.
 
 ### SQLite Index Schema
 
@@ -2295,9 +2641,8 @@ The `index.db` SQLite database is the single source of truth for all cache metad
 
 ```sql
 CREATE TABLE cache_entries (
-    cache_key       TEXT PRIMARY KEY,   -- SHA-256({node_id}::{export_path})
-    node_id         TEXT NOT NULL,
-    export_path     TEXT NOT NULL,
+    cache_key       TEXT PRIMARY KEY,   -- file_uuid
+    file_id         TEXT NOT NULL,     -- full file document _id
     file_size       INTEGER NOT NULL,
     mtime           TEXT NOT NULL,      -- ISO 8601, for invalidation
     size_on_record  INTEGER NOT NULL,   -- file size at cache time, for invalidation
@@ -2436,8 +2781,10 @@ Agents are distributed as single static binaries. The `MosaicFS-agent init` comm
   cache/              # VFS file cache
     a3/               # sharded by first 2 chars of path-key hash
     tmp/              # in-progress full-file downloads
-    index.db          # SQLite: node_id, export_path, mtime, size, block_map, last_access
+    index.db          # SQLite: file_uuid, file_id, mtime, size, block_map, last_access
   plugin_jobs.db      # SQLite: plugin event job queue and ack tracking
+  replication/        # replication subsystem state
+    replication.db    # SQLite: replication work queue, deletion log
   certs/
     ca.crt            # control plane CA certificate
   bridges/            # cloud bridge credentials (control plane only)
