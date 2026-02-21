@@ -1,0 +1,39 @@
+version: "3.9"
+
+services:
+  dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - cargo-cache:/usr/local/cargo/registry  # persist compiled deps across rebuilds
+      - claude-data:/root/.claude
+    environment:
+      - COUCHDB_URL=http://couchdb:5984
+      - COUCHDB_USER=admin
+      - COUCHDB_PASSWORD=devpassword
+    depends_on:
+      couchdb:
+        condition: service_healthy
+    # Keep container alive for VS Code / Claude Code to attach to
+    command: sleep infinity
+
+  couchdb:
+    image: couchdb:3
+    environment:
+      COUCHDB_USER: admin
+      COUCHDB_PASSWORD: devpassword
+    ports:
+      - "5984:5984"   # expose to host for direct inspection (Fauxton UI, curl, etc.)
+    volumes:
+      - couchdb-data:/opt/couchdb/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5984/_up"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  couchdb-data:
+  cargo-cache:
+  claude-data:

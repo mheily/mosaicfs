@@ -1,0 +1,26 @@
+{
+  "name": "MosaicFS Dev",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "dev",
+  "workspaceFolder": "/workspace",
+
+  // Forward CouchDB port so you can reach Fauxton at http://localhost:5984/_utils
+  "forwardPorts": [5984],
+  "portsAttributes": {
+    "5984": { "label": "CouchDB" }
+  },
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "sadesyllas.vscode-couchdb"
+      ],
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash"
+      }
+    }
+  },
+
+  // Ensure CouchDB system databases exist on first start
+  "postStartCommand": "curl -sf -u admin:devpassword -X PUT http://couchdb:5984/_users    || true; curl -sf -u admin:devpassword -X PUT http://couchdb:5984/_replicator || true"
+}
