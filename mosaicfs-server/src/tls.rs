@@ -34,9 +34,11 @@ pub fn ensure_tls_certs(data_dir: &Path) -> anyhow::Result<ServerConfig> {
             .ok_or_else(|| anyhow::anyhow!("No private key found in server.key"))?
     };
 
-    let config = ServerConfig::builder()
+    let mut config = ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(certs, key)?;
+
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 
     Ok(config)
 }

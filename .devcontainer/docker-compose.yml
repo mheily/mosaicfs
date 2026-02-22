@@ -3,8 +3,8 @@ version: "3.9"
 services:
   dev:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
     volumes:
       - cargo-cache:/usr/local/cargo/registry  # persist compiled deps across rebuilds
       - claude-data:/root/.claude
@@ -19,6 +19,36 @@ services:
       - /dev/fuse:/dev/fuse
     # Keep container alive for VS Code / Claude Code to attach to
     command: sleep infinity
+
+  web:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile.web
+    volumes:
+      - ..:/workspace
+      - web-cargo-cache:/usr/local/cargo/registry
+      - web-data:/data/mosaicfs
+    environment:
+      - COUCHDB_URL=http://couchdb:5984
+      - COUCHDB_USER=admin
+      - COUCHDB_PASSWORD=devpassword
+      - MOSAICFS_PORT=8443
+      - MOSAICFS_DATA_DIR=/data/mosaicfs
+      - RUST_LOG=info
+    ports:
+      - "8443:8443"   # Axum HTTPS server (serves API + built frontend)
+      - "5173:5173"   # Vite dev server (for frontend hot-reload development)
+    depends_on:
+      couchdb:
+        condition: service_healthy
+    working_dir: /workspace
+    # Build the frontend, then build and run the Axum server
+    command: >
+      bash -c "
+        cd web && npm ci && npx vite build &&
+        cd /workspace && cargo build -p mosaicfs-server &&
+        cargo run -p mosaicfs-server
+      "
 
   couchdb:
     image: couchdb:3
@@ -38,4 +68,6 @@ services:
 volumes:
   couchdb-data:
   cargo-cache:
+  web-cargo-cache:
+  web-data:
   claude-data:

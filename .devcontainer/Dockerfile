@@ -41,3 +41,9 @@ RUN curl -fsSL https://claude.ai/install.sh | bash && \
     ln -s /root/.local/bin/claude /usr/bin/claude
 
 WORKDIR /workspace
+
+# Web UI dependencies (requires build context = workspace root)
+COPY web/package.json web/package-lock.json web/
+RUN cd web && npm ci
+
+

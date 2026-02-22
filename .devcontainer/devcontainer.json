@@ -4,10 +4,12 @@
   "service": "dev",
   "workspaceFolder": "/workspace",
 
-  // Forward CouchDB port so you can reach Fauxton at http://localhost:5984/_utils
-  "forwardPorts": [5984],
+  // Forward ports so developers can reach services from the host browser
+  "forwardPorts": [5984, 8443, 5173],
   "portsAttributes": {
-    "5984": { "label": "CouchDB" }
+    "5984": { "label": "CouchDB" },
+    "8443": { "label": "MosaicFS Server (HTTPS)" },
+    "5173": { "label": "Vite Dev Server" }
   },
 
   "customizations": {
