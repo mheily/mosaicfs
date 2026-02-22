@@ -1,8 +1,10 @@
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use crate::access_cache::AccessCache;
 use crate::couchdb::CouchClient;
+use crate::label_cache::LabelCache;
 
 /// Pending access record (file_id -> last_access timestamp in DB, if known)
 pub struct AccessTracker {
@@ -58,10 +60,19 @@ pub struct AppState {
     pub login_attempts: Mutex<HashMap<String, (u32, Instant)>>,
     /// Access tracking with debounce and batching
     pub access_tracker: Mutex<AccessTracker>,
+    /// Materialized label cache
+    pub label_cache: Arc<LabelCache>,
+    /// Materialized access cache
+    pub access_cache: Arc<AccessCache>,
 }
 
 impl AppState {
-    pub fn new(db: CouchClient, jwt_secret: Vec<u8>) -> Self {
+    pub fn new(
+        db: CouchClient,
+        jwt_secret: Vec<u8>,
+        label_cache: Arc<LabelCache>,
+        access_cache: Arc<AccessCache>,
+    ) -> Self {
         let couchdb_url = std::env::var("COUCHDB_URL").unwrap_or_else(|_| "http://localhost:5984".to_string());
         let couchdb_user = std::env::var("COUCHDB_USER").unwrap_or_else(|_| "admin".to_string());
         let couchdb_password = std::env::var("COUCHDB_PASSWORD").unwrap_or_default();
@@ -74,6 +85,8 @@ impl AppState {
             revoked_tokens: Mutex::new(Vec::new()),
             login_attempts: Mutex::new(HashMap::new()),
             access_tracker: Mutex::new(AccessTracker::new()),
+            label_cache,
+            access_cache,
         }
     }
 

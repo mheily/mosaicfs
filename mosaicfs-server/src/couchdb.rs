@@ -43,6 +43,21 @@ pub struct AllDocsRow {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct ChangesResponse {
+    pub last_seq: String,
+    pub results: Vec<ChangeResult>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChangeResult {
+    pub id: String,
+    pub seq: String,
+    pub doc: Option<serde_json::Value>,
+    #[serde(default)]
+    pub deleted: bool,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct FindResponse {
     pub docs: Vec<serde_json::Value>,
 }
@@ -216,6 +231,35 @@ impl CouchClient {
         if include_docs {
             url.push_str("&include_docs=true");
         }
+        let resp = self
+            .client
+            .get(&url)
+            .basic_auth(&self.auth.0, Some(&self.auth.1))
+            .send()
+            .await?;
+
+        if resp.status().is_success() {
+            Ok(resp.json().await?)
+        } else {
+            let body: CouchResponse = resp.json().await?;
+            Err(CouchError::Couch {
+                error: body.error.unwrap_or_default(),
+                reason: body.reason.unwrap_or_default(),
+            })
+        }
+    }
+
+    /// Poll the CouchDB _changes feed starting from `since` sequence.
+    /// Returns (last_seq, list of changed docs with `_deleted` flag).
+    pub async fn changes(
+        &self,
+        since: &str,
+    ) -> Result<ChangesResponse, CouchError> {
+        let url = format!(
+            "{}/_changes?since={}&include_docs=true&limit=1000",
+            self.db_url(),
+            urlencoding::encode(since),
+        );
         let resp = self
             .client
             .get(&url)

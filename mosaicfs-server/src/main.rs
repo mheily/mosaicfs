@@ -1,7 +1,9 @@
+mod access_cache;
 mod auth;
 mod couchdb;
 mod credentials;
 mod handlers;
+mod label_cache;
 mod routes;
 mod state;
 mod tls;
@@ -55,8 +57,16 @@ async fn main() -> anyhow::Result<()> {
     let jwt_secret = auth::jwt::ensure_jwt_secret(&data_dir)?;
     info!("JWT signing secret ready");
 
+    // Build materialized caches
+    let label_cache = Arc::new(label_cache::LabelCache::new());
+    let access_cache = Arc::new(access_cache::AccessCache::new());
+
+    label_cache.build(&db).await?;
+    access_cache.build(&db).await?;
+    info!("Materialized caches built");
+
     // Build app state
-    let state = Arc::new(AppState::new(db, jwt_secret));
+    let state = Arc::new(AppState::new(db, jwt_secret, Arc::clone(&label_cache), Arc::clone(&access_cache)));
 
     // Ensure root directory exists
     handlers::vfs::ensure_root_directory(&state).await?;
@@ -75,6 +85,17 @@ async fn main() -> anyhow::Result<()> {
         info!("Access tracking flush task started");
     }
 
+    // Start changes feed watcher
+    {
+        let state = Arc::clone(&state);
+        let label_cache = Arc::clone(&label_cache);
+        let access_cache = Arc::clone(&access_cache);
+        tokio::spawn(async move {
+            changes_feed_watcher(&state, &label_cache, &access_cache).await;
+        });
+        info!("Changes feed watcher started");
+    }
+
     // Build router
     let app = routes::build_router(state).layer(TraceLayer::new_for_http());
 
@@ -90,6 +111,39 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Poll CouchDB _changes feed and dispatch to label/access caches.
+async fn changes_feed_watcher(
+    state: &AppState,
+    label_cache: &label_cache::LabelCache,
+    access_cache: &access_cache::AccessCache,
+) {
+    let mut since = "now".to_string();
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+
+    loop {
+        interval.tick().await;
+        match state.db.changes(&since).await {
+            Ok(resp) => {
+                for change in &resp.results {
+                    if let Some(doc) = &change.doc {
+                        let id = change.id.as_str();
+                        if id.starts_with("label_assignment::") || id.starts_with("label_rule::") {
+                            label_cache.handle_change(doc, change.deleted, &state.db).await;
+                        }
+                        if id.starts_with("access::") {
+                            access_cache.handle_change(doc, change.deleted);
+                        }
+                    }
+                }
+                since = resp.last_seq;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Changes feed poll failed");
+            }
+        }
+    }
+}
+
 /// Flush pending access records to CouchDB as `access` documents via _bulk_docs
 async fn flush_access_records(state: &AppState) {
     let pending = {
@@ -102,6 +156,11 @@ async fn flush_access_records(state: &AppState) {
 
     if pending.is_empty() {
         return;
+    }
+
+    // Update access cache immediately
+    for (file_id, timestamp) in &pending {
+        state.access_cache.record_access(file_id, *timestamp);
     }
 
     let docs: Vec<serde_json::Value> = pending
