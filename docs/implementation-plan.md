@@ -81,9 +81,10 @@ Phase 12 is not a final gate — hardening work should begin as soon as Phase 2 
 
 Set up the Cargo workspace with three crates: `mosaicfs-agent`, `mosaicfs-server`, and `mosaicfs-common`. The common crate holds document type definitions, serialization, and shared utilities.
 
-### 1.2 — Docker Compose Stack
+### 1.2 — CouchDB database creation
 
-Write the initial `docker-compose.yml` for the control plane containing only CouchDB. Configure an admin user, bind to localhost, create the `mosaicfs` database, and add a healthcheck. Also create `docker-compose.dev.yml` for local development (see [Testing Strategy](#testing-strategy)). Document setup steps in `DEVELOPMENT.md`.
+Connect to the `mosaicfs` database using the environment variables named in 
+local development (see [Testing Strategy](#testing-strategy)).
 
 ### 1.3 — CouchDB Document Types
 
@@ -836,7 +837,8 @@ Clean `agent init` prompts, URL validation, success confirmation with mount path
 - Tier 4b failover: take source offline, verify replica served
 
 **Development environment:**
-- `docker-compose.dev.yml` runs CouchDB + control plane
+- Development happens inside of a devcontainer named "dev" defined in .devcontainer/docker-compose.yml.
+- The development CouchDB database is accessible using three environment variables: COUCHDB_URL, COUCHDB_USER, COUCHDB_PASSWORD
 - Local agent configured with `watch_paths` pointing to a test directory
 - `scripts/seed-test-data.sh` creates sample files, virtual directories, labels, plugin configs, storage backends, and replication rules
 - `--developer-mode` flag enables database wipe between test cycles
