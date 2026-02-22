@@ -5,6 +5,7 @@ use std::time::Instant;
 use crate::access_cache::AccessCache;
 use crate::couchdb::CouchClient;
 use crate::label_cache::LabelCache;
+use crate::readdir_cache::ReaddirCache;
 
 /// Pending access record (file_id -> last_access timestamp in DB, if known)
 pub struct AccessTracker {
@@ -64,6 +65,8 @@ pub struct AppState {
     pub label_cache: Arc<LabelCache>,
     /// Materialized access cache
     pub access_cache: Arc<AccessCache>,
+    /// Short-lived readdir cache
+    pub readdir_cache: Arc<ReaddirCache>,
 }
 
 impl AppState {
@@ -87,6 +90,7 @@ impl AppState {
             access_tracker: Mutex::new(AccessTracker::new()),
             label_cache,
             access_cache,
+            readdir_cache: Arc::new(ReaddirCache::new()),
         }
     }
 

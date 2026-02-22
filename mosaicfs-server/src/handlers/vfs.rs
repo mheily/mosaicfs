@@ -8,10 +8,18 @@ use chrono::Utc;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+use mosaicfs_common::documents::{MountEntry, Step};
+
 use crate::couchdb::CouchError;
+use crate::readdir;
 use crate::state::AppState;
 
 fn dir_id(virtual_path: &str) -> String {
+    dir_id_for(virtual_path)
+}
+
+/// Public version of dir_id for use by other modules.
+pub fn dir_id_for(virtual_path: &str) -> String {
     if virtual_path == "/" {
         "dir::root".to_string()
     } else {
@@ -97,15 +105,56 @@ pub async fn list_vfs(
         })
         .collect();
 
-    // For now, return directory info + subdirectories
-    // Full mount evaluation is Phase 3
     let mounts = dir_doc.get("mounts").cloned().unwrap_or(serde_json::json!([]));
+
+    // Parse mounts for evaluation
+    let mount_entries: Vec<MountEntry> = serde_json::from_value(mounts.clone()).unwrap_or_default();
+
+    // Check readdir cache
+    let dir_rev = dir_doc.get("_rev").and_then(|v| v.as_str()).unwrap_or("");
+    let child_dir_names: Vec<String> = subdirs
+        .iter()
+        .filter_map(|d| d.get("name").and_then(|v| v.as_str()).map(String::from))
+        .collect();
+
+    let file_entries = if let Some(cached) = state.readdir_cache.get(path, dir_rev) {
+        cached
+    } else {
+        // Collect inherited steps from ancestors
+        let inherited_steps = match readdir::collect_inherited_steps(&state.db, path).await {
+            Ok(s) => s,
+            Err(e) => {
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_json("internal", &e.to_string())));
+            }
+        };
+
+        match readdir::evaluate_readdir(
+            &state.db,
+            &state.label_cache,
+            &state.access_cache,
+            &mount_entries,
+            &inherited_steps,
+            &child_dir_names,
+        )
+        .await
+        {
+            Ok(entries) => {
+                state.readdir_cache.put(path, dir_rev, entries.clone());
+                entries
+            }
+            Err(e) => {
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_json("internal", &e.to_string())));
+            }
+        }
+    };
+
+    let files = readdir::entries_to_json(&file_entries);
 
     (StatusCode::OK, Json(serde_json::json!({
         "path": path,
         "directories": subdirs,
         "mounts": mounts,
-        "files": [],
+        "files": files,
     })))
 }
 
@@ -370,6 +419,68 @@ pub async fn delete_directory(
     match state.db.delete_document(&doc_id, rev).await {
         Ok(_) => (StatusCode::OK, Json(serde_json::json!({ "ok": true }))),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(error_json("internal", &e.to_string()))),
+    }
+}
+
+// ── Directory Preview ──
+
+#[derive(Deserialize)]
+pub struct PreviewRequest {
+    pub mounts: Vec<MountEntry>,
+    #[serde(default)]
+    pub inherited_steps: Vec<Step>,
+}
+
+pub async fn preview_directory(
+    State(state): State<Arc<AppState>>,
+    Path(path): Path<String>,
+    Json(body): Json<PreviewRequest>,
+) -> impl IntoResponse {
+    let virtual_path = format!("/{}", path);
+
+    // Get child directories for this path
+    let all_dirs = match state.db.all_docs_by_prefix("dir::", true).await {
+        Ok(r) => r,
+        Err(e) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_json("internal", &e.to_string())));
+        }
+    };
+
+    let child_dir_names: Vec<String> = all_dirs
+        .rows
+        .iter()
+        .filter_map(|row| {
+            let doc = row.doc.as_ref()?;
+            let parent = doc.get("parent_path")?.as_str()?;
+            if parent == virtual_path {
+                doc.get("name").and_then(|v| v.as_str()).map(String::from)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    match readdir::evaluate_readdir(
+        &state.db,
+        &state.label_cache,
+        &state.access_cache,
+        &body.mounts,
+        &body.inherited_steps,
+        &child_dir_names,
+    )
+    .await
+    {
+        Ok(entries) => {
+            let files = readdir::entries_to_json(&entries);
+            (StatusCode::OK, Json(serde_json::json!({
+                "path": virtual_path,
+                "files": files,
+                "total": files.len(),
+            })))
+        }
+        Err(e) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(error_json("internal", &e.to_string())))
+        }
     }
 }
 

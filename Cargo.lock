@@ -1036,6 +1036,7 @@ dependencies = [
  "password-hash",
  "rand 0.8.5",
  "rcgen",
+ "regex",
  "reqwest",
  "rustls",
  "rustls-pemfile",

@@ -57,6 +57,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/vfs/directories/{*path}", get(vfs::get_directory))
         .route("/api/vfs/directories/{*path}", patch(vfs::patch_directory))
         .route("/api/vfs/directories/{*path}", delete(vfs::delete_directory))
+        .route("/api/vfs/directories/{*path}/preview", post(vfs::preview_directory))
         // Search
         .route("/api/search", get(search::search))
         // Labels

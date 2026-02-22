@@ -4,6 +4,8 @@ mod couchdb;
 mod credentials;
 mod handlers;
 mod label_cache;
+mod readdir;
+mod readdir_cache;
 mod routes;
 mod state;
 mod tls;
@@ -132,6 +134,12 @@ async fn changes_feed_watcher(
                         }
                         if id.starts_with("access::") {
                             access_cache.handle_change(doc, change.deleted);
+                        }
+                        if id.starts_with("dir::") {
+                            // Invalidate readdir cache for changed directory
+                            if let Some(vpath) = doc.get("virtual_path").and_then(|v| v.as_str()) {
+                                state.readdir_cache.invalidate(vpath);
+                            }
                         }
                     }
                 }
