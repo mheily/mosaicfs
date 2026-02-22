@@ -51,7 +51,7 @@ services:
       "
 
   couchdb:
-    image: couchdb:3
+    image: docker.io/couchdb:3
     environment:
       COUCHDB_USER: admin
       COUCHDB_PASSWORD: devpassword

@@ -1,4 +1,4 @@
-FROM debian:bookworm-slim
+FROM docker.io/debian:bookworm-slim
 
 # Core build utilities + git + curl + doc-generation tools
 # TODO: 3GB for pandoc..lmodern packages -- find a different tool?
