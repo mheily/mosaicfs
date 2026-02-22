@@ -45,4 +45,4 @@ WORKDIR /workspace
 
 # Web UI dependencies (requires build context = workspace root)
 COPY web/package.json web/package-lock.json web/
-RUN cd web && npm ci
+RUN cd web && npm ci && npx vite build

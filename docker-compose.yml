@@ -42,7 +42,6 @@ services:
     # Build the frontend, then build and run the Axum server
     command: >
       bash -c "
-        cd web && npm ci && npx vite build &&
         cd /workspace && cargo build -p mosaicfs-server &&
         cargo run -p mosaicfs-server
       "
