@@ -25,3 +25,7 @@ docs/*.pdf
 
 .DS_Store
 .idea
+
+# Web UI
+web/node_modules/
+web/dist/
