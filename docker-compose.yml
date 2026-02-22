@@ -4,6 +4,7 @@ services:
   dev:
     image: localhost/mosaicfs-dev:latest
     volumes:
+      - .:/workspace
       - cargo-cache:/usr/local/cargo/registry  # persist compiled deps across rebuilds
       - claude-data:/root/.claude
     environment:
@@ -21,6 +22,7 @@ services:
   web:
     image: localhost/mosaicfs-dev:latest
     volumes:
+      - .:/workspace
       - web-cargo-cache:/usr/local/cargo/registry
       - web-data:/data/mosaicfs
     environment:
