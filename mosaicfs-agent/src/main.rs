@@ -1,6 +1,7 @@
 mod config;
 mod couchdb;
 mod crawler;
+mod init;
 mod node;
 mod replication;
 
@@ -28,9 +29,16 @@ async fn main() -> anyhow::Result<()> {
 
     info!("mosaicfs-agent starting");
 
+    // Check for init subcommand
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(|s| s.as_str()) == Some("init") {
+        return init::run_init().await;
+    }
+
     // Load config
-    let config_path = std::env::args()
-        .nth(1)
+    let config_path = args
+        .get(1)
+        .cloned()
         .unwrap_or_else(|| DEFAULT_CONFIG_PATH.to_string());
     let mut config = AgentConfig::load(&PathBuf::from(&config_path))?;
 
