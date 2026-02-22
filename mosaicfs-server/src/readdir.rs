@@ -86,7 +86,7 @@ pub async fn evaluate_readdir(
     for mount in mounts {
         let files = query_mount_files(db, &mount.source).await?;
 
-        for (file_id, file_doc, raw_doc) in &files {
+        for (file_id, file_doc, _raw_doc) in &files {
             // Build combined step list: inherited + mount steps
             let mut all_steps: Vec<Step> = inherited_steps.to_vec();
             all_steps.extend(mount.steps.clone());

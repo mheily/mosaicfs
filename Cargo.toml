@@ -3,6 +3,7 @@ members = [
     "mosaicfs-common",
     "mosaicfs-agent",
     "mosaicfs-server",
+    "mosaicfs-vfs",
 ]
 resolver = "2"
 
