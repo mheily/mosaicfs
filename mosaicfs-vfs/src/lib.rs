@@ -1,4 +1,5 @@
 pub mod block_map;
+pub mod fuse_check;
 pub mod cache;
 pub mod couchdb;
 pub mod fuse_fs;

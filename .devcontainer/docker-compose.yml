@@ -15,6 +15,8 @@ services:
     depends_on:
       couchdb:
         condition: service_healthy
+    devices:
+      - /dev/fuse:/dev/fuse
     # Keep container alive for VS Code / Claude Code to attach to
     command: sleep infinity
 

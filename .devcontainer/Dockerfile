@@ -6,6 +6,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         git \
         curl \
+        fuse3 \
+        libfuse3-dev \
+        bindfs \
         wget \
         ca-certificates \
         gnupg \
