@@ -26,6 +26,10 @@ const DB_NAME: &str = "mosaicfs";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .expect("Failed to install rustls crypto provider");
+
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse().unwrap()))
         .init();
