@@ -2,7 +2,7 @@ version: "3.9"
 
 services:
   dev:
-    image: devcontainer-dev:latest
+    image: localhost/devcontainer-dev:latest
     volumes:
       - cargo-cache:/usr/local/cargo/registry  # persist compiled deps across rebuilds
       - claude-data:/root/.claude
@@ -19,7 +19,7 @@ services:
     command: sleep infinity
 
   web:
-    image: devcontainer-dev:latest
+    image: localhost/devcontainer-dev:latest
     volumes:
       - web-cargo-cache:/usr/local/cargo/registry
       - web-data:/data/mosaicfs
