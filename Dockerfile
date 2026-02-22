@@ -5,6 +5,7 @@ FROM docker.io/debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         git \
+        ca-certificates \
         curl \
         fuse3 \
         libfuse3-dev \
@@ -45,5 +46,3 @@ WORKDIR /workspace
 # Web UI dependencies (requires build context = workspace root)
 COPY web/package.json web/package-lock.json web/
 RUN cd web && npm ci
-
-

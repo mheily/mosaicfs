@@ -1,5 +1,9 @@
 # Development notes
 
+# Building the image
+
+Run `make` to build the mosaicfs-dev:latest image. This is used by docker-compose.
+
 # Automated code generation
 
 Inside a devcontainer terminal, run:
