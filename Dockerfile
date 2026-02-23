@@ -16,13 +16,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         lsb-release \
         pkg-config \
         sudo \
-        pandoc \
-        texlive-xetex \
-        texlive-fonts-recommended \
-        texlive-fonts-extra \
-        texlive-latex-extra \
-        lmodern \
     && rm -rf /var/lib/apt/lists/*
+
+# DISABLED: pandoc requires 3GB of stuff
+#        pandoc
+#        texlive-xetex
+#        texlive-fonts-recommended
+#        texlive-fonts-extra
+#        texlive-latex-extra
+#        lmodern
 
 # Node.js (LTS) — useful for tooling; replace/remove once the stack is decided
 RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
@@ -37,12 +39,10 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
         | sh -s -- -y --no-modify-path --profile default \
     && rustup component add clippy rustfmt
 
-# Install Claude Code globally
-RUN curl -fsSL https://claude.ai/install.sh | bash && \
-    ln -s /root/.local/bin/claude /usr/bin/claude
-
 WORKDIR /workspace
 
 # Web UI dependencies (requires build context = workspace root)
 COPY web/package.json web/package-lock.json web/
-RUN cd web && npm ci && npx vite build
+RUN cd web && npm ci
+COPY web/ web/
+RUN cd web && npx vite build
