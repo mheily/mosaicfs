@@ -4,6 +4,11 @@
 
 Run `make` to build the mosaicfs-dev:latest image. This is used by docker-compose.
 
+Run `podman-compose up -d` to start the containers.
+
+Run `podman-compose exec web /workspace/target/debug/mosaicfs-server bootstrap` to generate
+an initial admin user and display the credentials.
+
 # Automated code generation
 
 Inside a devcontainer terminal, run:
