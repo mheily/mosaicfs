@@ -16,9 +16,8 @@ import {
 } from 'lucide-react';
 
 interface Credential {
-  id: string;
-  name: string;
   access_key_id: string;
+  name: string;
   enabled: boolean;
   created_at: string;
 }
@@ -95,8 +94,8 @@ function CredentialsTab() {
 
   async function loadCredentials() {
     try {
-      const data = await api<Credential[]>('/api/credentials');
-      setCredentials(data);
+      const data = await api<{ items: Credential[] }>('/api/credentials');
+      setCredentials(data.items);
     } catch {
       setCredentials([]);
     } finally {
@@ -126,7 +125,7 @@ function CredentialsTab() {
 
   async function handleToggleEnabled(cred: Credential) {
     try {
-      await api(`/api/credentials/${cred.id}`, {
+      await api(`/api/credentials/${cred.access_key_id}`, {
         method: 'PATCH',
         body: JSON.stringify({ enabled: !cred.enabled }),
       });
@@ -212,6 +211,7 @@ function CredentialsTab() {
           <div className="absolute inset-0 bg-black/50" onClick={() => setShowCreate(false)} />
           <div className="relative w-full max-w-sm rounded-lg bg-background p-6 shadow-lg">
             <h3 className="mb-4 text-lg font-semibold">Create Credential</h3>
+            <form onSubmit={(e) => { e.preventDefault(); handleCreate(); }}>
             <div className="space-y-2">
               <label className="text-sm font-medium">Name</label>
               <input
@@ -221,23 +221,24 @@ function CredentialsTab() {
                 className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 placeholder="Credential name"
                 autoFocus
-                onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
               />
             </div>
             <div className="mt-4 flex justify-end gap-2">
               <button
+                type="button"
                 onClick={() => setShowCreate(false)}
                 className="rounded-md border px-4 py-2 text-sm hover:bg-accent"
               >
                 Cancel
               </button>
               <button
-                onClick={handleCreate}
+                type="submit"
                 className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow hover:bg-primary/90"
               >
                 Create
               </button>
             </div>
+            </form>
           </div>
         </div>
       )}
@@ -258,7 +259,7 @@ function CredentialsTab() {
           </thead>
           <tbody>
             {credentials.map((cred) => (
-              <tr key={cred.id} className="border-b">
+              <tr key={cred.access_key_id} className="border-b">
                 <td className="py-2 font-medium">{cred.name}</td>
                 <td className="py-2 font-mono text-xs">{cred.access_key_id}</td>
                 <td className="py-2">
@@ -278,7 +279,7 @@ function CredentialsTab() {
                 <td className="py-2">{new Date(cred.created_at).toLocaleDateString()}</td>
                 <td className="py-2">
                   <button
-                    onClick={() => handleDelete(cred.id)}
+                    onClick={() => handleDelete(cred.access_key_id)}
                     className="rounded p-1 text-destructive hover:bg-destructive/10"
                   >
                     <Trash2 className="h-3.5 w-3.5" />

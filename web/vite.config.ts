@@ -5,8 +5,12 @@ import path from 'path'
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  optimizeDeps: {
+    include: ['pouchdb', 'pouchdb-find'],
+  },
   resolve: {
     alias: {
+      'events': path.resolve(__dirname, 'node_modules/events/events.js'),
       '@': path.resolve(__dirname, './src'),
     },
   },

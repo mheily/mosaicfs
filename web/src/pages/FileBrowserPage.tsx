@@ -17,6 +17,40 @@ interface VfsEntry {
   size?: number;
   mtime?: string;
   node?: string;
+  file_id?: string;
+  mime_type?: string;
+}
+
+interface VfsApiResponse {
+  path: string;
+  directories: Array<{ name: string; virtual_path: string }>;
+  files: Array<{
+    name: string;
+    file_id: string;
+    size?: number;
+    mtime?: string;
+    mime_type?: string;
+    source?: { node_id?: string; export_path?: string };
+  }>;
+}
+
+function mapVfsResponse(response: VfsApiResponse, _basePath: string): VfsEntry[] {
+  const dirs: VfsEntry[] = response.directories.map((d) => ({
+    name: d.name,
+    path: d.virtual_path,
+    is_dir: true,
+  }));
+  const files: VfsEntry[] = response.files.map((f) => ({
+    name: f.name,
+    path: f.file_id,
+    is_dir: false,
+    size: f.size,
+    mtime: f.mtime,
+    mime_type: f.mime_type,
+    node: f.source?.node_id,
+    file_id: f.file_id,
+  }));
+  return [...dirs, ...files];
 }
 
 interface TreeNode {
@@ -88,8 +122,8 @@ export default function FileBrowserPage() {
   const loadDirectory = useCallback(async (path: string) => {
     setLoading(true);
     try {
-      const entries = await api<VfsEntry[]>(`/api/vfs?path=${encodeURIComponent(path)}`);
-      setFiles(entries);
+      const response = await api<VfsApiResponse>(`/api/vfs?path=${encodeURIComponent(path)}`);
+      setFiles(mapVfsResponse(response, path));
     } catch {
       setFiles([]);
     } finally {
@@ -131,11 +165,10 @@ export default function FileBrowserPage() {
     const node = findNode(tree);
     if (node && !node.loaded) {
       try {
-        const entries = await api<VfsEntry[]>(`/api/vfs?path=${encodeURIComponent(path)}`);
-        const dirs = entries.filter((e) => e.is_dir);
-        const children: TreeNode[] = dirs.map((d) => ({
+        const response = await api<VfsApiResponse>(`/api/vfs?path=${encodeURIComponent(path)}`);
+        const children: TreeNode[] = response.directories.map((d) => ({
           name: d.name,
-          path: d.path,
+          path: d.virtual_path,
           loaded: false,
           expanded: false,
         }));

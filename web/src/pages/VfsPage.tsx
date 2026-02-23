@@ -22,6 +22,48 @@ interface VfsTreeNode {
   children?: VfsTreeNode[];
 }
 
+interface VfsTreeApiItem {
+  name: string | null;
+  virtual_path: string;
+  has_children: boolean;
+}
+
+interface VfsTreeApiResponse {
+  path: string;
+  tree: VfsTreeApiItem[];
+}
+
+function buildTree(flatDirs: VfsTreeApiItem[]): VfsTreeNode[] {
+  const nodeMap = new Map<string, VfsTreeNode>();
+  const roots: VfsTreeNode[] = [];
+
+  const sorted = [...flatDirs].sort(
+    (a, b) =>
+      a.virtual_path.split('/').filter(Boolean).length -
+      b.virtual_path.split('/').filter(Boolean).length,
+  );
+
+  for (const dir of sorted) {
+    const node: VfsTreeNode = {
+      name: dir.name ?? dir.virtual_path.split('/').filter(Boolean).pop() ?? '/',
+      path: dir.virtual_path,
+      children: [],
+    };
+    nodeMap.set(dir.virtual_path, node);
+
+    const parts = dir.virtual_path.split('/').filter(Boolean);
+    const parentPath = parts.length <= 1 ? '/' : '/' + parts.slice(0, -1).join('/');
+    const parent = nodeMap.get(parentPath);
+    if (parent && parentPath !== dir.virtual_path) {
+      parent.children!.push(node);
+    } else {
+      roots.push(node);
+    }
+  }
+
+  return roots;
+}
+
 interface MountSource {
   node: string;
   path: string;
@@ -73,8 +115,8 @@ export default function VfsPage() {
 
   const loadTree = useCallback(async () => {
     try {
-      const data = await api<VfsTreeNode[]>('/api/vfs/tree');
-      setTree(data);
+      const data = await api<VfsTreeApiResponse>('/api/vfs/tree');
+      setTree(buildTree(data.tree));
     } catch {
       setTree([]);
     }
@@ -497,6 +539,7 @@ export default function VfsPage() {
           <div className="absolute inset-0 bg-black/50" onClick={() => setShowCreateDialog(false)} />
           <div className="relative w-full max-w-sm rounded-lg bg-background p-6 shadow-lg">
             <h3 className="mb-4 text-lg font-semibold">Create Directory</h3>
+            <form onSubmit={(e) => { e.preventDefault(); handleCreate(); }}>
             <input
               type="text"
               value={newDirName}
@@ -504,22 +547,23 @@ export default function VfsPage() {
               placeholder="Directory name"
               className="mb-4 flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               autoFocus
-              onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
             />
             <div className="flex justify-end gap-2">
               <button
+                type="button"
                 onClick={() => setShowCreateDialog(false)}
                 className="rounded-md border px-4 py-2 text-sm hover:bg-accent"
               >
                 Cancel
               </button>
               <button
-                onClick={handleCreate}
+                type="submit"
                 className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow hover:bg-primary/90"
               >
                 Create
               </button>
             </div>
+            </form>
           </div>
         </div>
       )}
@@ -530,28 +574,30 @@ export default function VfsPage() {
           <div className="absolute inset-0 bg-black/50" onClick={() => setShowRenameDialog(false)} />
           <div className="relative w-full max-w-sm rounded-lg bg-background p-6 shadow-lg">
             <h3 className="mb-4 text-lg font-semibold">Rename Directory</h3>
+            <form onSubmit={(e) => { e.preventDefault(); handleRename(); }}>
             <input
               type="text"
               value={renameName}
               onChange={(e) => setRenameName(e.target.value)}
               className="mb-4 flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               autoFocus
-              onKeyDown={(e) => e.key === 'Enter' && handleRename()}
             />
             <div className="flex justify-end gap-2">
               <button
+                type="button"
                 onClick={() => setShowRenameDialog(false)}
                 className="rounded-md border px-4 py-2 text-sm hover:bg-accent"
               >
                 Cancel
               </button>
               <button
-                onClick={handleRename}
+                type="submit"
                 className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow hover:bg-primary/90"
               >
                 Rename
               </button>
             </div>
+            </form>
           </div>
         </div>
       )}

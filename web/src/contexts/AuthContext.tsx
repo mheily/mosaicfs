@@ -23,8 +23,48 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
+const AUTH_STORAGE_KEY = 'mosaicfs_auth';
+
+function saveAuth(state: AuthState) {
+  localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(state));
+}
+
+function clearAuth() {
+  localStorage.removeItem(AUTH_STORAGE_KEY);
+}
+
+function loadAuth(): AuthState | null {
+  try {
+    const raw = localStorage.getItem(AUTH_STORAGE_KEY);
+    if (!raw) return null;
+    const state: AuthState = JSON.parse(raw);
+    if (new Date(state.expiresAt) <= new Date()) {
+      clearAuth();
+      return null;
+    }
+    return state;
+  } catch {
+    clearAuth();
+    return null;
+  }
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [auth, setAuth] = useState<AuthState | null>(null);
+  const [auth, setAuth] = useState<AuthState | null>(() => {
+    const stored = loadAuth();
+    if (stored) {
+      setAuthToken(stored.token);
+    }
+    return stored;
+  });
+
+  // Start PouchDB sync if a session was restored from storage
+  useEffect(() => {
+    if (auth) {
+      startSync('/db/mosaicfs');
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const logout = useCallback(async () => {
     try {
@@ -33,6 +73,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // ignore
     }
     setAuthToken(null);
+    clearAuth();
     await destroyDB();
     setAuth(null);
   }, []);
@@ -40,13 +81,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     setOnUnauthorized(() => {
       setAuthToken(null);
+      clearAuth();
       destroyDB();
       setAuth(null);
     });
   }, []);
 
   const login = useCallback(async (accessKeyId: string, secretKey: string) => {
-    const res = await api<{ token: string; expires_at: string }>(
+    const res = await api<{ token: string; expires_at: number }>(
       '/api/auth/login',
       {
         method: 'POST',
@@ -57,12 +99,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       },
     );
 
-    setAuthToken(res.token);
-    setAuth({
+    const state: AuthState = {
       token: res.token,
       accessKeyId,
-      expiresAt: res.expires_at,
-    });
+      expiresAt: new Date(res.expires_at * 1000).toISOString(),
+    };
+    setAuthToken(res.token);
+    saveAuth(state);
+    setAuth(state);
 
     // Start PouchDB sync
     startSync('/db/mosaicfs');
