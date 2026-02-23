@@ -43,6 +43,7 @@ services:
     # Visit http://localhost:5173 — Vite proxies /api to the Axum backend.
     command: >
       bash -c "
+        cd web && npm ci &&
         cd /workspace && cargo build -p mosaicfs-server &&
         cargo run -p mosaicfs-server &
         cd /workspace/web && npx vite --host 0.0.0.0
