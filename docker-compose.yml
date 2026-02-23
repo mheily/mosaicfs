@@ -39,11 +39,13 @@ services:
       couchdb:
         condition: service_healthy
     working_dir: /workspace
-    # Build the frontend, then build and run the Axum server
+    # Run Axum backend in background, then start Vite dev server in foreground.
+    # Visit http://localhost:5173 — Vite proxies /api to the Axum backend.
     command: >
       bash -c "
         cd /workspace && cargo build -p mosaicfs-server &&
-        cargo run -p mosaicfs-server
+        cargo run -p mosaicfs-server &
+        cd /workspace/web && npx vite --host 0.0.0.0
       "
 
   couchdb:

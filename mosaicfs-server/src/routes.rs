@@ -129,8 +129,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .merge(jwt_routes)
         .merge(hmac_routes)
         .fallback_service(
-            ServeDir::new("../web/dist")
-                .fallback(ServeFile::new("../web/dist/index.html")),
+            ServeDir::new("web/dist")
+                .fallback(ServeFile::new("web/dist/index.html")),
         )
         .with_state(state)
 }

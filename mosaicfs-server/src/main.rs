@@ -30,6 +30,25 @@ async fn main() -> anyhow::Result<()> {
         .install_default()
         .expect("Failed to install rustls crypto provider");
 
+    // Bootstrap subcommand: create first credential if none exist
+    if std::env::args().nth(1).as_deref() == Some("bootstrap") {
+        tracing_subscriber::fmt()
+            .with_env_filter(EnvFilter::new("warn"))
+            .init();
+        let db = couchdb::CouchClient::from_env(DB_NAME);
+        db.ensure_db().await?;
+        couchdb::create_indexes(&db).await?;
+        let existing = credentials::list_credentials(&db).await?;
+        if !existing.is_empty() {
+            eprintln!("Credentials already exist. Use the Settings page to create more.");
+            std::process::exit(1);
+        }
+        let (access_key, secret_key) = credentials::create_credential(&db, "admin").await?;
+        println!("Access Key: {}", access_key);
+        println!("Secret Key: {}", secret_key);
+        return Ok(());
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse().unwrap()))
         .init();
