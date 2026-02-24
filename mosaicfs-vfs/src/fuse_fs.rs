@@ -414,7 +414,7 @@ impl Filesystem for MosaicFs {
                 reply.opened(fh, 0);
             }
             AccessResult::NeedsFetch(fetch_info) => {
-                // Attempt remote fetch
+                // Attempt remote fetch (Tier 4)
                 let fetch_result = self.rt.block_on(fetch_remote_file(
                     &fetch_info,
                     &self.cache,
@@ -432,8 +432,44 @@ impl Filesystem for MosaicFs {
                         reply.opened(fh, 0);
                     }
                     Err(e) => {
-                        warn!(file_id = %file.file_id, error = %e, "Remote fetch failed");
-                        reply.error(libc::EIO);
+                        warn!(file_id = %file.file_id, error = %e, "Tier 4 remote fetch failed, trying Tier 4b replica failover");
+                        // Tier 4 failed — try Tier 4b (replica failover)
+                        let tier4b_result = self.rt.block_on(tiered_access::resolve_from_replica_for_open(
+                            &file,
+                            &self.config.node_id,
+                            &self.config.watch_paths,
+                            &self.config.network_mounts,
+                            &self.cache,
+                            &self.db,
+                        ));
+                        match tier4b_result {
+                            tiered_access::AccessResult::LocalPath(path) => {
+                                let fh = self.alloc_fh();
+                                self.open_files.lock().unwrap().insert(fh, (file.clone(), path));
+                                reply.opened(fh, 0);
+                            }
+                            tiered_access::AccessResult::NeedsFetch(fetch_info2) => {
+                                // Tier 4b returned another fetch (agent replica)
+                                let fetch2 = self.rt.block_on(fetch_remote_file(
+                                    &fetch_info2, &self.cache, &self.db, &self.config,
+                                ));
+                                match fetch2 {
+                                    Ok(path) => {
+                                        let fh = self.alloc_fh();
+                                        self.open_files.lock().unwrap().insert(fh, (file.clone(), path));
+                                        reply.opened(fh, 0);
+                                    }
+                                    Err(e2) => {
+                                        warn!(file_id = %file.file_id, error = %e2, "Tier 4b agent fetch also failed");
+                                        reply.error(libc::EIO);
+                                    }
+                                }
+                            }
+                            tiered_access::AccessResult::NotAccessible(msg) => {
+                                warn!(file_id = %file.file_id, reason = %msg, "File not accessible (all tiers failed)");
+                                reply.error(libc::EIO);
+                            }
+                        }
                     }
                 }
             }

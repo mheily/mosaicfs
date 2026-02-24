@@ -21,4 +21,11 @@ anyhow = { workspace = true }
 mime_guess = { workspace = true }
 thiserror = { workspace = true }
 urlencoding = { workspace = true }
+bytes = { workspace = true }
+rusqlite = { workspace = true }
+sha2 = { workspace = true }
+hmac = { workspace = true }
+hex = { workspace = true }
+async-trait = { workspace = true }
 hostname = "0.4"
+tempfile = "3"

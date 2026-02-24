@@ -1,9 +1,11 @@
+mod backend;
 mod config;
 mod couchdb;
 mod crawler;
 mod init;
 mod node;
 mod replication;
+mod replication_subsystem;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -20,6 +22,8 @@ const DEFAULT_CONFIG_PATH: &str = "agent.toml";
 const DEFAULT_STATE_DIR: &str = "/var/lib/mosaicfs";
 const DB_NAME: &str = "mosaicfs";
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+const REPLICATION_FLUSH_INTERVAL_S: u64 = 60;
+const REPLICATION_FULL_SCAN_INTERVAL_S: u64 = 86400; // daily
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -56,9 +60,30 @@ async fn main() -> anyhow::Result<()> {
     // Register node
     node::register_node(&db, &node_id, &config.watch_paths).await?;
 
+    // Start replication subsystem
+    let replication_handle = match replication_subsystem::start(replication_subsystem::ReplicationConfig {
+        node_id: node_id.clone(),
+        state_dir: state_dir.clone(),
+        db: db.clone(),
+        flush_interval_s: REPLICATION_FLUSH_INTERVAL_S,
+        full_scan_interval_s: REPLICATION_FULL_SCAN_INTERVAL_S,
+    }) {
+        Ok(h) => {
+            info!("Replication subsystem started");
+            Some(h)
+        }
+        Err(e) => {
+            error!(error = %e, "Failed to start replication subsystem");
+            None
+        }
+    };
+
     // Initial crawl
     info!("Starting initial filesystem crawl");
-    let result = crawler::crawl(&db, &node_id, &config.watch_paths, &config.excluded_paths).await?;
+    let result = crawler::crawl(
+        &db, &node_id, &config.watch_paths, &config.excluded_paths,
+        replication_handle.as_ref(),
+    ).await?;
     info!(
         new = result.files_new,
         updated = result.files_updated,

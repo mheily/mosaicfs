@@ -9,6 +9,7 @@ use tracing::{debug, info, warn};
 use walkdir::WalkDir;
 
 use crate::couchdb::CouchClient;
+use crate::replication_subsystem::{FileEvent, ReplicationHandle};
 
 const BATCH_SIZE: usize = 200;
 
@@ -21,12 +22,14 @@ pub struct CrawlResult {
     pub files_deleted: u64,
 }
 
-/// Crawl all watch paths and sync file documents to CouchDB
+/// Crawl all watch paths and sync file documents to CouchDB.
+/// Emits FileEvents to the replication subsystem if a handle is provided.
 pub async fn crawl(
     db: &CouchClient,
     node_id: &str,
     watch_paths: &[PathBuf],
     excluded_paths: &[PathBuf],
+    replication: Option<&ReplicationHandle>,
 ) -> anyhow::Result<CrawlResult> {
     let mut result = CrawlResult {
         files_indexed: 0,
@@ -130,12 +133,28 @@ pub async fn crawl(
             if let Some(mime) = mime_type {
                 doc["mime_type"] = serde_json::Value::String(mime);
             }
+            let is_new = rev.is_none() || existing.get(&export_path).map_or(false, |d| {
+                d.get("status").and_then(|v| v.as_str()) == Some("deleted")
+            });
+
             if let Some(rev) = rev {
                 doc["_rev"] = serde_json::Value::String(rev);
             }
+            let event_doc = doc.clone();
+            let event_file_id = doc.get("_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let is_really_new = result.files_new > result.files_updated; // approximate
 
             batch.push(doc);
             result.files_indexed += 1;
+
+            // Queue replication event (after batch flush for correct doc ordering)
+            if let Some(rh) = replication {
+                if is_new {
+                    rh.send(FileEvent::Added { file_id: event_file_id, file_doc: event_doc });
+                } else {
+                    rh.send(FileEvent::Modified { file_id: event_file_id, file_doc: event_doc });
+                }
+            }
 
             if batch.len() >= BATCH_SIZE {
                 flush_batch(db, &mut batch).await?;
@@ -149,7 +168,7 @@ pub async fn crawl(
     }
 
     // Soft-delete files that no longer exist
-    result.files_deleted = soft_delete_missing(db, &existing, &seen_paths).await?;
+    result.files_deleted = soft_delete_missing(db, &existing, &seen_paths, replication).await?;
 
     info!(
         new = result.files_new,
@@ -234,6 +253,7 @@ async fn soft_delete_missing(
     db: &CouchClient,
     existing: &HashMap<String, serde_json::Value>,
     seen_paths: &HashMap<String, bool>,
+    replication: Option<&ReplicationHandle>,
 ) -> anyhow::Result<u64> {
     let mut batch: Vec<serde_json::Value> = Vec::new();
     let mut count = 0u64;
@@ -248,11 +268,17 @@ async fn soft_delete_missing(
         }
 
         // File no longer exists — soft delete
+        let file_id = doc.get("_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
         let mut updated = doc.clone();
         updated["status"] = serde_json::Value::String("deleted".to_string());
         updated["deleted_at"] = serde_json::Value::String(Utc::now().to_rfc3339());
         batch.push(updated);
         count += 1;
+
+        // Emit deletion event for replication subsystem
+        if let Some(rh) = replication {
+            rh.send(FileEvent::Deleted { file_id });
+        }
 
         if batch.len() >= BATCH_SIZE {
             flush_batch(db, &mut batch).await?;

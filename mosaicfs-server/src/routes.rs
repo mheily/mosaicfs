@@ -14,7 +14,7 @@ use crate::auth::hmac_auth::{self, HmacClaims};
 use crate::auth::jwt::{self, Claims};
 use crate::credentials;
 use crate::couchdb::CouchError;
-use crate::handlers::{agent, files, labels, nodes, search, vfs};
+use crate::handlers::{agent, files, labels, nodes, replication, search, vfs};
 use crate::state::AppState;
 
 const LOGIN_RATE_LIMIT: u32 = 5;
@@ -71,19 +71,26 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/labels/rules/{rule_id}", patch(labels::patch_rule))
         .route("/api/labels/rules/{rule_id}", delete(labels::delete_rule))
         .route("/api/labels/effective", get(labels::effective_labels))
-        // Replication
-        .route("/api/storage-backends", get(stub_501))
-        .route("/api/storage-backends", post(stub_501))
-        .route("/api/storage-backends/{name}", get(stub_501))
-        .route("/api/storage-backends/{name}", patch(stub_501))
-        .route("/api/storage-backends/{name}", delete(stub_501))
-        .route("/api/replication/rules", get(stub_501))
-        .route("/api/replication/rules", post(stub_501))
-        .route("/api/replication/rules/{rule_id}", get(stub_501))
-        .route("/api/replication/rules/{rule_id}", patch(stub_501))
-        .route("/api/replication/rules/{rule_id}", delete(stub_501))
-        .route("/api/replication/replicas", get(stub_501))
-        .route("/api/replication/status", get(stub_501))
+        // Storage Backends
+        .route("/api/storage-backends", get(replication::list_storage_backends))
+        .route("/api/storage-backends", post(replication::create_storage_backend))
+        .route("/api/storage-backends/{name}", get(replication::get_storage_backend))
+        .route("/api/storage-backends/{name}", patch(replication::patch_storage_backend))
+        .route("/api/storage-backends/{name}", delete(replication::delete_storage_backend))
+        // Replication Rules
+        .route("/api/replication/rules", get(replication::list_replication_rules))
+        .route("/api/replication/rules", post(replication::create_replication_rule))
+        .route("/api/replication/rules/{rule_id}", get(replication::get_replication_rule))
+        .route("/api/replication/rules/{rule_id}", patch(replication::patch_replication_rule))
+        .route("/api/replication/rules/{rule_id}", delete(replication::delete_replication_rule))
+        // Replicas and status
+        .route("/api/replication/replicas", get(replication::list_replicas))
+        .route("/api/replication/status", get(replication::get_replication_status))
+        // Restore operations
+        .route("/api/replication/restore", post(replication::initiate_restore))
+        .route("/api/replication/restore/history", get(replication::list_restore_history))
+        .route("/api/replication/restore/{job_id}", get(replication::get_restore_job))
+        .route("/api/replication/restore/{job_id}/cancel", post(replication::cancel_restore_job))
         // Notifications
         .route("/api/notifications", get(stub_501))
         .route("/api/notifications/{id}/acknowledge", post(stub_501))
