@@ -6,6 +6,7 @@ services:
     volumes:
       - .:/workspace
       - cargo-cache:/usr/local/cargo/registry  # persist compiled deps across rebuilds
+      - target-cache:/workspace/target          # shared with agent container
       - claude-data:/root/.claude
     environment:
       - COUCHDB_URL=http://couchdb:5984
@@ -18,6 +19,27 @@ services:
       - /dev/fuse:/dev/fuse
     # Keep container alive for VS Code / Claude Code to attach to
     command: sleep infinity
+
+  agent:
+    image: localhost/mosaicfs-dev:latest
+    volumes:
+      - target-cache:/workspace/target:ro  # compiled artifacts from dev container
+      - agent-data:/data                   # persistent storage for crawled data
+      - ./agent.toml:/etc/mosaicfs/agent.toml:ro  # cp agent.toml.example agent.toml and fill in credentials
+    environment:
+      - RUST_LOG=info
+    depends_on:
+      couchdb:
+        condition: service_healthy
+    # Wait for the binary to be compiled in the dev container, then run it.
+    command: >
+      bash -c "
+        until [ -x /workspace/target/debug/mosaicfs-agent ]; do
+          echo 'Waiting for mosaicfs-agent binary (run: cargo build -p mosaicfs-agent in dev container)...';
+          sleep 5;
+        done &&
+        exec /workspace/target/debug/mosaicfs-agent /etc/mosaicfs/agent.toml
+      "
 
   web:
     image: localhost/mosaicfs-dev:latest
@@ -67,6 +89,8 @@ services:
 volumes:
   couchdb-data:
   cargo-cache:
+  target-cache:
   web-cargo-cache:
   web-data:
   claude-data:
+  agent-data:

@@ -29,3 +29,6 @@ docs/*.pdf
 # Web UI
 web/node_modules/
 web/dist/
+
+# Agent config (contains credentials — copy agent.toml.example → agent.toml and fill in)
+agent.toml

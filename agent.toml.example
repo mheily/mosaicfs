@@ -1,0 +1,22 @@
+# MosaicFS Agent Configuration
+# Copy this file to agent.toml and fill in the values.
+#
+# Bootstrap credentials:
+#   docker compose exec web /workspace/target/debug/mosaicfs-server bootstrap
+# This prints a one-time Access Key ID and Secret Key — paste them below.
+
+control_plane_url = "https://web:8443"
+
+# Optional: auto-generated and persisted to /var/lib/mosaicfs/node_id on first run.
+# node_id = "node-xxxxxxxx"
+
+# Directories the agent will crawl. Must be absolute paths inside the container.
+# Mount additional host directories into the agent service in docker-compose.yml
+# if you need to crawl paths outside of /data.
+watch_paths = ["/data"]
+
+excluded_paths = []
+
+# From: docker compose exec web /workspace/target/debug/mosaicfs-server bootstrap
+access_key_id = "MOSAICFS_REPLACE_ME"
+secret_key    = "mosaicfs_REPLACE_ME"
