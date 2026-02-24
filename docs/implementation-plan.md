@@ -1,6 +1,6 @@
 # MosaicFS — Implementation Plan
 
-*v0.3*
+*v0.5*
 
 ---
 
@@ -14,13 +14,11 @@
 - [Phase 3 — Rule Evaluation Engine](#phase-3--rule-evaluation-engine)
 - [Phase 4 — Virtual Filesystem Layer](#phase-4--virtual-filesystem-layer)
 - [Phase 5 — Web UI](#phase-5--web-ui)
-- [Phase 6 — Plugin System](#phase-6--plugin-system)
-- [Phase 7 — Replication](#phase-7--replication)
-- [Phase 8 — Notification System](#phase-8--notification-system)
-- [Phase 9 — Backup and Restore](#phase-9--backup-and-restore)
-- [Phase 10 — Storage Backends and Bridge Nodes](#phase-10--storage-backends-and-bridge-nodes)
-- [Phase 11 — CLI and Desktop App](#phase-11--cli-and-desktop-app)
-- [Phase 12 — Hardening and Production Readiness](#phase-12--hardening-and-production-readiness)
+- [Phase 6 — Replication](#phase-6--replication)
+- [Phase 7 — Notification System](#phase-7--notification-system)
+- [Phase 8 — Backup and Restore](#phase-8--backup-and-restore)
+- [Phase 9 — CLI and Desktop App](#phase-9--cli-and-desktop-app)
+- [Phase 10 — Hardening and Production Readiness](#phase-10--hardening-and-production-readiness)
 - [Testing Strategy](#testing-strategy)
 - [Migration Between Phases](#migration-between-phases)
 - [Risk Register](#risk-register)
@@ -34,7 +32,11 @@ This document describes the build order for MosaicFS v1. Each phase ends with a 
 
 The architecture document is the authoritative reference for all design decisions, schemas, and API contracts. This plan references it but does not repeat it. When the two conflict, the architecture document wins.
 
-**Changes from v0.2:** Added replication as a dedicated phase (Phase 7), separated storage backends/bridge nodes (Phase 10), expanded document types from 11 to 15 (adding `storage_backend`, `replication_rule`, `replica`, `access`), incorporated `dispatch_rules` and Tier 4b failover, and added the materialized access cache.
+**Changes from v0.2:** Added replication as a dedicated phase, separated storage backends/bridge nodes, expanded document types from 11 to 15 (adding `storage_backend`, `replication_rule`, `replica`, `access`), and added the materialized access cache.
+
+**Changes from v0.3:** Moved replication (Phase 6) ahead of plugins and removed the incorrect dependency on the plugin system. Replication is core agent functionality with storage backend adapters as thin Rust trait implementations. Notifications (Phase 7) and Backup/Restore (Phase 8) renumbered accordingly.
+
+**Changes from v0.4:** Plugins are a v2 delivery item and removed from v1 scope entirely. This removes Phase 9 (Plugin System) and Phase 10 (Storage Backends & Bridge Nodes, which depended on plugin infrastructure for source-mode and bridge functionality). CLI and Desktop (Phase 9) and Hardening (Phase 10) renumbered. Source-mode storage backends, bridge nodes, Tier 5 materialize, and all plugin-related web UI are added to Out of Scope. Replication targets (S3, B2, directory, agent) remain in Phase 6 as they are Rust trait implementations with no plugin system dependency.
 
 ---
 
@@ -58,16 +60,14 @@ Phase 1: Foundation
         ├─► Phase 3: Rule Engine
         │     ├─► Phase 4: VFS
         │     └─► Phase 5: Web UI
-        │           └─► Phase 11: CLI & Desktop
-        ├─► Phase 6: Plugin System (backend: parallel with 3–5; UI: after 5)
-        │     ├─► Phase 7: Replication (after 6)
-        │     │     └─► Phase 10: Storage Backends & Bridges (after 7)
-        │     └─► Phase 8: Notifications (after 6; parallel with 7, 9)
-        └─► Phase 9: Backup & Restore (after 2 + 5)
-  └─► Phase 12: Hardening (continuous from Phase 2 onward)
+        │           └─► Phase 9: CLI & Desktop
+        ├─► Phase 6: Replication (after 2 + 3; Tier 4b after 4)
+        ├─► Phase 7: Notifications (after 2; parallel with 6, 8)
+        └─► Phase 8: Backup & Restore (after 2 + 5)
+  └─► Phase 10: Hardening (continuous from Phase 2 onward)
 ```
 
-Phase 12 is not a final gate — hardening work should begin as soon as Phase 2 is complete and continue in parallel with everything after it.
+Phase 10 is not a final gate — hardening work should begin as soon as Phase 2 is complete and continue in parallel with everything after it.
 
 ---
 
@@ -83,16 +83,18 @@ Set up the Cargo workspace with three crates: `mosaicfs-agent`, `mosaicfs-server
 
 ### 1.2 — CouchDB database creation
 
-Connect to the `mosaicfs` database using the environment variables named in 
+Connect to the `mosaicfs` database using the environment variables named in
 local development (see [Testing Strategy](#testing-strategy)).
 
 ### 1.3 — CouchDB Document Types
 
 Define Rust structs for all 15 v1 document types in `mosaicfs-common` with `serde` serialization. The 15 types are: `file`, `virtual_directory`, `node`, `credential`, `agent_status`, `utilization_snapshot`, `label_assignment`, `label_rule`, `plugin`, `annotation`, `notification`, `storage_backend`, `replication_rule`, `replica`, `access`. Pay attention to the `_id` format conventions — they are load-bearing. Include unit tests that round-trip each type through JSON.
 
+Note: `plugin` and `annotation` document structs are defined here for schema completeness and future v2 compatibility. They are not used by any v1 component.
+
 ### 1.4 — Agent Configuration
 
-Implement `agent.toml` parsing. Required fields: `control_plane_url`, `node_id` (read from file or generated on first run), `watch_paths`, `access_key_id`, `secret_key`. Also support `excluded_paths` for preventing crawler from indexing cache/replication directories. Validate at startup; exit with a clear error if anything is missing.
+Implement `agent.toml` parsing. Required fields: `control_plane_url`, `node_id` (read from file or generated on first run), `watch_paths`, `access_key_id`, `secret_key`. Also support `excluded_paths` for preventing crawler from indexing cache/replication directories, and `transfer_serve_paths` for allowing the transfer endpoint to serve replication storage without crawling it. Validate at startup; exit with a clear error if anything is missing.
 
 ### 1.5 — Local CouchDB Client
 
@@ -229,6 +231,8 @@ Create the root directory document (`dir::root`) at startup if absent. Determini
 Implement the step pipeline in `mosaicfs-common`. The function takes a mount entry, inherited steps, and a file document, returning include/exclude. Support all 10 step operations: `glob`, `regex`, `age`, `size`, `mime`, `node`, `label`, `access_age`, `replicated`, `annotation`.
 
 Write thorough unit tests: each op with and without `invert`; `on_match` short-circuit (`include`, `exclude`, `continue`); `default_result` fallback; empty steps; ancestor inheritance; ancestor `exclude` overriding child `include`.
+
+Note: the `annotation` step is implemented for future v2 compatibility. In v1 it will never match (no plugin writes annotations), but the implementation cost is trivial and keeps the rule engine complete.
 
 ### 3.3 — Materialized Label Cache
 
@@ -388,19 +392,19 @@ Sidebar with all pages, top bar with instance name and user menu. Responsive col
 
 ### 5.5 — Dashboard
 
-Node health strip, error banner, search bar with keyboard shortcut, system totals (files, nodes, storage), plugin widgets (query `dashboard_widget` capability), recent activity feed.
+Node health strip, error banner, search bar with keyboard shortcut, system totals (files, nodes, storage), recent activity feed.
 
 ### 5.6 — Nodes Page
 
-List view with status filter. Agent detail: subsystem status, storage topology, utilization trend chart, watch paths, network mounts CRUD, plugin list, errors (last 50 from agent_status). Cloud bridge detail (stubs for Phase 10): OAuth status, sync controls.
+List view with status filter. Agent detail: subsystem status, storage topology, utilization trend chart, watch paths, network mounts CRUD, errors (last 50 from agent_status).
 
 ### 5.7 — File Browser
 
-Two-panel: lazy-loaded directory tree + sortable contents table. Breadcrumbs, inline filter, file detail drawer (metadata, labels with direct/inherited distinction, annotations from plugins, inline preview for images/PDF/text, download button). Read-only indicators with tooltips for planned write features.
+Two-panel: lazy-loaded directory tree + sortable contents table. Breadcrumbs, inline filter, file detail drawer (metadata, labels with direct/inherited distinction, inline preview for images/PDF/text, download button). Read-only indicators with tooltips for planned write features.
 
 ### 5.8 — Search Page
 
-Debounced search bar, label filter chips (ANDed with query), result list with infinite scroll, file detail drawer reuse. Plugin search results integrated via query routing.
+Debounced search bar, label filter chips (ANDed with query), result list with infinite scroll, file detail drawer reuse.
 
 ### 5.9 — Labels Page
 
@@ -416,7 +420,7 @@ Utilization table with color-coded bars (by percentage), per-node trend charts w
 
 ### 5.12 — Settings Page
 
-Four tabs. Credential management (create with one-time secret display, enable/disable, delete). Storage backends (stubs, wired in Phase 10). Plugin settings (stubs, wired in Phase 6). General configuration. About tab with reindex trigger and PouchDB replica size display. Backup/restore controls (stubs, wired in Phase 9).
+Four tabs. Credential management (create with one-time secret display, enable/disable, delete). Storage backends (replication target CRUD: S3, B2, directory, agent — wired in Phase 6). General configuration. About tab with reindex trigger and PouchDB replica size display. Backup/restore controls (stubs, wired in Phase 8).
 
 ### Phase 5 Checklist
 
@@ -435,98 +439,41 @@ Four tabs. Credential management (create with one-time secret display, enable/di
 - [ ] Mount live preview updates as configuration changes
 - [ ] Inherited ancestor steps shown read-only in child editor
 - [ ] Credential create shows secret once
-- [ ] Plugin settings tab present (stub)
 - [ ] Notification bell present (stub)
 - [ ] Storage backend cards present (stub)
 - [ ] Settings page shows PouchDB replica size
 
 ---
 
-## Phase 6 — Plugin System
-
-**Goal:** Executable and socket plugins process file events, write annotations, and respond to queries. `dispatch_rules` enables filtered event delivery.
-
-**Milestone:** Deploy an AI summarizer (executable) that annotates PDFs. Deploy a fulltext search plugin (socket) that indexes into Meilisearch and responds to queries. Both survive agent restarts.
-
-**Dependencies:** Backend (6.1–6.7) can be built immediately after Phase 2, in parallel with Phases 3–5. UI integration (6.8) requires Phase 5.
-
-### 6.1 — Plugin Document Type and Configuration
-
-Add `plugin` and `annotation` document handling to the agent (types defined in Phase 1). Implement replication filters (agents receive only their own node's plugins). Add plugin CRUD endpoints. Add `settings_schema` validation (JSON Schema subset: `string`, `number`, `boolean`, `enum`, `secret`). Add plugin directory enumeration to `agent_status`.
-
-### 6.2 — Plugin Job Queue
-
-Create `plugin_jobs.db` with SQLite schema. Enqueue jobs on `file.added`/`modified`/`deleted` from the watcher. Implement backoff, `max_attempts`, status tracking (pending → in_flight → acked/failed). Implement queue size cap (100K per plugin) with notification on overflow. Purge completed/failed jobs after 24 hours.
-
-### 6.3 — Executable Plugin Runner
-
-Implement the full invocation contract: resolve plugin name to platform plugin directory (`/usr/lib/mosaicfs/plugins/` on Linux), reject path traversal. Construct event envelope on stdin, read stdout JSON, write annotation document (`annotation::{file_uuid}::{plugin_name}`). Worker pool with configurable concurrency. Exit 0 = success, non-zero = retry, exit 78 = permanent error. Stdout limit 10 MB, stderr captured at WARN. SIGTERM then SIGKILL on timeout.
-
-### 6.4 — Socket Plugin Support
-
-Connect to `/run/mosaicfs/plugin-sockets/{name}.sock`. Implement newline-delimited JSON with sequence-numbered ack protocol. Buffer unacknowledged events in the SQLite job queue, replay on reconnect. Exponential backoff on disconnect. Health check messages on configurable interval (default 5 min).
-
-### 6.5 — Dispatch Rules
-
-Implement `dispatch_rules` on plugin documents. Before dispatching an event, the agent evaluates the file against each dispatch rule using the step pipeline engine (which has access to the label cache, access cache, and annotation index). If at least one rule matches, the event is dispatched with a `matched_rules` field listing matching rule names. If no rules match, the event is suppressed.
-
-Special cases:
-- `file.deleted` events bypass `dispatch_rules` — always delivered for files the plugin has annotated
-- `access.updated` events use hybrid dispatch: deliver if dispatch rules match OR the file has an existing annotation from this plugin
-
-### 6.6 — Plugin Full Sync
-
-Implement `POST /api/nodes/{node_id}/plugins/{plugin_name}/sync`. Compare `annotation.annotated_at` vs `file.mtime`, skip current files. Emit `sync.started`/`sync.completed` events. Idempotent.
-
-### 6.7 — Plugin Query Routing
-
-Implement `query_endpoints` on plugin documents. Agent advertises capabilities on node document when plugins come online. `POST /api/query` fans out by capability to all nodes advertising it. `POST /api/agent/query` delivers queries from control plane to local agent. Nodes that timeout are omitted gracefully.
-
-### 6.8 — Web UI Integration
-
-Add Plugins tab to Settings (render forms from `settings_schema`; secret fields displayed as `••••••••` after save). Add Annotations section to file detail drawer. Add plugin status to node detail page. Add plugin search results to Search page. Add plugin widget results to Dashboard.
-
-### Phase 6 Checklist
-
-- [ ] Plugin documents replicate to agents
-- [ ] Executable plugin processes PDF, writes annotation
-- [ ] Socket plugin connects, receives events, acks correctly
-- [ ] Job queue survives agent restart
-- [ ] Queue cap enforced; notification on overflow
-- [ ] `dispatch_rules` correctly filters events before delivery
-- [ ] `matched_rules` included in event envelope
-- [ ] `file.deleted` bypasses dispatch rules for annotated files
-- [ ] `access.updated` hybrid dispatch works correctly
-- [ ] Full sync skips current annotations, processes stale files
-- [ ] Query routing fans out to nodes advertising capability
-- [ ] Settings page renders plugin forms from schema
-- [ ] Annotations appear in file detail drawer
-
----
-
-## Phase 7 — Replication
+## Phase 6 — Replication
 
 **Goal:** Files replicate to external targets based on rules. Tier 4b failover serves replicas when source nodes are offline.
 
 **Milestone:** Configure a replication rule targeting an S3 bucket. Watch files upload during the scheduled window. Take the source node offline. Access the file through the VFS — it serves from the S3 replica.
 
-**Dependencies:** Requires Phase 6 (Plugin System). The replication plugin is the first real socket plugin.
+**Dependencies:** Requires Phase 2 (Control Plane) and Phase 3 (Rule Engine — for step pipeline evaluation of replication rules). Tier 4b failover (6.8) requires Phase 4 (VFS).
 
-### 7.1 — Storage Backend and Replication Rule Documents
+### 6.1 — Storage Backend and Replication Rule Documents
 
-Wire up `storage_backend` and `replication_rule` document CRUD endpoints. Storage backend document: `storage_backend::{name}` with type, mode (source/target/bidirectional), hosting_node_id, and type-specific config. Replication rule document: UUID-based `_id`, step pipeline, target reference.
+Wire up `storage_backend` and `replication_rule` document CRUD endpoints. Storage backend document: `storage_backend::{name}` with type, mode (target), hosting_node_id, and type-specific config. Replication rule document: UUID-based `_id`, step pipeline, target reference.
 
-### 7.2 — Replica Document
+Note: only `mode: "target"` is implemented in v1. Source-mode backends are out of scope.
 
-Implement `replica` document (`replica::{file_uuid}::{target_name}`). Status values: `"current"`, `"stale"`, `"frozen"`. These are CouchDB documents written by the agent, replicated to all nodes for Tier 4b lookup.
+### 6.2 — Replica Document
 
-### 7.3 — Replication Plugin Core
+Implement `replica` document (`replica::{file_uuid}::{target_name}`). Status values: `"current"`, `"stale"`, `"frozen"`. These are CouchDB documents written by the agent's replication subsystem, replicated to all nodes for Tier 4b lookup.
 
-Build the replication socket plugin as described in `replication-plugin-design.md`. Local SQLite database (`replication.db`) with `replication_state` and `deletion_log` tables. Event processing: on `file.added`/`modified` with matching dispatch rules → queue upload. On `file.deleted` → check manifest, apply retention policy.
+### 6.3 — Replication Subsystem Core
 
-### 7.4 — Storage Backend Adapters
+Implement the replication subsystem as a core component of the agent (not a plugin). The subsystem runs inside the agent process alongside the crawler and VFS layer, receiving file events directly from the agent's internal event system.
 
-Implement thin I/O adapters:
+Local SQLite database (`replication.db`) with `replication_state` and `deletion_log` tables (schema in `replication-plugin-design.md` — retained as supplementary reference for implementation details). Event processing: on `file.added`/`modified` whose `file_id` matches enabled replication rules → queue upload. On `file.deleted` → check manifest, apply retention policy.
+
+Rule evaluation uses the step pipeline engine directly (same instance as the VFS layer) — the replication subsystem is in-process and has direct access to the materialized label cache, access cache, and replica index without any IPC indirection.
+
+### 6.4 — Storage Backend Adapters
+
+Implement thin I/O adapters as Rust trait implementations of the `BackendAdapter` trait (defined in `mosaicfs-common`, per `architecture/18-storage-backends.md`):
 - **S3**: AWS SDK multipart upload, `ListObjectsV2`, streaming download. Connection pooling. Start here as reference implementation.
 - **B2**: S3-compatible API with custom endpoint. Share implementation with S3.
 - **Directory**: Atomic write (temp → fsync → rename), walk for listing.
@@ -534,42 +481,42 @@ Implement thin I/O adapters:
 
 Remote key scheme: `{prefix}/{file_uuid_8}/{filename}`.
 
-### 7.5 — Bandwidth and Scheduling
+### 6.5 — Bandwidth and Scheduling
 
-Schedule windows: queue events outside window, drain FIFO when window opens. Token bucket rate limiter shared across concurrent uploads per target. Batching (up to 100 files). Configurable `workers` for parallel uploads per target (default 2).
+Schedule windows: queue events outside window, drain FIFO when window opens. Token bucket rate limiter shared across concurrent uploads per target. Batching (up to 100 files). Configurable `workers` field controls parallel uploads per target (default 2).
 
-### 7.6 — Replication Annotations and Status
+### 6.6 — Replication Annotations and Status
 
 Write one annotation per replicated file with per-target status (`current`, `stale`, `pending`, `frozen`, `failed`). Batch annotation writes, flush every `flush_interval_s` seconds (default 60). Also write `replica` documents to CouchDB for Tier 4b visibility.
 
-### 7.7 — Rule Re-evaluation
+### 6.7 — Rule Re-evaluation
 
-Periodic full scan (configurable, default daily) via plugin full sync. Detects: files newly matching rules, stale replicas, files that no longer match (un-replication). `access.updated` events trigger real-time re-evaluation for access_age rules.
+Periodic full scan (configurable, default daily) via the full sync mechanism (`POST /api/nodes/{node_id}/replication/sync`). Detects: files newly matching rules, stale replicas, files that no longer match (un-replication). `access.updated` events trigger real-time re-evaluation for access_age rules.
 
 Un-replication behavior per `remove_unmatched` setting: `false` (default) → freeze; `true` → move to deletion_log with retention.
 
-### 7.8 — Tier 4b Failover
+### 6.8 — Tier 4b Failover
 
 Add Tier 4b to VFS tiered access, evaluated when Tier 4 fails because the owning node is offline:
 1. Query local CouchDB for `replica` documents with `status: "current"` or `"frozen"`
 2. For `agent` targets: fetch from replica agent's transfer endpoint
-3. For `s3`/`b2` targets: invoke replication plugin's `materialize_from_replica` event
+3. For `s3`/`b2` targets: invoke the local `BackendAdapter` implementation's download method, write to staging path, cache and serve
 4. For `directory` targets: open directly if locally accessible
 5. Cache locally and serve
 
-### 7.9 — Restore Operations
+### 6.9 — Restore Operations
 
-Implement restore API: `POST /api/plugins/replication/restore` (initiate), `GET .../restore/{job_id}` (progress), `POST .../restore/{job_id}/cancel`, `GET .../restore/history`. Support partial restore with path_prefix and mime_type filters. Restore preserves file identity (UUID-based `_id`).
+Implement restore API: `POST /api/replication/restore` (initiate), `GET .../restore/{job_id}` (progress), `POST .../restore/{job_id}/cancel`, `GET .../restore/history`. Support partial restore with path_prefix and mime_type filters. Restore preserves file identity (UUID-based `_id`).
 
-### 7.10 — Plugin State Recovery
+### 6.10 — Replication State Recovery
 
 Handle lost SQLite database: detect on startup, enter rebuild mode, issue `manifest_rebuild_needed` notification, reconstruct from target listing on next full scan. Handle lost annotations: rebuild from SQLite manifest during periodic flush.
 
-### Phase 7 Checklist
+### Phase 6 Checklist
 
-- [ ] Storage backend CRUD endpoints work
+- [ ] Storage backend CRUD endpoints work (target mode only)
 - [ ] Replication rule CRUD endpoints work
-- [ ] Replication plugin connects as socket plugin
+- [ ] Replication subsystem starts with the agent and processes file events
 - [ ] Files matching rules upload to S3 target
 - [ ] Schedule windows respected (queued outside, drained inside)
 - [ ] Bandwidth limiting enforced via token bucket
@@ -581,47 +528,42 @@ Handle lost SQLite database: detect on startup, enter rebuild mode, issue `manif
 - [ ] Tier 4b serves file from replica when source node offline
 - [ ] Restore from agent target works (ownership transfer)
 - [ ] Restore from S3 target works (download + ownership transfer)
-- [ ] Plugin state recovery rebuilds manifest from target
+- [ ] Replication state recovery rebuilds manifest from target
 
 ---
 
-## Phase 8 — Notification System
+## Phase 7 — Notification System
 
 **Goal:** System events appear as notification documents and reach the browser in real time via PouchDB.
 
 **Milestone:** Fill a watched volume to trigger a storage warning, see it in the notification bell within seconds, acknowledge it, watch the badge clear.
 
-**Dependencies:** Requires Phase 6 for plugin health checks. Parallel with Phases 7 and 9.
+**Dependencies:** Requires Phase 2. Parallel with Phases 6 and 8.
 
-### 8.1 — Notification Document Type
+### 7.1 — Notification Document Type
 
 Notification documents use deterministic `_id` (`notification::{source_id}::{condition_key}`) for deduplication. Lifecycle: active → resolved or acknowledged. Track `first_seen`, `last_seen`, `occurrence_count`. Severity: info, warning, error.
 
-### 8.2 — Agent Notification Writers
+### 7.2 — Agent Notification Writers
 
-Implement notifications for: first crawl complete (info), inotify limit approaching (warning, auto-resolve), cache near capacity (warning, auto-resolve), storage near capacity (warning, auto-resolve), watch path inaccessible (error, auto-resolve), plugin disconnected (warning, resolve on reconnect), replication error (error), auth timestamp rejected (error), plugin queue full (warning).
+Implement notifications for: first crawl complete (info), inotify limit approaching (warning, auto-resolve), cache near capacity (warning, auto-resolve), storage near capacity (warning, auto-resolve), watch path inaccessible (error, auto-resolve), replication error (error), replication target unreachable (error, auto-resolve), replication backlog (warning, auto-resolve), auth timestamp rejected (error), replication manifest rebuild needed (warning).
 
-### 8.3 — Plugin Health Check Notifications
-
-Parse `notifications[]` and `resolve_notifications[]` from socket plugin health check responses. Write notification documents on plugin's behalf. Write `plugin_health_check_failed` after 3 missed checks.
-
-### 8.4 — Control Plane Notifications
+### 7.3 — Control Plane Notifications
 
 New node registered (info), credential inactive (warning), CouchDB replication stalled (warning), control plane disk low (warning), persistent CouchDB conflicts (warning — from the conflict monitoring background task).
 
-### 8.5 — Notification REST API
+### 7.4 — Notification REST API
 
 `GET /api/notifications` (with status/severity filters), `POST /api/notifications/{id}/acknowledge`, `POST /api/notifications/acknowledge-all`, `GET /api/notifications/history`.
 
-### 8.6 — Web UI Notification Bell
+### 7.5 — Web UI Notification Bell
 
 Bell icon in top nav with unread count badge (red for errors, amber for warnings). Slide-in notification panel: severity-grouped, action buttons (with API endpoints), acknowledge controls, history link. Dashboard alert banner for active errors. Live updates via PouchDB changes feed.
 
-### Phase 8 Checklist
+### Phase 7 Checklist
 
 - [ ] Agent writes notifications to CouchDB on relevant events
 - [ ] Deterministic _id prevents duplicate accumulation
-- [ ] Plugin health check polling works over socket
 - [ ] Control plane writes system-level notifications
 - [ ] Notifications replicate to browser via PouchDB
 - [ ] Bell icon shows correct unread count with severity coloring
@@ -631,36 +573,35 @@ Bell icon in top nav with unread count badge (red for errors, amber for warnings
 
 ---
 
-## Phase 9 — Backup and Restore
+## Phase 8 — Backup and Restore
 
 **Goal:** Download minimal or full backups as JSON; restore into a fresh instance.
 
-**Milestone:** Take a minimal backup, destroy the Compose stack, recreate it, restore the backup, see virtual directories and plugin configs reappear. Agents reconnect and re-crawl.
+**Milestone:** Take a minimal backup, destroy the Compose stack, recreate it, restore the backup, see virtual directories and replication configs reappear. Agents reconnect and re-crawl.
 
-**Dependencies:** Requires Phase 2 (API) and Phase 5 (UI). Independent of plugins/notifications.
+**Dependencies:** Requires Phase 2 (API) and Phase 5 (UI). Independent of notifications.
 
-### 9.1 — Backup Generation
+### 8.1 — Backup Generation
 
-`GET /api/system/backup?type=minimal` — essential documents only (virtual directories, label assignments & rules, annotations, credentials, plugin configs, storage backends, replication rules, partial node documents with network_mounts only). Secret-typed plugin settings redacted to `"__REDACTED__"`. Excludes: file documents, utilization snapshots, operational history. Size: typically <10 MB.
+`GET /api/system/backup?type=minimal` — essential documents only (virtual directories, label assignments & rules, credentials, storage backends, replication rules, partial node documents with network_mounts only). Excludes: file documents, utilization snapshots, annotations, operational history. Size: typically <10 MB.
 
 `GET /api/system/backup?type=full` — complete CouchDB database snapshot. Both stream as `Content-Disposition: attachment` JSON in `_bulk_docs` format.
 
-### 9.2 — Restore Process
+### 8.2 — Restore Process
 
 `POST /api/system/restore` — validate JSON, check all documents have recognized `type` fields, bulk write. Only permitted into an empty database (check document count, reject otherwise). For minimal backups: extract `network_mounts` from partial node documents, merge via PATCH. Return `{ restored_count, errors }`.
 
-### 9.3 — Developer Mode
+### 8.3 — Developer Mode
 
 `--developer-mode` flag on control plane (default off). Enables `DELETE /api/system/data` for database wipes during development.
 
-### 9.4 — Web UI Backup Controls
+### 8.4 — Web UI Backup Controls
 
-Settings → About: download buttons (minimal/full). Restore section visible only when database is empty. Post-restore banner: "Restart all agents." User warned that secret values must be re-entered after restore.
+Settings → About: download buttons (minimal/full). Restore section visible only when database is empty. Post-restore banner: "Restart all agents."
 
-### Phase 9 Checklist
+### Phase 8 Checklist
 
 - [ ] Minimal backup contains essential documents only (<10 MB typical)
-- [ ] Secret settings redacted to `"__REDACTED__"` in backup files
 - [ ] Full backup contains complete database
 - [ ] Restore only permitted into empty database
 - [ ] Network mounts merged correctly for minimal restore
@@ -670,81 +611,17 @@ Settings → About: download buttons (minimal/full). Restore section visible onl
 
 ---
 
-## Phase 10 — Storage Backends and Bridge Nodes
-
-**Goal:** Source-mode storage backends index external data into MosaicFS. Bridge nodes run `provides_filesystem` plugins to serve files from cloud services.
-
-**Milestone:** Configure an S3 source backend. Watch it index a bucket. Open a file from S3 through the VFS mount. Configure a Google Drive bridge with OAuth and see files appear.
-
-**Dependencies:** Requires Phase 7 (Replication — for storage backend infrastructure). Parallel with Phase 8.
-
-### 10.1 — Source-Mode Backend Framework
-
-Extend `storage_backend` documents with source-mode support. Implement `crawl_requested` event type: plugin receives event, returns list of file operations (add/modify/delete), agent applies via `_bulk_docs`. Polling strategy configurable per backend.
-
-### 10.2 — Bridge Node Support
-
-Add `role: "bridge"` to node documents (omitted for physical nodes). Agent detects empty `watch_paths` and skips filesystem crawl. Deliver `crawl_requested` events to `provides_filesystem` plugins on schedule. Docker volume for bridge storage (`/var/lib/mosaicfs/bridge-data` with `files/` and `plugin-state/`).
-
-### 10.3 — Tier 5 Materialize
-
-Implement `materialize` event for `provides_filesystem` plugins. Transfer server checks `file_path_prefix` match, invokes plugin with staging path in `cache/tmp/`, plugin writes file, agent moves to VFS cache. Add `source` tracking (`'plugin:{name}'`) in cache SQLite schema.
-
-### 10.4 — S3 Source Backend
-
-Poll `ListObjectsV2`, simulate directories from key prefixes, index files. Fetch via streaming download. Start here as reference implementation. Configurable polling interval (default 10 minutes).
-
-### 10.5 — B2 Source Backend
-
-S3-compatible API with custom endpoint. Share implementation with S3 backend.
-
-### 10.6 — Google Drive Backend
-
-OAuth2 with refresh tokens stored as encrypted files on hosting agent (not in CouchDB). Delta API for incremental sync (poll every 60 seconds), full listing every 5–10 minutes as fallback.
-
-### 10.7 — OneDrive Backend
-
-Microsoft Graph API. OAuth2 with delta sync. Path-to-item-ID mapping.
-
-### 10.8 — iCloud Backend
-
-Crawl local `~/Library/Mobile Documents/` sync directory on macOS. No API; eviction detection via extended attribute. Best-effort — documented limitations.
-
-### 10.9 — Bridge Storage Monitoring
-
-Hourly inode and disk utilization check on bridge volumes. Write `inodes_near_exhaustion` and `storage_near_capacity` notifications.
-
-### 10.10 — Web UI Backend Support
-
-Storage backend CRUD in Settings page. OAuth cards for cloud services (authorization flow, token status, re-authorize action button). Bridge node detection on Nodes page: render "Bridge Storage" section with retention configuration and sync controls.
-
-### Phase 10 Checklist
-
-- [ ] Bridge node runs in Docker Compose with volume
-- [ ] `provides_filesystem` plugin receives `crawl_requested`, agent creates file documents
-- [ ] Files served from bridge storage via Tier 1
-- [ ] Tier 5 materialize works for on-demand file extraction
-- [ ] S3 source backend indexes bucket and serves files via VFS
-- [ ] B2 source backend works (shared S3 implementation)
-- [ ] At least one OAuth backend (Google Drive or OneDrive) completes flow
-- [ ] OAuth tokens stored as encrypted files, not in CouchDB
-- [ ] iCloud backend crawls local sync directory
-- [ ] Bridge inode/storage monitoring writes notifications
-- [ ] Web UI shows backend CRUD, OAuth cards, bridge-specific controls
-
----
-
-## Phase 11 — CLI and Desktop App
+## Phase 9 — CLI and Desktop App
 
 **Goal:** `mosaicfs-cli` covers common management tasks. The Tauri desktop app wraps the web UI with native integration.
 
 **Milestone:** `mosaicfs-cli files fetch /documents/report.pdf --output ~/Downloads/` downloads a file. The desktop app can drag a file to Finder.
 
-### 11.1 — CLI Foundation
+### 9.1 — CLI Foundation
 
 Create `mosaicfs-cli` in the workspace. Load config from `~/.config/mosaicfs/cli.toml`. JWT authentication with in-memory caching. `clap` for argument parsing. Default human-readable output; `--json` for scripting. `--quiet` and `--verbose` flags.
 
-### 11.2 — CLI Commands
+### 9.2 — CLI Commands
 
 ```
 mosaicfs-cli nodes list | status <node-id>
@@ -756,11 +633,11 @@ mosaicfs-cli system health | reindex | backup [--type minimal|full] | restore <f
 mosaicfs-cli replication status | restore <target> [--source-node <id>] [--dest-node <id>]
 ```
 
-### 11.3 — Tauri Desktop App
+### 9.3 — Tauri Desktop App
 
 Wrap the React frontend in Tauri. Native additions: persistent window state, system tray, native file dialogs, drag-to-Finder. Read-only in v1. Target macOS and Linux.
 
-### Phase 11 Checklist
+### Phase 9 Checklist
 
 - [ ] CLI authenticates and maintains JWT
 - [ ] All commands work with human and JSON output
@@ -771,45 +648,45 @@ Wrap the React frontend in Tauri. Native additions: persistent window state, sys
 
 ---
 
-## Phase 12 — Hardening and Production Readiness
+## Phase 10 — Hardening and Production Readiness
 
 **Goal:** Graceful failure handling, automatic recovery from transient errors, acceptable performance at target scale, actionable observability.
 
 This phase runs continuously from Phase 2 onward, not as a final gate.
 
-### 12.1 — Error Classification and Retry
+### 10.1 — Error Classification and Retry
 
-Implement the standardized retry parameters: 1s initial delay, 2x multiplier, 60s cap, ±25% jitter. Apply the per-context retry table (plugin jobs, socket reconnect, HTTP transfer, replication, heartbeat, bridge polling).
+Implement the standardized retry parameters: 1s initial delay, 2x multiplier, 60s cap, ±25% jitter. Apply the per-context retry table (HTTP transfer, replication uploads, heartbeat, CouchDB replication reconnect).
 
-### 12.2 — Structured Logging
+### 10.2 — Structured Logging
 
 `tracing` with consistent fields: `node_id`, `file_id`, `operation`, `duration_ms`, `error`. INFO in production, runtime-adjustable. 50 MB rotation, 5 files retained (250 MB total). Stderr in development, file in production.
 
-### 12.3 — Health Checks and Stale Detection
+### 10.3 — Health Checks and Stale Detection
 
-Wire `GET /health` endpoints to real subsystem data (pouchdb, replication, vfs_mount, watcher, transfer_server, plugins). Control plane polls agents every 30 seconds; mark offline after 3 missed checks (90s). On control plane restart, re-poll all nodes. Conflict monitoring background task (60s interval), notification if conflict persists >5 minutes.
+Wire `GET /health` endpoints to real subsystem data (pouchdb, replication, vfs_mount, watcher, transfer_server). Control plane polls agents every 30 seconds; mark offline after 3 missed checks (90s). On control plane restart, re-poll all nodes. Conflict monitoring background task (60s interval), notification if conflict persists >5 minutes.
 
-### 12.4 — inotify Limit Handling
+### 10.4 — inotify Limit Handling
 
 Graceful degradation: unwatched directories fall back to nightly crawl. Log warnings near the limit. `agent init` sets `fs.inotify.max_user_watches = 524288` on Linux.
 
-### 12.5 — Large File Handling
+### 10.5 — Large File Handling
 
-Verify VFS reads, cache writes, and transfer streaming don't buffer full files in memory. Verify `Digest` trailer computation is streaming. Verify replication plugin streams uploads without full buffering.
+Verify VFS reads, cache writes, and transfer streaming don't buffer full files in memory. Verify `Digest` trailer computation is streaming. Verify replication subsystem streams uploads without full buffering.
 
-### 12.6 — Replication Edge Cases
+### 10.6 — Replication Edge Cases
 
 Test: control plane unreachable at startup (queue and retry), reconnect after extended outage (reconciliation crawl), clock skew (log warning if >2 minutes).
 
-### 12.7 — Scale Testing
+### 10.7 — Scale Testing
 
 Seed 500K file documents (target scale across 20 nodes). Measure: initial crawl time (100K files on disk), readdir latency (10 mount sources), replication cold-start sync, search latency, cache eviction throughput, label cache memory, access cache memory. For block cache: 10 GB video, random seeks, verify interval count stays under 20 after realistic viewing.
 
-### 12.8 — Installer Polish
+### 10.8 — Installer Polish
 
 Clean `agent init` prompts, URL validation, success confirmation with mount path. README with prerequisites, control plane setup, and agent installation per platform.
 
-### Phase 12 Checklist
+### Phase 10 Checklist
 
 - [ ] Transient errors retry with standardized backoff; permanent errors surface to UI
 - [ ] Structured logs have consistent fields
@@ -826,26 +703,23 @@ Clean `agent init` prompts, URL validation, success confirmation with mount path
 
 ## Testing Strategy
 
-**Unit tests** — test the hard invariants with `#[test]`: document serialization round-trips, step pipeline evaluation (all 10 ops), cache key computation, HMAC signatures, block map interval operations, label cache incremental updates, access cache debounce logic, dispatch_rules evaluation, replica document lifecycle.
+**Unit tests** — test the hard invariants with `#[test]`: document serialization round-trips, step pipeline evaluation (all 10 ops), cache key computation, HMAC signatures, block map interval operations, label cache incremental updates, access cache debounce logic, replica document lifecycle.
 
 **Integration tests** — require a real CouchDB via Docker Compose:
 - Replication filter correctness: write documents, replicate, verify only expected documents arrive per flow
 - Backup/restore round-trip: backup, wipe, restore, verify fidelity
-- Plugin invocation: deploy a test binary, trigger events, verify annotations
 - Transfer server: two agents, fetch a file peer-to-peer, verify bytes match and `Digest` trailer
-- Replication plugin: mock S3 target, verify upload/download/delete lifecycle
+- Replication subsystem: mock S3 target, verify upload/download/delete lifecycle
 - Tier 4b failover: take source offline, verify replica served
 
 **Development environment:**
 - Development happens inside of a devcontainer named "dev" defined in .devcontainer/docker-compose.yml.
 - The development CouchDB database is accessible using three environment variables: COUCHDB_URL, COUCHDB_USER, COUCHDB_PASSWORD
 - Local agent configured with `watch_paths` pointing to a test directory
-- `scripts/seed-test-data.sh` creates sample files, virtual directories, labels, plugin configs, storage backends, and replication rules
+- `scripts/seed-test-data.sh` creates sample files, virtual directories, labels, storage backends, and replication rules
 - `--developer-mode` flag enables database wipe between test cycles
 
-**Mock mode for backends** — plugins accept a `mock: true` config flag that generates synthetic files instead of calling real cloud APIs. Enables full pipeline testing without OAuth credentials.
-
-**Performance benchmarks** — Phase 12 seeds 500K file documents and measures crawl time, readdir latency, replication sync, search latency, and cache throughput.
+**Performance benchmarks** — Phase 10 seeds 500K file documents and measures crawl time, readdir latency, replication sync, search latency, and cache throughput.
 
 ---
 
@@ -867,13 +741,11 @@ If a phase changes the structure of an existing document type, include a one-tim
 | VFS read bugs causing incorrect data | Medium | High | Read-only v1 eliminates write-path bugs. Compare bytes read through VFS against direct source read. |
 | `Digest` trailer unsupported by some HTTP clients | Low | Low | Trailer is optional. Only agent-to-agent transfers verify; browsers trust TLS. |
 | CouchDB replication filters misbehaving | Medium | High | Test filters with document fixtures. Log mismatches at WARN. |
-| iCloud backend unreliable (no official API) | High | Low | Documented as best-effort. Eviction fallback is the safety net. |
-| OAuth token refresh failures | Medium | Medium | Automatic refresh with retry. Surface expiry in UI before it causes sync failures. |
+| iCloud backend unreliable (no official API) | High | Low | Tier 3 iCloud eviction detection is best-effort; files fall through to Tier 4. Documented limitation. |
 | inotify watch exhaustion | High | Medium | Graceful degradation to nightly crawl. Installer raises system limit. |
 | PouchDB browser replica too large | Low | Medium | Settings page shows size. Warning at 500 MB. Server-side pagination is the future fix. |
 | FUSE bindings (`fuser`) lacking features | Low | High | Evaluate API surface before Phase 4. Fallbacks: `fuse-rs` or direct binding. |
-| Plugin job queue overwhelming disk | Medium | Medium | 100K cap per plugin. Completed jobs purged after 24h. Notification on overflow. |
-| Replication plugin SQLite loss | Low | Medium | Automatic rebuild from target listing. Degraded mode notifications. |
+| Replication SQLite loss | Low | Medium | Automatic rebuild from target listing. Degraded mode notifications. |
 | Replica staleness during extended source outage | Medium | Medium | `"frozen"` status clearly communicated in UI. Restore operations documented. |
 
 ---
@@ -883,6 +755,10 @@ If a phase changes the structure of an existing document type, include a one-tim
 These features are referenced in the architecture but not implemented in v1:
 
 - **VFS write support** — read-only filesystem. Largest v2 item.
+- **Plugin system** — executable and socket plugins, annotation writes, `dispatch_rules`, query routing, `dashboard_widget` capability. The `plugin` and `annotation` document schemas are defined but no v1 component reads or writes them.
+- **Source-mode storage backends** — S3, B2, Google Drive, OneDrive, and iCloud as file sources. Depends on plugin infrastructure (`crawl_requested`, `materialize` events). The `storage_backend` document type is used in v1 for replication targets only.
+- **Bridge nodes** — `role: "bridge"` node type and `provides_filesystem` plugins. Depends on plugin infrastructure.
+- **Tier 5 materialize** — on-demand file materialization via plugins. Depends on plugin infrastructure.
 - **Federation** — schema accommodations in place (peering_agreement, federated_import documents), no implementation.
 - **Full-text content search** — filename only. Content indexing needs a search engine (Tantivy or Meilisearch via plugin).
 - **Multi-user support** — single user per instance. Path to multi-user is federation.
@@ -894,8 +770,8 @@ These features are referenced in the architecture but not implemented in v1:
 - **Tauri mobile** — PWA covers mobile.
 - **Automatic scheduled backups** — on-demand only; scriptable via `curl` or CLI.
 - **JWT key rotation** — signing key stable for deployment lifetime.
-- **Plugin sandboxing** — plugins run with agent privileges; plugin directory is the trust boundary.
+- **Plugin sandboxing** — deferred with the rest of the plugin system.
 
 ---
 
-*MosaicFS Implementation Plan v0.3*
+*MosaicFS Implementation Plan v0.5*
