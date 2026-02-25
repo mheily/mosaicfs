@@ -70,6 +70,10 @@ pub struct AppState {
     pub readdir_cache: Arc<ReaddirCache>,
     /// In-memory restore job store
     pub restore_jobs: RestoreJobStore,
+    /// Developer mode enables destructive endpoints (DELETE /api/system/data)
+    pub developer_mode: bool,
+    /// Server startup time for uptime calculation
+    pub started_at: Instant,
 }
 
 impl AppState {
@@ -78,6 +82,7 @@ impl AppState {
         jwt_secret: Vec<u8>,
         label_cache: Arc<LabelCache>,
         access_cache: Arc<AccessCache>,
+        developer_mode: bool,
     ) -> Self {
         let couchdb_url = std::env::var("COUCHDB_URL").unwrap_or_else(|_| "http://localhost:5984".to_string());
         let couchdb_user = std::env::var("COUCHDB_USER").unwrap_or_else(|_| "admin".to_string());
@@ -95,6 +100,8 @@ impl AppState {
             access_cache,
             readdir_cache: Arc::new(ReaddirCache::new()),
             restore_jobs: Arc::new(Mutex::new(HashMap::new())),
+            developer_mode,
+            started_at: Instant::now(),
         }
     }
 

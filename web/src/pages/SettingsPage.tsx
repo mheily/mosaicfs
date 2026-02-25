@@ -11,6 +11,7 @@ import {
   Copy,
   Check,
   Download,
+  Upload,
   Eye,
   EyeOff,
 } from 'lucide-react';
@@ -338,17 +339,83 @@ function GeneralTab() {
   );
 }
 
+interface BackupStatus {
+  empty: boolean;
+  document_count: number;
+}
+
+interface RestoreResult {
+  ok: boolean;
+  restored_count: number;
+  errors: string[];
+}
+
 function AboutTab() {
   const [info, setInfo] = useState<SystemInfo | null>(null);
+  const [backupStatus, setBackupStatus] = useState<BackupStatus | null>(null);
+  const [restoreFile, setRestoreFile] = useState<File | null>(null);
+  const [restoring, setRestoring] = useState(false);
+  const [restoreResult, setRestoreResult] = useState<RestoreResult | null>(null);
+  const [restoreError, setRestoreError] = useState<string | null>(null);
+  const [wiping, setWiping] = useState(false);
 
   useEffect(() => {
     api<SystemInfo>('/api/system/info')
       .then(setInfo)
       .catch(() => setInfo(null));
+    api<BackupStatus>('/api/system/backup/status')
+      .then(setBackupStatus)
+      .catch(() => setBackupStatus(null));
   }, []);
 
   function handleBackup(type: 'minimal' | 'full') {
     window.open(`/api/system/backup?type=${type}`, '_blank');
+  }
+
+  async function handleRestore() {
+    if (!restoreFile) return;
+    setRestoring(true);
+    setRestoreResult(null);
+    setRestoreError(null);
+    try {
+      const text = await restoreFile.text();
+      const body = JSON.parse(text);
+      const result = await api<RestoreResult>('/api/system/restore', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      setRestoreResult(result);
+      // Refresh backup status
+      api<BackupStatus>('/api/system/backup/status')
+        .then(setBackupStatus)
+        .catch(() => {});
+    } catch (e: unknown) {
+      setRestoreError(e instanceof Error ? e.message : 'Restore failed');
+    } finally {
+      setRestoring(false);
+    }
+  }
+
+  async function handleWipe() {
+    if (!confirm('This will permanently delete ALL data. Are you sure?')) return;
+    setWiping(true);
+    try {
+      await api('/api/system/data', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirm: 'DELETE_ALL_DATA' }),
+      });
+      // Refresh backup status
+      const status = await api<BackupStatus>('/api/system/backup/status');
+      setBackupStatus(status);
+      setRestoreResult(null);
+      setRestoreError(null);
+    } catch (e: unknown) {
+      alert(e instanceof Error ? e.message : 'Wipe failed');
+    } finally {
+      setWiping(false);
+    }
   }
 
   return (
@@ -400,6 +467,75 @@ function AboutTab() {
           </button>
         </div>
       </div>
+
+      <div className="rounded-lg border bg-card p-4 shadow-sm">
+        <h3 className="mb-3 text-sm font-semibold">Restore</h3>
+        {restoreResult?.ok ? (
+          <div className="space-y-2">
+            <div className="rounded-md bg-green-50 p-3 text-sm text-green-800 dark:bg-green-950 dark:text-green-200">
+              Restored {restoreResult.restored_count} documents. Restart all agents to complete recovery.
+            </div>
+            {restoreResult.errors.length > 0 && (
+              <div className="rounded-md bg-yellow-50 p-3 text-sm text-yellow-800 dark:bg-yellow-950 dark:text-yellow-200">
+                <p className="font-medium">Some documents had errors:</p>
+                <ul className="mt-1 list-inside list-disc">
+                  {restoreResult.errors.map((err, i) => (
+                    <li key={i}>{err}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        ) : backupStatus?.empty ? (
+          <div className="space-y-3">
+            <p className="text-sm text-muted-foreground">
+              Upload a backup file to restore this instance.
+            </p>
+            <input
+              type="file"
+              accept=".json"
+              onChange={(e) => setRestoreFile(e.target.files?.[0] ?? null)}
+              className="block w-full text-sm text-muted-foreground file:mr-4 file:rounded-md file:border file:border-input file:bg-transparent file:px-4 file:py-2 file:text-sm file:font-medium hover:file:bg-accent"
+            />
+            {restoreError && (
+              <div className="rounded-md bg-red-50 p-3 text-sm text-red-800 dark:bg-red-950 dark:text-red-200">
+                {restoreError}
+              </div>
+            )}
+            <button
+              onClick={handleRestore}
+              disabled={!restoreFile || restoring}
+              className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow hover:bg-primary/90 disabled:opacity-50"
+            >
+              <Upload className="h-4 w-4" />
+              {restoring ? 'Restoring...' : 'Restore'}
+            </button>
+          </div>
+        ) : backupStatus ? (
+          <p className="text-sm text-muted-foreground">
+            Database has {backupStatus.document_count} documents. Restore is only available on an empty database.
+          </p>
+        ) : (
+          <p className="text-sm text-muted-foreground">Loading status...</p>
+        )}
+      </div>
+
+      {info && (info as SystemInfo & { developer_mode?: boolean }).developer_mode && (
+        <div className="rounded-lg border border-red-300 bg-card p-4 shadow-sm dark:border-red-800">
+          <h3 className="mb-3 text-sm font-semibold text-red-600 dark:text-red-400">Developer Mode</h3>
+          <p className="mb-3 text-sm text-muted-foreground">
+            Delete all data from this instance. This action cannot be undone.
+          </p>
+          <button
+            onClick={handleWipe}
+            disabled={wiping}
+            className="inline-flex items-center gap-2 rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white shadow hover:bg-red-700 disabled:opacity-50"
+          >
+            <Trash2 className="h-4 w-4" />
+            {wiping ? 'Deleting...' : 'Delete All Data'}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

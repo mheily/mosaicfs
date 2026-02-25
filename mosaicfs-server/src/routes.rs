@@ -14,7 +14,7 @@ use crate::auth::hmac_auth::{self, HmacClaims};
 use crate::auth::jwt::{self, Claims};
 use crate::credentials;
 use crate::couchdb::CouchError;
-use crate::handlers::{agent, files, labels, nodes, notifications, replication, search, vfs};
+use crate::handlers::{agent, files, labels, nodes, notifications, replication, search, system, vfs};
 use crate::state::AppState;
 
 const LOGIN_RATE_LIMIT: u32 = 5;
@@ -109,10 +109,12 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         // Query
         .route("/api/query", post(stub_501))
         // System
-        .route("/api/health", get(stub_501))
-        .route("/api/system/info", get(stub_501))
-        .route("/api/system/backup", get(stub_501))
-        .route("/api/system/restore", post(stub_501))
+        .route("/api/health", get(system::health))
+        .route("/api/system/info", get(system::system_info))
+        .route("/api/system/backup", get(system::backup))
+        .route("/api/system/backup/status", get(system::backup_status))
+        .route("/api/system/restore", post(system::restore))
+        .route("/api/system/data", delete(system::delete_data))
         .route("/api/storage", get(stub_501))
         .layer(middleware::from_fn_with_state(state.clone(), jwt::jwt_middleware));
 

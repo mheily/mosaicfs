@@ -278,6 +278,68 @@ impl CouchClient {
         }
     }
 
+    pub async fn all_docs(&self, include_docs: bool) -> Result<AllDocsResponse, CouchError> {
+        let mut url = format!("{}/_all_docs", self.db_url());
+        if include_docs {
+            url.push_str("?include_docs=true");
+        }
+        let resp = self
+            .client
+            .get(&url)
+            .basic_auth(&self.auth.0, Some(&self.auth.1))
+            .send()
+            .await?;
+
+        if resp.status().is_success() {
+            Ok(resp.json().await?)
+        } else {
+            let body: CouchResponse = resp.json().await?;
+            Err(CouchError::Couch {
+                error: body.error.unwrap_or_default(),
+                reason: body.reason.unwrap_or_default(),
+            })
+        }
+    }
+
+    pub async fn db_info(&self) -> Result<serde_json::Value, CouchError> {
+        let resp = self
+            .client
+            .get(&self.db_url())
+            .basic_auth(&self.auth.0, Some(&self.auth.1))
+            .send()
+            .await?;
+
+        if resp.status().is_success() {
+            Ok(resp.json().await?)
+        } else {
+            let body: CouchResponse = resp.json().await?;
+            Err(CouchError::Couch {
+                error: body.error.unwrap_or_default(),
+                reason: body.reason.unwrap_or_default(),
+            })
+        }
+    }
+
+    pub async fn delete_db(&self) -> Result<(), CouchError> {
+        let resp = self
+            .client
+            .delete(&self.db_url())
+            .basic_auth(&self.auth.0, Some(&self.auth.1))
+            .send()
+            .await?;
+
+        if resp.status().is_success() {
+            info!(db = %self.db_name, "Deleted database");
+            Ok(())
+        } else {
+            let body: CouchResponse = resp.json().await?;
+            Err(CouchError::Couch {
+                error: body.error.unwrap_or_default(),
+                reason: body.reason.unwrap_or_default(),
+            })
+        }
+    }
+
     pub async fn find(
         &self,
         selector: serde_json::Value,

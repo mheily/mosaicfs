@@ -31,6 +31,8 @@ async fn main() -> anyhow::Result<()> {
         .install_default()
         .expect("Failed to install rustls crypto provider");
 
+    let developer_mode = std::env::args().any(|a| a == "--developer-mode");
+
     // Bootstrap subcommand: create first credential if none exist
     if std::env::args().nth(1).as_deref() == Some("bootstrap") {
         tracing_subscriber::fmt()
@@ -53,6 +55,10 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse().unwrap()))
         .init();
+
+    if developer_mode {
+        tracing::warn!("Developer mode enabled — DELETE /api/system/data is active");
+    }
 
     info!("mosaicfs-server starting");
 
@@ -92,7 +98,7 @@ async fn main() -> anyhow::Result<()> {
     info!("Materialized caches built");
 
     // Build app state
-    let state = Arc::new(AppState::new(db, jwt_secret, Arc::clone(&label_cache), Arc::clone(&access_cache)));
+    let state = Arc::new(AppState::new(db, jwt_secret, Arc::clone(&label_cache), Arc::clone(&access_cache), developer_mode));
 
     // Ensure root directory exists
     handlers::vfs::ensure_root_directory(&state).await?;
