@@ -101,7 +101,20 @@ pub async fn register_node(
     });
 
     match state.db.put_document(&format!("node::{}", node_id), &doc).await {
-        Ok(_) => (StatusCode::CREATED, Json(serde_json::json!({ "node_id": node_id }))),
+        Ok(_) => {
+            // Emit new_node_registered notification
+            let db = state.db.clone();
+            let nid = node_id.clone();
+            tokio::spawn(async move {
+                crate::notifications::emit_control_plane_notification(
+                    &db, "nodes",
+                    &format!("new_node_registered:{}", nid),
+                    "info", "New node registered",
+                    &format!("Node '{}' has been registered.", nid),
+                ).await;
+            });
+            (StatusCode::CREATED, Json(serde_json::json!({ "node_id": node_id })))
+        }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(error_json("internal", &e.to_string()))),
     }
 }

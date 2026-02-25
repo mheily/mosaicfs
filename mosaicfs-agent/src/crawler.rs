@@ -9,6 +9,7 @@ use tracing::{debug, info, warn};
 use walkdir::WalkDir;
 
 use crate::couchdb::CouchClient;
+use crate::notifications;
 use crate::replication_subsystem::{FileEvent, ReplicationHandle};
 
 const BATCH_SIZE: usize = 200;
@@ -44,11 +45,23 @@ pub async fn crawl(
     let mut seen_paths: HashMap<String, bool> = HashMap::new();
     let mut batch: Vec<serde_json::Value> = Vec::new();
 
+    let mut all_paths_ok = true;
     for watch_path in watch_paths {
         if !watch_path.exists() {
             warn!(path = %watch_path.display(), "Watch path does not exist, skipping");
+            let condition = format!("watch_path_inaccessible:{}", watch_path.display());
+            notifications::emit_notification(
+                db, node_id, "crawler", &condition,
+                "error", "Watch path inaccessible",
+                &format!("Watch path {} does not exist or is not accessible.", watch_path.display()),
+                None,
+            ).await;
+            all_paths_ok = false;
             continue;
         }
+        // Resolve any previous inaccessible notification for this path
+        let condition = format!("watch_path_inaccessible:{}", watch_path.display());
+        notifications::resolve_notification(db, node_id, &condition).await;
 
         for entry in WalkDir::new(watch_path).follow_links(false).into_iter().filter_map(|e| e.ok()) {
             if !entry.file_type().is_file() {

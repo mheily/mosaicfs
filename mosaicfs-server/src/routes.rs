@@ -14,7 +14,7 @@ use crate::auth::hmac_auth::{self, HmacClaims};
 use crate::auth::jwt::{self, Claims};
 use crate::credentials;
 use crate::couchdb::CouchError;
-use crate::handlers::{agent, files, labels, nodes, replication, search, vfs};
+use crate::handlers::{agent, files, labels, nodes, notifications, replication, search, vfs};
 use crate::state::AppState;
 
 const LOGIN_RATE_LIMIT: u32 = 5;
@@ -92,10 +92,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/replication/restore/{job_id}", get(replication::get_restore_job))
         .route("/api/replication/restore/{job_id}/cancel", post(replication::cancel_restore_job))
         // Notifications
-        .route("/api/notifications", get(stub_501))
-        .route("/api/notifications/{id}/acknowledge", post(stub_501))
-        .route("/api/notifications/acknowledge-all", post(stub_501))
-        .route("/api/notifications/history", get(stub_501))
+        .route("/api/notifications", get(notifications::list_notifications))
+        .route("/api/notifications/{id}/acknowledge", post(notifications::acknowledge_notification))
+        .route("/api/notifications/acknowledge-all", post(notifications::acknowledge_all))
+        .route("/api/notifications/history", get(notifications::notification_history))
         // Annotations
         .route("/api/annotations", get(stub_501))
         .route("/api/annotations", delete(stub_501))

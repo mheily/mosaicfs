@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useLiveQuery } from '@/hooks/useLiveQuery';
 import { Search, AlertTriangle, FileText, Server, Activity } from 'lucide-react';
 import { NodeBadge } from '@/components/NodeBadge';
+import type { NotificationDoc } from '@/components/NotificationPanel';
 
 interface NodeDoc {
   _id: string;
@@ -11,14 +12,6 @@ interface NodeDoc {
   status: string;
   platform?: string;
   last_heartbeat?: string;
-}
-
-interface NotificationDoc {
-  _id: string;
-  type: string;
-  severity: string;
-  message: string;
-  created_at?: string;
 }
 
 interface FileDoc {
@@ -34,7 +27,12 @@ export default function DashboardPage() {
   const { data: notifications } = useLiveQuery<NotificationDoc>({ type: 'notification' });
   const { data: files } = useLiveQuery<FileDoc>({ type: 'file' });
 
-  const errorNotifications = notifications.filter((n) => n.severity === 'error');
+  const activeNotifications = notifications.filter(
+    (n) => n.status === 'active',
+  );
+  const errorNotifications = activeNotifications.filter((n) => n.severity === 'error');
+  const warningNotifications = activeNotifications.filter((n) => n.severity === 'warning');
+  const [bannerDismissed, setBannerDismissed] = useState(false);
 
   function handleSearch(e: React.FormEvent) {
     e.preventDefault();
@@ -47,14 +45,43 @@ export default function DashboardPage() {
     <div className="space-y-6 p-6">
       <h1 className="text-2xl font-bold">Dashboard</h1>
 
-      {/* Error banner */}
-      {errorNotifications.length > 0 && (
+      {/* Error / warning banner */}
+      {!bannerDismissed && errorNotifications.length > 0 && (
         <div className="flex items-center gap-2 rounded-md border border-destructive bg-destructive/10 p-4 text-destructive">
           <AlertTriangle className="h-5 w-5 shrink-0" />
-          <div>
-            <p className="font-medium">{errorNotifications.length} error(s) detected</p>
+          <div className="flex-1">
+            <p className="font-medium">
+              {errorNotifications[0].title}
+              {errorNotifications.length > 1 &&
+                ` (+${errorNotifications.length - 1} more)`}
+            </p>
             <p className="text-sm">{errorNotifications[0].message}</p>
           </div>
+          <button
+            onClick={() => setBannerDismissed(true)}
+            className="text-xs underline shrink-0"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+      {!bannerDismissed && errorNotifications.length === 0 && warningNotifications.length > 0 && (
+        <div className="flex items-center gap-2 rounded-md border border-amber-500 bg-amber-500/10 p-4 text-amber-700 dark:text-amber-400">
+          <AlertTriangle className="h-5 w-5 shrink-0" />
+          <div className="flex-1">
+            <p className="font-medium">
+              {warningNotifications[0].title}
+              {warningNotifications.length > 1 &&
+                ` (+${warningNotifications.length - 1} more)`}
+            </p>
+            <p className="text-sm">{warningNotifications[0].message}</p>
+          </div>
+          <button
+            onClick={() => setBannerDismissed(true)}
+            className="text-xs underline shrink-0"
+          >
+            Dismiss
+          </button>
         </div>
       )}
 

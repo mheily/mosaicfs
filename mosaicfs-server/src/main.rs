@@ -4,6 +4,7 @@ mod couchdb;
 mod credentials;
 mod handlers;
 mod label_cache;
+mod notifications;
 mod readdir;
 mod readdir_cache;
 mod routes;
@@ -121,6 +122,15 @@ async fn main() -> anyhow::Result<()> {
         info!("Changes feed watcher started");
     }
 
+    // Start control plane health check task (every 5 minutes)
+    {
+        let state = Arc::clone(&state);
+        tokio::spawn(async move {
+            control_plane_health_checks(&state).await;
+        });
+        info!("Control plane health check task started");
+    }
+
     // Build router
     let app = routes::build_router(state).layer(TraceLayer::new_for_http());
 
@@ -163,6 +173,18 @@ async fn changes_feed_watcher(
                             if let Some(vpath) = doc.get("virtual_path").and_then(|v| v.as_str()) {
                                 state.readdir_cache.invalidate(vpath);
                             }
+                        }
+                        // Detect persistent CouchDB conflicts
+                        if doc.get("_conflicts").and_then(|v| v.as_array()).map_or(false, |a| !a.is_empty()) {
+                            let db = state.db.clone();
+                            let conflict_id = id.to_string();
+                            tokio::spawn(async move {
+                                notifications::emit_control_plane_notification(
+                                    &db, "couchdb", "persistent_couchdb_conflicts",
+                                    "warning", "CouchDB document conflicts detected",
+                                    &format!("Document '{}' has unresolved conflicts.", conflict_id),
+                                ).await;
+                            });
                         }
                     }
                 }
@@ -219,6 +241,65 @@ async fn flush_access_records(state: &AppState) {
         }
         Err(e) => {
             tracing::error!(error = %e, "Failed to flush access records");
+        }
+    }
+}
+
+/// Periodic control plane health checks.
+async fn control_plane_health_checks(state: &AppState) {
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+
+    loop {
+        interval.tick().await;
+
+        // Check control plane disk usage
+        if let Ok(output) = tokio::process::Command::new("df")
+            .arg("--output=pcent")
+            .arg("/")
+            .output()
+            .await
+        {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if let Some(line) = stdout.lines().nth(1) {
+                if let Some(pct) = line.trim().strip_suffix('%').and_then(|s| s.trim().parse::<u32>().ok()) {
+                    if pct >= 90 {
+                        notifications::emit_control_plane_notification(
+                            &state.db, "system", "control_plane_disk_low",
+                            "warning", "Control plane disk low",
+                            &format!("Root filesystem usage at {}%.", pct),
+                        ).await;
+                    } else {
+                        notifications::resolve_control_plane_notification(
+                            &state.db, "control_plane_disk_low",
+                        ).await;
+                    }
+                }
+            }
+        }
+
+        // Check for inactive credentials (not used in 90 days)
+        if let Ok(creds) = crate::credentials::list_credentials(&state.db).await {
+            for cred in &creds {
+                let key_id = cred.get("access_key_id").and_then(|v| v.as_str()).unwrap_or("");
+                let enabled = cred.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+                if !enabled || key_id.is_empty() {
+                    continue;
+                }
+                let last_used = cred.get("last_used").and_then(|v| v.as_str()).unwrap_or("");
+                if !last_used.is_empty() {
+                    if let Ok(ts) = last_used.parse::<chrono::DateTime<chrono::Utc>>() {
+                        let age = chrono::Utc::now() - ts;
+                        if age.num_days() > 90 {
+                            notifications::emit_control_plane_notification(
+                                &state.db, "auth",
+                                &format!("credential_inactive:{}", key_id),
+                                "warning", "Credential inactive",
+                                &format!("Credential '{}' has not been used in {} days.", key_id, age.num_days()),
+                            ).await;
+                        }
+                    }
+                }
+            }
         }
     }
 }

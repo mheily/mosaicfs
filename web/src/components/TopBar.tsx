@@ -9,6 +9,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { NotificationBell } from './NotificationBell';
 
 export function TopBar() {
   const { auth, logout } = useAuth();
@@ -17,6 +18,8 @@ export function TopBar() {
     <header className="flex h-14 items-center justify-between border-b bg-background px-4">
       <h1 className="text-lg font-semibold tracking-tight">MosaicFS</h1>
 
+      <div className="flex items-center gap-1">
+      <NotificationBell />
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button variant="ghost" size="sm" className="gap-2">
@@ -37,6 +40,7 @@ export function TopBar() {
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+      </div>
     </header>
   );
 }

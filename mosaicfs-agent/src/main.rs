@@ -4,6 +4,7 @@ mod couchdb;
 mod crawler;
 mod init;
 mod node;
+mod notifications;
 mod replication;
 mod replication_subsystem;
 
@@ -92,9 +93,21 @@ async fn main() -> anyhow::Result<()> {
         "Initial crawl complete"
     );
 
+    // Emit first_crawl_complete notification
+    notifications::emit_notification(
+        &db, &node_id, "crawler", "first_crawl_complete",
+        "info", "Initial crawl complete",
+        &format!(
+            "Indexed {} new, {} updated, {} deleted files.",
+            result.files_new, result.files_updated, result.files_deleted,
+        ),
+        None,
+    ).await;
+
     // Start heartbeat loop and wait for shutdown signal
     info!("Agent running. Press Ctrl+C to stop.");
     let mut heartbeat_interval = time::interval(HEARTBEAT_INTERVAL);
+    let mut health_check_interval = time::interval(Duration::from_secs(300)); // 5 min
 
     loop {
         tokio::select! {
@@ -102,6 +115,10 @@ async fn main() -> anyhow::Result<()> {
                 if let Err(e) = node::heartbeat(&db, &node_id).await {
                     error!(error = %e, "Heartbeat failed");
                 }
+            }
+            _ = health_check_interval.tick() => {
+                check_inotify_limits(&db, &node_id).await;
+                check_storage_capacity(&db, &node_id, &config.watch_paths).await;
             }
             _ = signal::ctrl_c() => {
                 info!("Received shutdown signal");
@@ -114,4 +131,62 @@ async fn main() -> anyhow::Result<()> {
     node::set_offline(&db, &node_id).await?;
     info!("Agent stopped");
     Ok(())
+}
+
+/// Check inotify watch limits on Linux and emit/resolve notification.
+async fn check_inotify_limits(db: &CouchClient, node_id: &str) {
+    #[cfg(target_os = "linux")]
+    {
+        let max = tokio::fs::read_to_string("/proc/sys/fs/inotify/max_user_watches")
+            .await
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok());
+        let current = tokio::fs::read_to_string("/proc/sys/fs/inotify/max_user_instances")
+            .await
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok());
+
+        if let (Some(max_w), Some(cur)) = (max, current) {
+            if max_w > 0 && cur > max_w * 80 / 100 {
+                notifications::emit_notification(
+                    db, node_id, "system", "inotify_limit_approaching",
+                    "warning", "inotify watch limit approaching",
+                    &format!("Using ~{} of {} max inotify watches.", cur, max_w),
+                    None,
+                ).await;
+            } else {
+                notifications::resolve_notification(db, node_id, "inotify_limit_approaching").await;
+            }
+        }
+    }
+}
+
+/// Check disk usage of watch paths and emit/resolve notification.
+async fn check_storage_capacity(db: &CouchClient, node_id: &str, watch_paths: &[std::path::PathBuf]) {
+    for watch_path in watch_paths {
+        if let Ok(output) = tokio::process::Command::new("df")
+            .arg("--output=pcent")
+            .arg(watch_path)
+            .output()
+            .await
+        {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            // Parse percentage from df output (second line, e.g. " 85%")
+            if let Some(line) = stdout.lines().nth(1) {
+                if let Some(pct) = line.trim().strip_suffix('%').and_then(|s| s.trim().parse::<u32>().ok()) {
+                    if pct >= 90 {
+                        notifications::emit_notification(
+                            db, node_id, "storage", "storage_near_capacity",
+                            "warning", "Storage near capacity",
+                            &format!("Disk usage at {}% for {}.", pct, watch_path.display()),
+                            None,
+                        ).await;
+                        return;
+                    }
+                }
+            }
+        }
+    }
+    // All paths OK — resolve if previously raised
+    notifications::resolve_notification(db, node_id, "storage_near_capacity").await;
 }

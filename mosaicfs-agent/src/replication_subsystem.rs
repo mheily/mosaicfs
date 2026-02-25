@@ -271,13 +271,15 @@ pub fn start(config: ReplicationConfig) -> anyhow::Result<ReplicationHandle> {
         let db_clone = config.db.clone();
         let node_id = config.node_id.clone();
         tokio::spawn(async move {
-            emit_notification(
+            crate::notifications::emit_notification(
                 &db_clone,
                 &node_id,
+                "replication",
                 "manifest_rebuild_needed",
                 "warning",
                 "Replication state rebuild needed",
                 "The local replication manifest was lost. Rebuilding from targets on next full scan.",
+                None,
             ).await;
         });
     }
@@ -363,7 +365,7 @@ async fn run_event_loop(
             }
 
             _ = upload_queue_ticker.tick() => {
-                process_upload_queue(&db, &conn, &mut pending_annotations).await;
+                process_upload_queue(&db, &conn, &node_id, &mut pending_annotations).await;
             }
         }
     }
@@ -617,6 +619,7 @@ async fn check_un_replication(
 async fn process_upload_queue(
     db: &CouchClient,
     conn: &Arc<std::sync::Mutex<Connection>>,
+    node_id: &str,
     pending_annotations: &mut HashMap<String, HashMap<String, String>>,
 ) {
     let (_, targets) = match load_rules_and_targets(db).await {
@@ -699,8 +702,43 @@ async fn process_upload_queue(
             Err(e) => {
                 warn!(file_id = %file_id, target = %target_name, error = %e, "Upload failed");
                 update_annotation_status(pending_annotations, &file_id, &target_name, "failed");
+
+                let err_str = e.to_string();
+                if err_str.contains("connect") || err_str.contains("dns") || err_str.contains("timeout") {
+                    crate::notifications::emit_notification(
+                        db, node_id, "replication",
+                        &format!("replication_target_unreachable:{}", target_name),
+                        "error", "Replication target unreachable",
+                        &format!("Cannot reach target '{}': {}", target_name, err_str),
+                        None,
+                    ).await;
+                } else {
+                    crate::notifications::emit_notification(
+                        db, node_id, "replication", "replication_error",
+                        "error", "Replication upload failed",
+                        &format!("Upload to '{}' failed for {}: {}", target_name, file_id, err_str),
+                        None,
+                    ).await;
+                }
             }
         }
+    }
+
+    // Check for backlog
+    let queue_size: i64 = {
+        let guard = conn.lock().unwrap();
+        guard.query_row("SELECT COUNT(*) FROM upload_queue", [], |row| row.get(0))
+            .unwrap_or(0)
+    };
+    if queue_size > 1000 {
+        crate::notifications::emit_notification(
+            db, node_id, "replication", "replication_backlog",
+            "warning", "Replication backlog",
+            &format!("{} files waiting in upload queue.", queue_size),
+            None,
+        ).await;
+    } else {
+        crate::notifications::resolve_notification(db, node_id, "replication_backlog").await;
     }
 }
 
@@ -1171,38 +1209,6 @@ fn parse_file_doc(doc: &serde_json::Value) -> mosaicfs_common::documents::FileDo
         deleted_at: None,
         migrated_from: None,
     }
-}
-
-async fn emit_notification(
-    db: &CouchClient,
-    node_id: &str,
-    condition_key: &str,
-    severity: &str,
-    title: &str,
-    message: &str,
-) {
-    let doc_id = format!("notification::{}::{}", node_id, condition_key);
-    let existing_rev = db.get_document(&doc_id).await.ok()
-        .and_then(|d| d.get("_rev").and_then(|v| v.as_str()).map(|s| s.to_string()));
-
-    let mut doc = serde_json::json!({
-        "_id": doc_id,
-        "type": "notification",
-        "source_id": node_id,
-        "condition_key": condition_key,
-        "severity": severity,
-        "title": title,
-        "message": message,
-        "status": "active",
-        "first_seen": chrono::Utc::now().to_rfc3339(),
-        "last_seen": chrono::Utc::now().to_rfc3339(),
-    });
-
-    if let Some(rev) = existing_rev {
-        doc["_rev"] = serde_json::Value::String(rev);
-    }
-
-    let _ = db.put_document(&doc_id, &doc).await;
 }
 
 #[cfg(test)]
