@@ -158,7 +158,7 @@ async fn main() -> anyhow::Result<()> {
                 check_inotify_limits(&db, &node_id).await;
                 check_storage_capacity(&db, &node_id, &config.watch_paths).await;
             }
-            _ = signal::ctrl_c() => {
+            _ = shutdown_signal() => {
                 info!("Received shutdown signal");
                 break;
             }
@@ -169,6 +169,26 @@ async fn main() -> anyhow::Result<()> {
     node::set_offline(&db, &node_id).await?;
     info!("Agent stopped");
     Ok(())
+}
+
+/// Resolves on SIGINT (Ctrl+C) or SIGTERM (pkill / systemd stop).
+async fn shutdown_signal() {
+    let ctrl_c = async { signal::ctrl_c().await.ok() };
+
+    #[cfg(unix)]
+    let sigterm = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("Failed to register SIGTERM handler")
+            .recv()
+            .await
+    };
+    #[cfg(not(unix))]
+    let sigterm = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c  => {},
+        _ = sigterm => {},
+    }
 }
 
 /// Check inotify watch limits on Linux and emit/resolve notification.
