@@ -177,12 +177,14 @@ pub async fn get_file_content(
         return (StatusCode::NOT_FOUND, Json(error_json("File has no source path"))).into_response();
     }
 
-    // Try local file first
+    // Parse Range header early — needed for both local and proxy paths
+    let range = headers.get(header::RANGE).and_then(|v| v.to_str().ok()).and_then(parse_range);
+    let disposition = format!("attachment; filename=\"{}\"", name.replace('"', "\\\""));
+
+    // Try local file first; if not present, proxy to the source agent
     let path = std::path::Path::new(export_path);
     if !path.exists() {
-        // TODO: Phase 2 Tier 4 — fetch from remote agent via HTTP
-        // For now, return 404 if the file is not locally accessible
-        return (StatusCode::NOT_FOUND, Json(error_json("File not accessible on this server"))).into_response();
+        return proxy_to_agent(&state, &doc, export_path, file_size, range, mime_type, &disposition).await;
     }
 
     let metadata = match tokio::fs::metadata(path).await {
@@ -193,11 +195,7 @@ pub async fn get_file_content(
         }
     };
     let total_size = metadata.len();
-
-    // Parse Range header
-    let range = headers.get(header::RANGE).and_then(|v| v.to_str().ok()).and_then(parse_range);
-
-    let disposition = format!("attachment; filename=\"{}\"", name.replace('"', "\\\""));
+    // `range` and `disposition` were computed above before the proxy check
 
     match range {
         Some((start, end)) => {
@@ -294,6 +292,107 @@ pub async fn get_file_access(
             (StatusCode::INTERNAL_SERVER_ERROR, Json(error_json(&e.to_string())))
         }
     }
+}
+
+/// Proxy a file content request to the source agent's internal file server.
+async fn proxy_to_agent(
+    state: &crate::state::AppState,
+    doc: &serde_json::Value,
+    export_path: &str,
+    file_size: u64,
+    range: Option<(u64, Option<u64>)>,
+    mime_type: &str,
+    disposition: &str,
+) -> Response {
+    let node_id = doc
+        .get("source")
+        .and_then(|s| s.get("node_id"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    if node_id.is_empty() {
+        return (StatusCode::NOT_FOUND, Json(error_json("File has no source node"))).into_response();
+    }
+
+    let node_doc = match state.db.get_document(&format!("node::{}", node_id)).await {
+        Ok(d) => d,
+        Err(_) => {
+            return (StatusCode::BAD_GATEWAY, Json(error_json("Source node not found"))).into_response();
+        }
+    };
+
+    let file_server_url = match node_doc.get("file_server_url").and_then(|v| v.as_str()) {
+        Some(u) => u.to_string(),
+        None => {
+            return (StatusCode::NOT_FOUND, Json(error_json("File not accessible: agent has no file server"))).into_response();
+        }
+    };
+    let agent_token = match node_doc.get("agent_token").and_then(|v| v.as_str()) {
+        Some(t) => t.to_string(),
+        None => {
+            return (StatusCode::NOT_FOUND, Json(error_json("File not accessible: agent has no token"))).into_response();
+        }
+    };
+
+    let mut proxy_url = format!(
+        "{}/internal/files/content?path={}",
+        file_server_url,
+        urlencoding::encode(export_path),
+    );
+    if let Some((start, end)) = range {
+        let end_val = end.unwrap_or(file_size.saturating_sub(1));
+        proxy_url.push_str(&format!("&start={}&end={}", start, end_val));
+    }
+
+    let client = reqwest::Client::new();
+    let resp = match client
+        .get(&proxy_url)
+        .header("Authorization", format!("Bearer {}", agent_token))
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            warn!(error = %e, url = %proxy_url, "Failed to reach agent file server");
+            return (StatusCode::BAD_GATEWAY, Json(error_json("Failed to reach agent"))).into_response();
+        }
+    };
+
+    let proxy_status = resp.status();
+    if !proxy_status.is_success() {
+        return (StatusCode::BAD_GATEWAY, Json(error_json("Agent returned error"))).into_response();
+    }
+
+    let body_bytes = match resp.bytes().await {
+        Ok(b) => b,
+        Err(e) => {
+            warn!(error = %e, "Failed to read agent response body");
+            return (StatusCode::BAD_GATEWAY, Json(error_json("Failed to read agent response"))).into_response();
+        }
+    };
+
+    let status = if range.is_some() {
+        StatusCode::PARTIAL_CONTENT
+    } else {
+        StatusCode::OK
+    };
+
+    let mut builder = Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, mime_type)
+        .header(header::CONTENT_LENGTH, body_bytes.len().to_string())
+        .header(header::CONTENT_DISPOSITION, disposition)
+        .header(header::ACCEPT_RANGES, "bytes");
+
+    if let Some((start, end)) = range {
+        let end_val = end.unwrap_or(file_size.saturating_sub(1));
+        builder = builder.header(
+            header::CONTENT_RANGE,
+            format!("bytes {}-{}/{}", start, end_val, file_size),
+        );
+    }
+
+    builder.body(Body::from(body_bytes)).unwrap()
 }
 
 /// Parse a Range header value like "bytes=0-499" or "bytes=500-"

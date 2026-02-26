@@ -10,6 +10,8 @@ pub async fn register_node(
     db: &CouchClient,
     node_id: &str,
     watch_paths: &[PathBuf],
+    file_server_url: &str,
+    agent_token: &str,
 ) -> anyhow::Result<()> {
     let doc_id = format!("node::{}", node_id);
     let friendly_name = hostname();
@@ -28,6 +30,8 @@ pub async fn register_node(
         existing["platform"] = serde_json::Value::String(platform);
         existing["status"] = serde_json::Value::String("online".to_string());
         existing["last_heartbeat"] = serde_json::Value::String(Utc::now().to_rfc3339());
+        existing["file_server_url"] = serde_json::Value::String(file_server_url.to_string());
+        existing["agent_token"] = serde_json::Value::String(agent_token.to_string());
         if let Some(s) = storage {
             existing["storage"] = s;
         }
@@ -42,6 +46,8 @@ pub async fn register_node(
             "last_heartbeat": Utc::now().to_rfc3339(),
             "vfs_capable": cfg!(target_os = "linux") || cfg!(target_os = "macos"),
             "capabilities": [],
+            "file_server_url": file_server_url,
+            "agent_token": agent_token,
         });
         if let Some(s) = storage {
             doc["storage"] = s;

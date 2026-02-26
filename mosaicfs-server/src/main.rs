@@ -35,6 +35,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Bootstrap subcommand: create first credential if none exist
     if std::env::args().nth(1).as_deref() == Some("bootstrap") {
+        let json_output = std::env::args().any(|a| a == "--json");
         tracing_subscriber::fmt()
             .with_env_filter(EnvFilter::new("warn"))
             .init();
@@ -47,8 +48,15 @@ async fn main() -> anyhow::Result<()> {
             std::process::exit(1);
         }
         let (access_key, secret_key) = credentials::create_credential(&db, "admin").await?;
-        println!("Access Key: {}", access_key);
-        println!("Secret Key: {}", secret_key);
+        if json_output {
+            println!("{}", serde_json::json!({
+                "access_key_id": access_key,
+                "secret_key": secret_key,
+            }));
+        } else {
+            println!("Access Key: {}", access_key);
+            println!("Secret Key: {}", secret_key);
+        }
         return Ok(());
     }
 

@@ -27,5 +27,6 @@ sha2 = { workspace = true }
 hmac = { workspace = true }
 hex = { workspace = true }
 async-trait = { workspace = true }
+axum = "0.8"
 hostname = "0.4"
 tempfile = "3"

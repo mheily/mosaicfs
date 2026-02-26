@@ -2,6 +2,7 @@ mod backend;
 mod config;
 mod couchdb;
 mod crawler;
+mod file_server;
 mod init;
 mod node;
 mod notifications;
@@ -23,6 +24,8 @@ const DEFAULT_CONFIG_PATH: &str = "agent.toml";
 const DEFAULT_STATE_DIR: &str = "/var/lib/mosaicfs";
 const DB_NAME: &str = "mosaicfs";
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+const CRAWL_INTERVAL: Duration = Duration::from_secs(15);
+const FILE_SERVER_PORT: u16 = 8444;
 const REPLICATION_FLUSH_INTERVAL_S: u64 = 60;
 const REPLICATION_FULL_SCAN_INTERVAL_S: u64 = 86400; // daily
 
@@ -40,11 +43,16 @@ async fn main() -> anyhow::Result<()> {
         return init::run_init().await;
     }
 
-    // Load config
-    let config_path = args
-        .get(1)
-        .cloned()
-        .unwrap_or_else(|| DEFAULT_CONFIG_PATH.to_string());
+    // Load config — accept both positional and --config <path>
+    let config_path = if args.get(1).map(|s| s.as_str()) == Some("--config") {
+        args.get(2)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("--config requires a path argument"))?
+    } else {
+        args.get(1)
+            .cloned()
+            .unwrap_or_else(|| DEFAULT_CONFIG_PATH.to_string())
+    };
     let mut config = AgentConfig::load(&PathBuf::from(&config_path))?;
 
     let state_dir = PathBuf::from(
@@ -53,13 +61,30 @@ async fn main() -> anyhow::Result<()> {
     let node_id = config.resolve_node_id(&state_dir)?;
     info!(node_id = %node_id, "Agent identity resolved");
 
+    // Determine file server URL using container hostname (resolvable by other services)
+    let file_server_host = hostname::get()
+        .map(|h| h.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "localhost".to_string());
+    let file_server_url = format!("http://{}:{}", file_server_host, FILE_SERVER_PORT);
+
+    // Generate a per-run agent token for the internal file server
+    let agent_token = uuid::Uuid::new_v4().to_string();
+
+    // Start the file server in the background
+    {
+        let token = agent_token.clone();
+        tokio::spawn(async move {
+            file_server::start(token, FILE_SERVER_PORT).await;
+        });
+    }
+
     // Connect to CouchDB
     let db = CouchClient::from_env(DB_NAME);
     db.ensure_db().await?;
     info!("CouchDB connection established");
 
-    // Register node
-    node::register_node(&db, &node_id, &config.watch_paths).await?;
+    // Register node (includes file_server_url and agent_token)
+    node::register_node(&db, &node_id, &config.watch_paths, &file_server_url, &agent_token).await?;
 
     // Start replication subsystem
     let replication_handle = match replication_subsystem::start(replication_subsystem::ReplicationConfig {
@@ -104,16 +129,29 @@ async fn main() -> anyhow::Result<()> {
         None,
     ).await;
 
-    // Start heartbeat loop and wait for shutdown signal
+    // Start main loop: heartbeat, periodic re-crawl, health checks, shutdown
     info!("Agent running. Press Ctrl+C to stop.");
     let mut heartbeat_interval = time::interval(HEARTBEAT_INTERVAL);
     let mut health_check_interval = time::interval(Duration::from_secs(300)); // 5 min
+    // First tick fires immediately; delay the first periodic crawl since we just ran one
+    let mut crawl_interval = time::interval_at(
+        tokio::time::Instant::now() + CRAWL_INTERVAL,
+        CRAWL_INTERVAL,
+    );
 
     loop {
         tokio::select! {
             _ = heartbeat_interval.tick() => {
                 if let Err(e) = node::heartbeat(&db, &node_id).await {
                     error!(error = %e, "Heartbeat failed");
+                }
+            }
+            _ = crawl_interval.tick() => {
+                if let Err(e) = crawler::crawl(
+                    &db, &node_id, &config.watch_paths, &config.excluded_paths,
+                    replication_handle.as_ref(),
+                ).await {
+                    error!(error = %e, "Periodic crawl failed");
                 }
             }
             _ = health_check_interval.tick() => {
