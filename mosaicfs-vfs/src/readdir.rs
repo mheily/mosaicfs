@@ -258,7 +258,7 @@ fn map_filename(
                     }
                 }
             }
-            MountSource::Federated { .. } => file_doc.name.clone(),
+            MountSource::Federated { .. } | MountSource::Label { .. } => file_doc.name.clone(),
         },
     }
 }
@@ -295,7 +295,7 @@ async fn query_mount_files(
             }
             Ok(results)
         }
-        MountSource::Federated { .. } => Ok(vec![]),
+        MountSource::Federated { .. } | MountSource::Label { .. } => Ok(vec![]),
     }
 }
 

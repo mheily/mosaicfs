@@ -253,18 +253,7 @@ pub async fn restore(
     State(state): State<Arc<AppState>>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    // 1. Validate format
-    let docs_array = match body.get("docs").and_then(|v| v.as_array()) {
-        Some(arr) => arr,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(error_json("bad_request", "Body must have a 'docs' array")),
-            );
-        }
-    };
-
-    // 2. Check empty database
+    // 1. Check empty database first so non-empty always returns 409 regardless of body format
     let doc_count = match count_non_design_docs(&state).await {
         Ok(c) => c,
         Err(e) => {
@@ -284,6 +273,17 @@ pub async fn restore(
             )),
         );
     }
+
+    // 2. Validate format
+    let docs_array = match body.get("docs").and_then(|v| v.as_array()) {
+        Some(arr) => arr,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(error_json("bad_request", "Body must have a 'docs' array")),
+            );
+        }
+    };
 
     // 3. Validate document types
     for doc in docs_array {

@@ -84,7 +84,7 @@ pub async fn evaluate_readdir(
     let mut conflict_policies: HashMap<String, ConflictPolicy> = HashMap::new(); // name -> policy
 
     for mount in mounts {
-        let files = query_mount_files(db, &mount.source).await?;
+        let files = query_mount_files(db, &mount.source, label_cache).await?;
 
         for (file_id, file_doc, _raw_doc) in &files {
             // Build combined step list: inherited + mount steps
@@ -123,7 +123,7 @@ pub async fn evaluate_readdir(
                                 }
                             }
                         }
-                        MountSource::Federated { .. } => file_doc.name.clone(),
+                        MountSource::Federated { .. } | MountSource::Label { .. } => file_doc.name.clone(),
                     }
                 }
             };
@@ -239,6 +239,7 @@ fn ancestor_paths(path: &str) -> Vec<String> {
 async fn query_mount_files(
     db: &CouchClient,
     source: &MountSource,
+    label_cache: &LabelCache,
 ) -> Result<Vec<(String, FileDocument, serde_json::Value)>, anyhow::Error> {
     match source {
         MountSource::Node {
@@ -260,6 +261,20 @@ async fn query_mount_files(
                 let id = doc.get("_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
                 if let Ok(file_doc) = serde_json::from_value::<FileDocument>(doc.clone()) {
                     results.push((id, file_doc, doc));
+                }
+            }
+            Ok(results)
+        }
+        MountSource::Label { label } => {
+            let file_ids = label_cache.files_with_label(label);
+            let mut results = Vec::new();
+            for file_id in &file_ids {
+                if let Ok(doc) = db.get_document(file_id).await {
+                    if doc.get("status").and_then(|v| v.as_str()) == Some("active") {
+                        if let Ok(file_doc) = serde_json::from_value::<FileDocument>(doc.clone()) {
+                            results.push((file_id.clone(), file_doc, doc));
+                        }
+                    }
                 }
             }
             Ok(results)

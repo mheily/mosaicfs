@@ -8,7 +8,7 @@ use chrono::Utc;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use mosaicfs_common::documents::{MountEntry, Step};
+use mosaicfs_common::documents::{ConflictPolicy, MountEntry, MountSource, MountStrategy, Step, StepResult};
 
 use crate::couchdb::CouchError;
 use crate::readdir;
@@ -107,8 +107,8 @@ pub async fn list_vfs(
 
     let mounts = dir_doc.get("mounts").cloned().unwrap_or(serde_json::json!([]));
 
-    // Parse mounts for evaluation
-    let mount_entries: Vec<MountEntry> = serde_json::from_value(mounts.clone()).unwrap_or_default();
+    // Parse mounts for evaluation (supports both structured and step-based formats)
+    let mount_entries = parse_step_based_mounts(&mounts);
 
     // Check readdir cache
     let dir_rev = dir_doc.get("_rev").and_then(|v| v.as_str()).unwrap_or("");
@@ -215,10 +215,65 @@ pub async fn get_tree(
     })))
 }
 
+/// Convert a JSON mounts array (possibly in step-based format) into `MountEntry` objects.
+fn parse_step_based_mounts(mounts_json: &serde_json::Value) -> Vec<MountEntry> {
+    let arr = match mounts_json.as_array() {
+        Some(a) => a,
+        None => return vec![],
+    };
+    arr.iter()
+        .enumerate()
+        .filter_map(|(i, m)| {
+            // Try direct deserialization first (structured format)
+            if let Ok(entry) = serde_json::from_value::<MountEntry>(m.clone()) {
+                return Some(entry);
+            }
+            // Fall back to step-based format: {"steps":[{"type":"node","node_id":"..."},{"type":"path_prefix","prefix":"..."}]}
+            let steps = m.get("steps")?.as_array()?;
+            let mut node_id: Option<String> = None;
+            let mut export_path = "/".to_string();
+            let mut label: Option<String> = None;
+            for step in steps {
+                match step.get("type").and_then(|v| v.as_str()).unwrap_or("") {
+                    "node" => {
+                        node_id = step.get("node_id").and_then(|v| v.as_str()).map(String::from);
+                    }
+                    "path_prefix" => {
+                        if let Some(p) = step.get("prefix").and_then(|v| v.as_str()) {
+                            export_path = p.to_string();
+                        }
+                    }
+                    "label" => {
+                        label = step.get("label").and_then(|v| v.as_str()).map(String::from);
+                    }
+                    _ => {}
+                }
+            }
+            let source = if let Some(nid) = node_id {
+                MountSource::Node { node_id: nid, export_path }
+            } else if let Some(lbl) = label {
+                MountSource::Label { label: lbl }
+            } else {
+                return None;
+            };
+            Some(MountEntry {
+                mount_id: format!("m{}", i),
+                source,
+                strategy: MountStrategy::Flatten,
+                source_prefix: None,
+                steps: vec![],
+                default_result: StepResult::Include,
+                conflict_policy: ConflictPolicy::LastWriteWins,
+            })
+        })
+        .collect()
+}
+
 // ── Directory CRUD ──
 
 #[derive(Deserialize)]
 pub struct CreateDirectoryRequest {
+    #[serde(rename = "path")]
     pub virtual_path: String,
     pub name: String,
 }

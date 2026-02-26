@@ -101,7 +101,12 @@ pub async fn acknowledge_notification(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let doc_id = format!("notification::{}", id);
+    // The id may already include the "notification::" prefix (from strip_internals renaming _id to id)
+    let doc_id = if id.starts_with("notification::") {
+        id.clone()
+    } else {
+        format!("notification::{}", id)
+    };
     let mut doc = match state.db.get_document(&doc_id).await {
         Ok(d) => d,
         Err(CouchError::NotFound(_)) => {

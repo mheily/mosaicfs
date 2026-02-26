@@ -73,10 +73,12 @@ pub async fn list_storage_backends(
 #[derive(Deserialize)]
 pub struct CreateStorageBackendRequest {
     pub name: String,
+    #[serde(alias = "type")]
     pub backend: String, // "s3", "b2", "directory", "agent"
     #[serde(default = "default_mode")]
     pub mode: String,
     pub hosting_node_id: Option<String>,
+    #[serde(alias = "config")]
     pub backend_config: serde_json::Value,
     pub credentials_ref: Option<String>,
     pub schedule: Option<String>,
@@ -281,9 +283,12 @@ pub async fn list_replication_rules(
 
 #[derive(Deserialize)]
 pub struct CreateReplicationRuleRequest {
-    pub name: String,
+    pub name: Option<String>,
+    #[serde(alias = "target")]
     pub target_name: String,
-    pub source: serde_json::Value,   // { "node_id": "*", "path_prefix"?: "..." }
+    // Accept either a source object or a flat source_node_id string
+    pub source: Option<serde_json::Value>,
+    pub source_node_id: Option<String>,
     #[serde(default)]
     pub steps: Vec<serde_json::Value>,
     #[serde(default = "default_result")]
@@ -298,12 +303,6 @@ pub async fn create_replication_rule(
     State(state): State<Arc<AppState>>,
     Json(body): Json<CreateReplicationRuleRequest>,
 ) -> impl IntoResponse {
-    if body.name.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(error_json("validation", "name is required")),
-        );
-    }
     if body.target_name.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -312,15 +311,26 @@ pub async fn create_replication_rule(
     }
 
     let rule_id = Uuid::new_v4().to_string();
+    let name = body.name.unwrap_or_else(|| format!("rule-{}", &rule_id[..8]));
+
+    // Build source object from either the nested format or the flat source_node_id field
+    let source = match body.source.filter(|v| !v.is_null()) {
+        Some(s) => s,
+        None => {
+            let nid = body.source_node_id.as_deref().unwrap_or("*");
+            serde_json::json!({ "node_id": nid })
+        }
+    };
+
     let doc_id = format!("replication_rule::{}", rule_id);
 
     let doc = serde_json::json!({
         "_id": doc_id,
         "type": "replication_rule",
         "rule_id": rule_id,
-        "name": body.name,
+        "name": name,
         "target_name": body.target_name,
-        "source": body.source,
+        "source": source,
         "steps": body.steps,
         "default_result": body.default_result,
         "enabled": body.enabled,
@@ -416,6 +426,7 @@ pub async fn delete_replication_rule(
 #[derive(Deserialize, Default)]
 pub struct ListReplicasQuery {
     pub file_id: Option<String>,
+    #[serde(alias = "target")]
     pub target_name: Option<String>,
     pub status: Option<String>,
     pub limit: Option<u64>,

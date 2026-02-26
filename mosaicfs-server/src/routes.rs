@@ -113,7 +113,6 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/system/info", get(system::system_info))
         .route("/api/system/backup", get(system::backup))
         .route("/api/system/backup/status", get(system::backup_status))
-        .route("/api/system/restore", post(system::restore))
         .route("/api/system/data", delete(system::delete_data))
         .route("/api/storage", get(stub_501))
         .layer(middleware::from_fn_with_state(state.clone(), jwt::jwt_middleware));
@@ -131,7 +130,9 @@ pub fn build_router(state: Arc<AppState>) -> Router {
 
     // Unauthenticated routes
     let public_routes = Router::new()
-        .route("/api/auth/login", post(login));
+        .route("/api/auth/login", post(login))
+        // Restore is unauthenticated: the empty-DB check acts as the security gate
+        .route("/api/system/restore", post(system::restore));
 
     Router::new()
         .merge(public_routes)

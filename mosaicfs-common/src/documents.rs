@@ -130,6 +130,9 @@ pub enum MountSource {
     Federated {
         federated_import_id: String,
     },
+    Label {
+        label: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

@@ -97,6 +97,16 @@ impl LabelCache {
             .unwrap_or(false)
     }
 
+    pub fn files_with_label(&self, label: &str) -> Vec<String> {
+        self.labels
+            .read()
+            .unwrap()
+            .iter()
+            .filter(|(_, labels)| labels.contains(label))
+            .map(|(uuid, _)| format!("file::{}", uuid))
+            .collect()
+    }
+
     pub fn get_labels(&self, file_uuid: &str) -> HashSet<String> {
         self.labels
             .read()
