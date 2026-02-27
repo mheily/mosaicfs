@@ -97,6 +97,15 @@ async fn main() -> anyhow::Result<()> {
     let jwt_secret = auth::jwt::ensure_jwt_secret(&data_dir)?;
     info!("JWT signing secret ready");
 
+    // Generate bootstrap token if no credentials exist yet
+    let existing_credentials = credentials::list_credentials(&db).await?;
+    if existing_credentials.is_empty() {
+        let bootstrap_token = uuid::Uuid::new_v4().to_string();
+        let token_path = data_dir.join("bootstrap_token");
+        std::fs::write(&token_path, &bootstrap_token)?;
+        info!("the bootstrap token is {}", bootstrap_token);
+    }
+
     // Build materialized caches
     let label_cache = Arc::new(label_cache::LabelCache::new());
     let access_cache = Arc::new(access_cache::AccessCache::new());
@@ -106,7 +115,7 @@ async fn main() -> anyhow::Result<()> {
     info!("Materialized caches built");
 
     // Build app state
-    let state = Arc::new(AppState::new(db, jwt_secret, Arc::clone(&label_cache), Arc::clone(&access_cache), developer_mode));
+    let state = Arc::new(AppState::new(db, jwt_secret, data_dir.clone(), Arc::clone(&label_cache), Arc::clone(&access_cache), developer_mode));
 
     // Ensure root directory exists
     handlers::vfs::ensure_root_directory(&state).await?;

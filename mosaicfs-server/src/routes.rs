@@ -131,6 +131,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     // Unauthenticated routes
     let public_routes = Router::new()
         .route("/api/auth/login", post(login))
+        .route("/api/system/bootstrap-status", get(bootstrap_status))
+        .route("/api/system/bootstrap", post(bootstrap))
         // Restore is unauthenticated: the empty-DB check acts as the security gate
         .route("/api/system/restore", post(system::restore));
 
@@ -239,6 +241,59 @@ async fn login(
         Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": { "code": "internal", "message": "Failed to issue token" } })),
+        ),
+    }
+}
+
+// ── Bootstrap handlers ──
+
+async fn bootstrap_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let needs_bootstrap = state.data_dir.join("bootstrap_token").exists();
+    Json(serde_json::json!({ "needs_bootstrap": needs_bootstrap }))
+}
+
+#[derive(Deserialize)]
+struct BootstrapRequest {
+    token: String,
+}
+
+async fn bootstrap(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<BootstrapRequest>,
+) -> impl IntoResponse {
+    let token_path = state.data_dir.join("bootstrap_token");
+
+    let stored_token = match std::fs::read_to_string(&token_path) {
+        Ok(t) => t.trim().to_string(),
+        Err(_) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({ "error": { "code": "not_required", "message": "Bootstrap is not required" } })),
+            );
+        }
+    };
+
+    if body.token != stored_token {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({ "error": { "code": "invalid_token", "message": "Invalid bootstrap token" } })),
+        );
+    }
+
+    match credentials::create_credential(&state.db, "admin").await {
+        Ok((access_key_id, secret_key)) => {
+            let _ = std::fs::remove_file(&token_path);
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "access_key_id": access_key_id,
+                    "secret_key": secret_key,
+                })),
+            )
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": { "code": "internal", "message": e.to_string() } })),
         ),
     }
 }

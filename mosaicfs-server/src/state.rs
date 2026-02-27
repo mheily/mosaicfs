@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -53,6 +54,7 @@ impl AccessTracker {
 pub struct AppState {
     pub db: CouchClient,
     pub jwt_secret: Vec<u8>,
+    pub data_dir: PathBuf,
     pub couchdb_url: String,
     pub couchdb_user: String,
     pub couchdb_password: String,
@@ -80,6 +82,7 @@ impl AppState {
     pub fn new(
         db: CouchClient,
         jwt_secret: Vec<u8>,
+        data_dir: PathBuf,
         label_cache: Arc<LabelCache>,
         access_cache: Arc<AccessCache>,
         developer_mode: bool,
@@ -90,6 +93,7 @@ impl AppState {
         Self {
             db,
             jwt_secret,
+            data_dir,
             couchdb_url,
             couchdb_user,
             couchdb_password,

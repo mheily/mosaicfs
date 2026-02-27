@@ -6,11 +6,13 @@ import path from 'path'
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   optimizeDeps: {
-    include: ['pouchdb', 'pouchdb-find'],
+    include: ['pouchdb', 'pouchdb-find', 'cookie'],
   },
   resolve: {
     alias: {
       'events': path.resolve(__dirname, 'node_modules/events/events.js'),
+      'pouchdb': path.resolve(__dirname, 'node_modules/pouchdb/lib/index-browser.es.js'),
+      'pouchdb-find': path.resolve(__dirname, 'node_modules/pouchdb-find/lib/index-browser.es.js'),
       '@': path.resolve(__dirname, './src'),
     },
   },
