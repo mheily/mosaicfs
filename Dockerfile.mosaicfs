@@ -1,0 +1,67 @@
+# Multi-stage build for localhost/mosaicfs:latest
+# Contains: mosaicfs-server, mosaicfs-agent
+
+# ── Stage 1: Web UI ──────────────────────────────────────────────────────────
+FROM docker.io/node:22-bookworm-slim AS web-builder
+WORKDIR /build
+COPY web/package.json web/package-lock.json ./web/
+RUN cd web && npm ci
+COPY web/ ./web/
+RUN cd web && npx vite build
+
+# ── Stage 2: Rust binaries ───────────────────────────────────────────────────
+FROM docker.io/rust:bookworm AS rust-builder
+
+# cmake is required by aws-lc-rs (pulled in by rustls)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        cmake \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# Copy workspace manifests first so dependency compilation is cached
+# separately from source changes.
+COPY Cargo.toml Cargo.lock ./
+COPY mosaicfs-common/Cargo.toml ./mosaicfs-common/
+COPY mosaicfs-server/Cargo.toml ./mosaicfs-server/
+COPY mosaicfs-agent/Cargo.toml  ./mosaicfs-agent/
+COPY mosaicfs-vfs/Cargo.toml   ./mosaicfs-vfs/
+
+# Stub source files so cargo can resolve and compile all dependencies
+# without the real sources. The actual binaries are rebuilt below.
+RUN mkdir -p mosaicfs-common/src mosaicfs-server/src mosaicfs-agent/src mosaicfs-vfs/src \
+    && echo 'pub fn placeholder() {}' > mosaicfs-common/src/lib.rs \
+    && echo 'pub fn placeholder() {}' > mosaicfs-vfs/src/lib.rs \
+    && echo 'fn main() {}' > mosaicfs-server/src/main.rs \
+    && echo 'fn main() {}' > mosaicfs-agent/src/main.rs \
+    && cargo build --release --bin mosaicfs-server --bin mosaicfs-agent \
+    && rm -rf mosaicfs-common/src mosaicfs-server/src mosaicfs-agent/src mosaicfs-vfs/src
+
+# Copy real sources and rebuild (only changed crates recompile)
+COPY mosaicfs-common/ ./mosaicfs-common/
+COPY mosaicfs-server/ ./mosaicfs-server/
+COPY mosaicfs-agent/  ./mosaicfs-agent/
+COPY mosaicfs-vfs/    ./mosaicfs-vfs/
+RUN touch mosaicfs-common/src/*.rs mosaicfs-server/src/*.rs mosaicfs-agent/src/*.rs \
+    && cargo build --release --bin mosaicfs-server --bin mosaicfs-agent
+
+# ── Stage 3: Runtime image ───────────────────────────────────────────────────
+FROM docker.io/debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# mosaicfs-server serves web/dist relative to its working directory
+WORKDIR /app
+
+COPY --from=rust-builder /build/target/release/mosaicfs-server /usr/local/bin/mosaicfs-server
+COPY --from=rust-builder /build/target/release/mosaicfs-agent   /usr/local/bin/mosaicfs-agent
+COPY --from=web-builder  /build/web/dist                        ./web/dist
+
+EXPOSE 8443 8444
+
+ENV MOSAICFS_PORT=8443 \
+    MOSAICFS_DATA_DIR=/var/lib/mosaicfs/server
+
+ENTRYPOINT ["/usr/local/bin/mosaicfs-server"]
