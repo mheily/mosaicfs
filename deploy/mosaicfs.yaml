@@ -1,0 +1,132 @@
+# MosaicFS Production Deployment
+# Compatible with: podman kube play
+#
+# Usage:
+#   podman kube play deploy/mosaicfs.yaml
+#
+# Before deploying, update the Secret below with your credentials,
+# or create the secret separately and remove it from this file.
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: couchdb-credentials
+type: Opaque
+stringData:
+  COUCHDB_USER: admin
+  COUCHDB_PASSWORD: changeme
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: couchdb-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mosaicfs-server-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mosaicfs
+  labels:
+    app: mosaicfs
+spec:
+  restartPolicy: Always
+  containers:
+    - name: couchdb
+      image: docker.io/couchdb:3
+      envFrom:
+        - secretRef:
+            name: couchdb-credentials
+      volumeMounts:
+        - name: couchdb-data
+          mountPath: /opt/couchdb/data
+      livenessProbe:
+        httpGet:
+          path: /_up
+          port: 5984
+        initialDelaySeconds: 15
+        periodSeconds: 10
+        failureThreshold: 6
+      readinessProbe:
+        httpGet:
+          path: /_up
+          port: 5984
+        initialDelaySeconds: 15
+        periodSeconds: 5
+        failureThreshold: 3
+      resources:
+        requests:
+          memory: 512Mi
+          cpu: "0.5"
+        limits:
+          memory: 2Gi
+          cpu: "2"
+
+    - name: mosaicfs-server
+      image: localhost/mosaicfs:latest
+      env:
+        - name: COUCHDB_URL
+          value: http://localhost:5984
+        - name: COUCHDB_USER
+          valueFrom:
+            secretKeyRef:
+              name: couchdb-credentials
+              key: COUCHDB_USER
+        - name: COUCHDB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: couchdb-credentials
+              key: COUCHDB_PASSWORD
+        - name: MOSAICFS_PORT
+          value: "8443"
+        - name: MOSAICFS_DATA_DIR
+          value: /var/lib/mosaicfs/server
+      ports:
+        - containerPort: 8443
+          hostPort: 8443
+          protocol: TCP
+      volumeMounts:
+        - name: mosaicfs-server-data
+          mountPath: /var/lib/mosaicfs/server
+      livenessProbe:
+        tcpSocket:
+          port: 8443
+        initialDelaySeconds: 30
+        periodSeconds: 10
+        failureThreshold: 6
+      readinessProbe:
+        tcpSocket:
+          port: 8443
+        initialDelaySeconds: 20
+        periodSeconds: 5
+        failureThreshold: 3
+      resources:
+        requests:
+          memory: 256Mi
+          cpu: "0.25"
+        limits:
+          memory: 1Gi
+          cpu: "1"
+
+  volumes:
+    - name: couchdb-data
+      persistentVolumeClaim:
+        claimName: couchdb-data
+    - name: mosaicfs-server-data
+      persistentVolumeClaim:
+        claimName: mosaicfs-server-data
