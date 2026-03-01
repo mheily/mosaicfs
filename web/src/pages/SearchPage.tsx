@@ -4,19 +4,22 @@ import { api } from '@/lib/api';
 import { useDebounce } from '@/hooks/useDebounce';
 import { formatBytes } from '@/lib/format';
 import { Search, Loader2, X } from 'lucide-react';
-import { FileDetailDrawer } from '@/components/FileDetailDrawer';
+import { FileDetailDrawer, type FileDetail } from '@/components/FileDetailDrawer';
 
-interface SearchResult {
+interface SearchApiItem {
+  id: string;
   name: string;
-  path: string;
-  node: string;
-  size: number;
-  is_dir?: boolean;
+  source?: { node_id?: string; export_path?: string };
+  size?: number;
   mtime?: string;
+  mime_type?: string;
 }
 
-interface LabelDef {
-  name: string;
+interface SearchApiResponse {
+  items: SearchApiItem[];
+  total: number;
+  offset: number;
+  limit: number;
 }
 
 const PAGE_SIZE = 50;
@@ -28,21 +31,21 @@ export default function SearchPage() {
   const [query, setQuery] = useState(initialQ);
   const debouncedQuery = useDebounce(query, 300);
 
-  const [results, setResults] = useState<SearchResult[]>([]);
+  const [results, setResults] = useState<SearchApiItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [hasMore, setHasMore] = useState(false);
   const [offset, setOffset] = useState(0);
 
-  const [labels, setLabels] = useState<LabelDef[]>([]);
+  const [labels, setLabels] = useState<string[]>([]);
   const [activeLabels, setActiveLabels] = useState<Set<string>>(new Set());
-  const [selectedFile, setSelectedFile] = useState<SearchResult | null>(null);
+  const [selectedFile, setSelectedFile] = useState<FileDetail | null>(null);
 
   const loaderRef = useRef<HTMLDivElement>(null);
 
   // Load available labels
   useEffect(() => {
-    api<LabelDef[]>('/api/labels')
-      .then(setLabels)
+    api<{ labels: string[] }>('/api/labels')
+      .then((data) => setLabels(data.labels ?? []))
       .catch(() => setLabels([]));
   }, []);
 
@@ -55,16 +58,17 @@ export default function SearchPage() {
       setLoading(true);
       try {
         let url = `/api/search?q=${encodeURIComponent(q)}&limit=${PAGE_SIZE}&offset=${newOffset}`;
-        if (activeLabels.size > 0) {
-          url += `&labels=${encodeURIComponent([...activeLabels].join(','))}`;
+        for (const label of activeLabels) {
+          url += `&label=${encodeURIComponent(label)}`;
         }
-        const data = await api<SearchResult[]>(url);
+        const data = await api<SearchApiResponse>(url);
+        const items = data.items ?? [];
         if (append) {
-          setResults((prev) => [...prev, ...data]);
+          setResults((prev) => [...prev, ...items]);
         } else {
-          setResults(data);
+          setResults(items);
         }
-        setHasMore(data.length === PAGE_SIZE);
+        setHasMore(items.length === PAGE_SIZE);
       } catch {
         if (!append) setResults([]);
       } finally {
@@ -132,18 +136,18 @@ export default function SearchPage() {
       {/* Label filter chips */}
       {labels.length > 0 && (
         <div className="mb-4 flex flex-wrap gap-2">
-          {labels.map((l) => (
+          {labels.map((label) => (
             <button
-              key={l.name}
-              onClick={() => toggleLabel(l.name)}
+              key={label}
+              onClick={() => toggleLabel(label)}
               className={`inline-flex items-center gap-1 rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
-                activeLabels.has(l.name)
+                activeLabels.has(label)
                   ? 'border-primary bg-primary text-primary-foreground'
                   : 'border-border hover:bg-accent'
               }`}
             >
-              {l.name}
-              {activeLabels.has(l.name) && <X className="h-3 w-3" />}
+              {label}
+              {activeLabels.has(label) && <X className="h-3 w-3" />}
             </button>
           ))}
         </div>
@@ -163,14 +167,25 @@ export default function SearchPage() {
           <tbody>
             {results.map((r, i) => (
               <tr
-                key={`${r.path}-${i}`}
+                key={`${r.id}-${i}`}
                 className="cursor-pointer border-b hover:bg-accent"
-                onClick={() => setSelectedFile(r)}
+                onClick={() =>
+                  setSelectedFile({
+                    _id: r.id,
+                    path: r.name,
+                    export_path: r.source?.export_path ?? '',
+                    node_id: r.source?.node_id ?? '',
+                    size: r.size ?? 0,
+                    mime_type: r.mime_type ?? '',
+                    mtime: r.mtime ?? '',
+                    labels: [],
+                  })
+                }
               >
                 <td className="py-2 font-medium">{r.name}</td>
-                <td className="py-2 text-muted-foreground">{r.path}</td>
-                <td className="py-2">{r.node}</td>
-                <td className="py-2">{formatBytes(r.size)}</td>
+                <td className="py-2 text-muted-foreground">{r.source?.export_path ?? ''}</td>
+                <td className="py-2">{r.source?.node_id ?? ''}</td>
+                <td className="py-2">{r.size != null ? formatBytes(r.size) : '--'}</td>
               </tr>
             ))}
           </tbody>
