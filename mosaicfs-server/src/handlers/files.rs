@@ -5,6 +5,8 @@ use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use chrono::Utc;
+use hmac::{Hmac, Mac};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncReadExt;
@@ -12,6 +14,56 @@ use tracing::warn;
 
 use crate::couchdb::CouchError;
 use crate::state::AppState;
+
+// ── Download tokens ──────────────────────────────────────────────────────────
+//
+// A download token is a short-lived credential that allows unauthenticated
+// access to a specific file's content. It is HMAC-SHA256 signed with the
+// server's JWT secret so no server-side storage is required.
+//
+// Token format: "{expiry_unix_ts}.{hmac_hex}"
+// HMAC message: "dl:{doc_id}:{expiry_unix_ts}"
+
+const DOWNLOAD_TOKEN_EXPIRY_SECS: i64 = 7200; // 2 hours — enough for video streaming
+
+fn issue_download_token(secret: &[u8], doc_id: &str) -> String {
+    let expiry = Utc::now().timestamp() + DOWNLOAD_TOKEN_EXPIRY_SECS;
+    let message = format!("dl:{}:{}", doc_id, expiry);
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC accepts any key size");
+    mac.update(message.as_bytes());
+    let sig = hex::encode(mac.finalize().into_bytes());
+    format!("{}.{}", expiry, sig)
+}
+
+fn validate_download_token(secret: &[u8], doc_id: &str, token: &str) -> bool {
+    let (expiry_str, sig) = match token.split_once('.') {
+        Some(pair) => pair,
+        None => return false,
+    };
+    let expiry: i64 = match expiry_str.parse() {
+        Ok(n) => n,
+        Err(_) => return false,
+    };
+    if Utc::now().timestamp() > expiry {
+        return false;
+    }
+    let message = format!("dl:{}:{}", doc_id, expiry_str);
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC accepts any key size");
+    mac.update(message.as_bytes());
+    let expected = hex::encode(mac.finalize().into_bytes());
+    constant_time_eq(sig.as_bytes(), expected.as_bytes())
+}
+
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
 
 #[derive(Deserialize, Default)]
 pub struct ListFilesQuery {
@@ -137,10 +189,46 @@ pub async fn get_file_by_path(
     }
 }
 
-/// GET /api/files/{file_id}/content — serve file content with Range support
-pub async fn get_file_content(
+/// POST /api/files/{file_id}/token — issue a short-lived download token
+pub async fn get_file_token(
     State(state): State<Arc<AppState>>,
     Path(file_id): Path<String>,
+) -> impl IntoResponse {
+    let doc_id = if file_id.starts_with("file::") {
+        file_id.clone()
+    } else {
+        format!("file::{}", file_id)
+    };
+
+    // Verify the file exists before issuing a token
+    match state.db.get_document(&doc_id).await {
+        Ok(_) => {}
+        Err(CouchError::NotFound(_)) => {
+            return (StatusCode::NOT_FOUND, Json(error_json("File not found"))).into_response();
+        }
+        Err(e) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_json(&e.to_string()))).into_response();
+        }
+    }
+
+    let token = issue_download_token(&state.jwt_secret, &doc_id);
+    let encoded_id = urlencoding::encode(&doc_id).into_owned();
+    let encoded_token = urlencoding::encode(&token).into_owned();
+    let url = format!("/api/files/{}/download?token={}", encoded_id, encoded_token);
+
+    (StatusCode::OK, Json(serde_json::json!({
+        "token": token,
+        "url": url,
+        "expires_in": DOWNLOAD_TOKEN_EXPIRY_SECS,
+    }))).into_response()
+}
+
+/// GET /api/files/{file_id}/download?token=… — token-authenticated content download
+/// (public route; JWT not required — the signed token provides authorization)
+pub async fn download_file(
+    State(state): State<Arc<AppState>>,
+    Path(file_id): Path<String>,
+    Query(query): Query<DownloadTokenQuery>,
     headers: HeaderMap,
 ) -> Response {
     let doc_id = if file_id.starts_with("file::") {
@@ -149,7 +237,21 @@ pub async fn get_file_content(
         format!("file::{}", file_id)
     };
 
-    let doc = match state.db.get_document(&doc_id).await {
+    if !validate_download_token(&state.jwt_secret, &doc_id, &query.token) {
+        return (StatusCode::UNAUTHORIZED, "Invalid or expired download token").into_response();
+    }
+
+    serve_file_content(&state, &doc_id, headers).await
+}
+
+#[derive(Deserialize)]
+pub struct DownloadTokenQuery {
+    pub token: String,
+}
+
+/// Shared file-serving logic used by both the JWT-authed and token-authed routes.
+async fn serve_file_content(state: &AppState, doc_id: &str, headers: HeaderMap) -> Response {
+    let doc = match state.db.get_document(doc_id).await {
         Ok(d) => d,
         Err(CouchError::NotFound(_)) => {
             return (StatusCode::NOT_FOUND, Json(error_json("File not found"))).into_response();
@@ -160,7 +262,7 @@ pub async fn get_file_content(
     };
 
     // Record access
-    state.record_access(&doc_id);
+    state.record_access(doc_id);
 
     let name = doc.get("name").and_then(|v| v.as_str()).unwrap_or("file");
     let mime_type = doc.get("mime_type").and_then(|v| v.as_str()).unwrap_or("application/octet-stream");
@@ -265,6 +367,20 @@ pub async fn get_file_content(
                 .unwrap()
         }
     }
+}
+
+/// GET /api/files/{file_id}/content — JWT-authenticated file content
+pub async fn get_file_content(
+    State(state): State<Arc<AppState>>,
+    Path(file_id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let doc_id = if file_id.starts_with("file::") {
+        file_id.clone()
+    } else {
+        format!("file::{}", file_id)
+    };
+    serve_file_content(&state, &doc_id, headers).await
 }
 
 /// GET /api/files/{file_id}/access — get access record for a file

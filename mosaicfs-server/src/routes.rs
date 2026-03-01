@@ -52,6 +52,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/files/by-path", get(files::get_file_by_path))
         .route("/api/files/{file_id}", get(files::get_file))
         .route("/api/files/{file_id}/content", get(files::get_file_content))
+        .route("/api/files/{file_id}/token", get(files::get_file_token))
         .route("/api/files/{file_id}/access", get(files::get_file_access))
         // VFS
         .route("/api/vfs", get(vfs::list_vfs))
@@ -136,7 +137,9 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/system/bootstrap-status", get(bootstrap_status))
         .route("/api/system/bootstrap", post(bootstrap))
         // Restore is unauthenticated: the empty-DB check acts as the security gate
-        .route("/api/system/restore", post(system::restore));
+        .route("/api/system/restore", post(system::restore))
+        // Token-authenticated file download (token replaces JWT for streaming use cases)
+        .route("/api/files/{file_id}/download", get(files::download_file));
 
     Router::new()
         .merge(public_routes)

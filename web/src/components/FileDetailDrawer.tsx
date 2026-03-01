@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Sheet,
   SheetContent,
@@ -37,6 +37,12 @@ import { LabelChip } from '@/components/LabelChip';
 import { formatBytes, formatDate } from '@/lib/format';
 import { api, getAuthToken } from '@/lib/api';
 
+interface DownloadTokenResponse {
+  token: string;
+  url: string;
+  expires_in: number;
+}
+
 export interface FileDetail {
   _id: string;
   path: string;
@@ -64,29 +70,25 @@ export function FileDetailDrawer({ file, onClose }: FileDetailDrawerProps) {
   const [popoverOpen, setPopoverOpen] = useState(false);
   const [annotationsOpen, setAnnotationsOpen] = useState(false);
   const [preview, setPreview] = useState<string | null>(null);
-  // Blob URL for inline image/PDF previews — created from an authed fetch so
-  // we don't need to pass the JWT in a query param or embed it in an <img src>.
-  const [blobUrl, setBlobUrl] = useState<string | null>(null);
-  const blobUrlRef = useRef<string | null>(null);
+  // Signed download token URL — used for video/image/PDF preview and downloads.
+  // No blob buffering needed; the browser streams directly from the server.
+  const [tokenUrl, setTokenUrl] = useState<string | null>(null);
 
   useEffect(() => {
     setPreview(null);
     setLabels(file?.labels ?? []);
-
-    // Revoke previous blob URL before creating a new one
-    if (blobUrlRef.current) {
-      URL.revokeObjectURL(blobUrlRef.current);
-      blobUrlRef.current = null;
-      setBlobUrl(null);
-    }
+    setTokenUrl(null);
 
     if (!file) return;
 
-    const isText = file.mime_type?.startsWith('text/') || file.mime_type === 'application/json';
-    const isImage = file.mime_type?.startsWith('image/');
-    const isPdf = file.mime_type === 'application/pdf';
+    // Fetch a short-lived signed download URL for preview and the download button
+    api<DownloadTokenResponse>(`/api/files/${file._id}/token`)
+      .then((data) => setTokenUrl(data.url))
+      .catch(() => {});
 
-    if (!isText && !isImage && !isPdf) return;
+    // Text preview: fetch content with auth header to display in <pre>
+    const isText = file.mime_type?.startsWith('text/') || file.mime_type === 'application/json';
+    if (!isText) return;
 
     const token = getAuthToken();
     fetch(`/api/files/${file._id}/content`, {
@@ -94,20 +96,9 @@ export function FileDetailDrawer({ file, onClose }: FileDetailDrawerProps) {
     })
       .then(async (r) => {
         if (!r.ok) return;
-        const blob = await r.blob();
-        const url = URL.createObjectURL(blob);
-        blobUrlRef.current = url;
-        setBlobUrl(url);
-        if (isText) setPreview(await blob.text());
+        setPreview(await r.text());
       })
       .catch(() => {});
-
-    return () => {
-      if (blobUrlRef.current) {
-        URL.revokeObjectURL(blobUrlRef.current);
-        blobUrlRef.current = null;
-      }
-    };
   }, [file]);
 
   useEffect(() => {
@@ -146,24 +137,12 @@ export function FileDetailDrawer({ file, onClose }: FileDetailDrawerProps) {
     }
   };
 
-  async function handleDownload() {
-    if (!file) return;
-    // Reuse the blob already fetched for preview if available; otherwise fetch fresh.
-    const src = blobUrl ?? await (async () => {
-      const token = getAuthToken();
-      const r = await fetch(`/api/files/${file._id}/content`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      });
-      if (!r.ok) return null;
-      return URL.createObjectURL(await r.blob());
-    })();
-    if (!src) return;
+  function handleDownload() {
+    if (!file || !tokenUrl) return;
     const a = document.createElement('a');
-    a.href = src;
+    a.href = tokenUrl;
     a.download = filename(file.path);
     a.click();
-    // If we created a temporary URL (not the cached blobUrl), release it after a tick.
-    if (src !== blobUrl) setTimeout(() => URL.revokeObjectURL(src), 60_000);
   }
 
   const filteredSuggestions = suggestions.filter(
@@ -287,11 +266,22 @@ export function FileDetailDrawer({ file, onClose }: FileDetailDrawerProps) {
               </Collapsible>
 
               {/* Inline Preview */}
-              {file.mime_type?.startsWith('image/') && blobUrl && (
+              {file.mime_type?.startsWith('video/') && tokenUrl && (
+                <section className="space-y-2">
+                  <h3 className="text-sm font-semibold">Preview</h3>
+                  {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+                  <video
+                    src={tokenUrl}
+                    controls
+                    className="w-full rounded border"
+                  />
+                </section>
+              )}
+              {file.mime_type?.startsWith('image/') && tokenUrl && (
                 <section className="space-y-2">
                   <h3 className="text-sm font-semibold">Preview</h3>
                   <img
-                    src={blobUrl}
+                    src={tokenUrl}
                     alt={filename(file.path)}
                     className="max-h-64 rounded border object-contain"
                   />
@@ -307,11 +297,11 @@ export function FileDetailDrawer({ file, onClose }: FileDetailDrawerProps) {
                     </pre>
                   </section>
                 )}
-              {file.mime_type === 'application/pdf' && blobUrl && (
+              {file.mime_type === 'application/pdf' && tokenUrl && (
                 <section className="space-y-2">
                   <h3 className="text-sm font-semibold">Preview</h3>
                   <iframe
-                    src={blobUrl}
+                    src={tokenUrl}
                     className="h-96 w-full rounded border"
                     title="PDF preview"
                   />
@@ -320,7 +310,7 @@ export function FileDetailDrawer({ file, onClose }: FileDetailDrawerProps) {
 
               {/* Actions */}
               <div className="flex flex-wrap gap-2">
-                <Button variant="outline" size="sm" onClick={handleDownload}>
+                <Button variant="outline" size="sm" onClick={handleDownload} disabled={!tokenUrl}>
                   <Download className="h-4 w-4" />
                   Download
                 </Button>
