@@ -12,6 +12,7 @@ import { startSync, destroyDB } from '@/lib/pouchdb';
 interface AuthState {
   token: string;
   accessKeyId: string;
+  name?: string;
   expiresAt: string;
 }
 
@@ -66,6 +67,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Backfill name for sessions restored from storage that predate the name field
+  useEffect(() => {
+    if (auth && !auth.name) {
+      api<{ name: string }>(`/api/credentials/${auth.accessKeyId}`)
+        .then((cred) => {
+          const updated = { ...auth, name: cred.name };
+          saveAuth(updated);
+          setAuth(updated);
+        })
+        .catch(() => {/* ignore – name stays blank */});
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const logout = useCallback(async () => {
     try {
       await api('/api/auth/logout', { method: 'POST' });
@@ -99,12 +114,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       },
     );
 
+    setAuthToken(res.token);
+
+    const cred = await api<{ name: string }>(`/api/credentials/${accessKeyId}`);
+
     const state: AuthState = {
       token: res.token,
       accessKeyId,
+      name: cred.name,
       expiresAt: new Date(res.expires_at * 1000).toISOString(),
     };
-    setAuthToken(res.token);
     saveAuth(state);
     setAuth(state);
 

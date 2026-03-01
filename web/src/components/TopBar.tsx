@@ -25,7 +25,7 @@ export function TopBar() {
           <Button variant="ghost" size="sm" className="gap-2">
             <User className="h-4 w-4" />
             <span className="hidden sm:inline text-sm">
-              {auth?.accessKeyId ?? 'Unknown'}
+              {auth?.name ?? 'Unknown'}
             </span>
           </Button>
         </DropdownMenuTrigger>
