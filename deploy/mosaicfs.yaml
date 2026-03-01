@@ -1,20 +1,42 @@
-# MosaicFS Production Deployment
+# MosaicFS All-in-One Deployment (control plane + agent)
 # Compatible with: podman kube play
 #
 # Usage:
 #   podman kube play deploy/mosaicfs.yaml
 #
-# Before deploying, update the Secret below with your credentials,
-# or create the secret separately and remove it from this file.
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: couchdb-credentials
-type: Opaque
-stringData:
-  COUCHDB_USER: admin
-  COUCHDB_PASSWORD: changeme
+# ── Before deploying ─────────────────────────────────────────────────────────
+#
+# Create /etc/mosaicfs on the host and populate two files:
+#
+#   sudo mkdir -p /etc/mosaicfs
+#   sudo chmod 700 /etc/mosaicfs
+#
+# 1. /etc/mosaicfs/couchdb.env — CouchDB credentials, sourced by all containers:
+#
+#      COUCHDB_URL=http://localhost:5984
+#      COUCHDB_USER=admin
+#      COUCHDB_PASSWORD=changeme
+#
+#    sudo chmod 600 /etc/mosaicfs/couchdb.env
+#
+# 2. /etc/mosaicfs/agent.toml — agent config including the MosaicFS access key:
+#
+#      control_plane_url = "https://localhost:8443"
+#      watch_paths = ["/data"]
+#      # excluded_paths = ["/data/.cache"]
+#
+#      # Create a credential in Settings → Credentials in the web UI.
+#      # On first deploy, use the bootstrap token shown in the server log.
+#      access_key_id = "MOSAICFS_..."
+#      secret_key    = "..."
+#
+#    sudo chmod 600 /etc/mosaicfs/agent.toml
+#
+# 3. Replace /data/mosaicfs-test in the data hostPath volume below with the
+#    directory you want the agent to index, and update watch_paths above to
+#    match.
+#
+# ─────────────────────────────────────────────────────────────────────────────
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -39,6 +61,17 @@ spec:
       storage: 1Gi
 ---
 apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: agent-state
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
 kind: Pod
 metadata:
   name: mosaicfs
@@ -49,10 +82,21 @@ spec:
   containers:
     - name: couchdb
       image: docker.io/couchdb:3
-      envFrom:
-        - secretRef:
-            name: couchdb-credentials
+      command: ["sh", "-c"]
+      args:
+        - set -a; . /etc/mosaicfs/couchdb.env; set +a;
+          exec /docker-entrypoint.sh /opt/couchdb/bin/couchdb
+      ports:
+        # Bound to localhost only — not exposed on the network.
+        # Access Fauxton via SSH tunnel: ssh -L 5984:localhost:5984 <nas>
+        - containerPort: 5984
+          hostPort: 5984
+          hostIP: 127.0.0.1
+          protocol: TCP
       volumeMounts:
+        - name: mosaicfs-config
+          mountPath: /etc/mosaicfs
+          readOnly: true
         - name: couchdb-data
           mountPath: /opt/couchdb/data
       livenessProbe:
@@ -79,19 +123,11 @@ spec:
 
     - name: mosaicfs-server
       image: localhost/mosaicfs:latest
+      command: ["sh", "-c"]
+      args:
+        - set -a; . /etc/mosaicfs/couchdb.env; set +a;
+          exec /usr/local/bin/mosaicfs-server
       env:
-        - name: COUCHDB_URL
-          value: http://localhost:5984
-        - name: COUCHDB_USER
-          valueFrom:
-            secretKeyRef:
-              name: couchdb-credentials
-              key: COUCHDB_USER
-        - name: COUCHDB_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: couchdb-credentials
-              key: COUCHDB_PASSWORD
         - name: MOSAICFS_PORT
           value: "8443"
         - name: MOSAICFS_DATA_DIR
@@ -101,6 +137,9 @@ spec:
           hostPort: 8443
           protocol: TCP
       volumeMounts:
+        - name: mosaicfs-config
+          mountPath: /etc/mosaicfs
+          readOnly: true
         - name: mosaicfs-server-data
           mountPath: /var/lib/mosaicfs/server
       livenessProbe:
@@ -123,10 +162,52 @@ spec:
           memory: 1Gi
           cpu: "1"
 
+    - name: mosaicfs-agent
+      image: localhost/mosaicfs:latest
+      command: ["sh", "-c"]
+      args:
+        - set -a; . /etc/mosaicfs/couchdb.env; set +a;
+          exec /usr/local/bin/mosaicfs-agent --config /etc/mosaicfs/agent.toml
+      env:
+        - name: MOSAICFS_STATE_DIR
+          value: /var/lib/mosaicfs/agent
+      ports:
+        # File server for peer-to-peer replication; expose as hostPort if
+        # agents on other hosts need to reach this one.
+        - containerPort: 8444
+          protocol: TCP
+      volumeMounts:
+        - name: mosaicfs-config
+          mountPath: /etc/mosaicfs
+          readOnly: true
+        - name: agent-state
+          mountPath: /var/lib/mosaicfs/agent
+        - name: data
+          mountPath: /data/mosaicfs-test
+          readOnly: true
+      resources:
+        requests:
+          memory: 128Mi
+          cpu: "0.1"
+        limits:
+          memory: 512Mi
+          cpu: "1"
+
   volumes:
+    - name: mosaicfs-config
+      hostPath:
+        path: /etc/mosaicfs
+        type: Directory
     - name: couchdb-data
       persistentVolumeClaim:
         claimName: couchdb-data
     - name: mosaicfs-server-data
       persistentVolumeClaim:
         claimName: mosaicfs-server-data
+    - name: agent-state
+      persistentVolumeClaim:
+        claimName: agent-state
+    - name: data
+      hostPath:
+        path: /data/mosaicfs-test
+        type: Directory
