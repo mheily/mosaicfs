@@ -262,8 +262,8 @@ export default function FileBrowserPage() {
                     } else {
                       setSelectedFile({
                         _id: entry.file_id ?? '',
-                        path: entry.path,
-                        export_path: entry.path,
+                        path: entry.name,
+                        export_path: entry.name,
                         node_id: entry.node ?? '',
                         size: entry.size ?? 0,
                         mime_type: entry.mime_type ?? '',
