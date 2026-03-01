@@ -14,7 +14,13 @@ pub async fn register_node(
     agent_token: &str,
 ) -> anyhow::Result<()> {
     let doc_id = format!("node::{}", node_id);
-    let friendly_name = hostname();
+    // Use node_id as the display name (strip "node-" prefix if present so
+    // "node-mynashost" shows as "mynashost"). Inside a container the OS hostname
+    // is the pod name, not the physical host, so we don't use hostname() here.
+    let friendly_name = node_id
+        .strip_prefix("node-")
+        .unwrap_or(node_id)
+        .to_string();
     let platform = current_platform();
 
     let storage = collect_storage_info(watch_paths);

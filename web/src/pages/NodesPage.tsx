@@ -64,7 +64,7 @@ export default function NodesPage() {
               <tr
                 key={node._id}
                 className="cursor-pointer border-b hover:bg-accent"
-                onClick={() => navigate(`/nodes/${node.node_id || node._id}`)}
+                onClick={() => navigate(`/nodes/${node.node_id || node._id.replace(/^node::/, '')}`)}
               >
                 <td className="py-2 font-medium">{node.name}</td>
                 <td className="py-2">
