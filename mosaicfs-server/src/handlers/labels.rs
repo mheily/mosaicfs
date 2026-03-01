@@ -196,6 +196,7 @@ pub async fn delete_assignment(
 
 #[derive(Deserialize)]
 pub struct CreateRuleRequest {
+    pub name: Option<String>,
     pub labels: Vec<String>,
     pub node_id: Option<String>,
     pub path_prefix: Option<String>,
@@ -261,6 +262,7 @@ pub async fn create_rule(
         "_id": doc_id,
         "type": "label_rule",
         "rule_id": rule_id,
+        "name": body.name,
         "labels": body.labels,
         "node_id": body.node_id,
         "path_prefix": body.path_prefix,

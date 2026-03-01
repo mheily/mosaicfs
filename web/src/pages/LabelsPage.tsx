@@ -15,8 +15,8 @@ interface LabelAssignment {
 interface LabelRule {
   _id: string;
   type: string;
-  name: string;
-  node_selector?: string;
+  name?: string;
+  node_id?: string;
   path_prefix: string;
   labels: string[];
   enabled: boolean;
@@ -133,7 +133,8 @@ function RulesTab() {
 
   async function handleToggleEnabled(rule: LabelRule) {
     try {
-      await api(`/api/label-rules/${rule._id}`, {
+      const ruleId = rule._id.replace(/^label_rule::/, '');
+      await api(`/api/labels/rules/${ruleId}`, {
         method: 'PATCH',
         body: JSON.stringify({ enabled: !rule.enabled }),
       });
@@ -145,13 +146,16 @@ function RulesTab() {
   async function handleSaveRule() {
     try {
       const body = {
-        ...editingRule,
+        name: editingRule.name,
+        node_id: editingRule.node_id,
+        path_prefix: editingRule.path_prefix,
+        enabled: editingRule.enabled,
         labels: labelsInput
           .split(',')
           .map((s) => s.trim())
           .filter(Boolean),
       };
-      await api('/api/label-rules', {
+      await api('/api/labels/rules', {
         method: 'POST',
         body: JSON.stringify(body),
       });
@@ -193,8 +197,8 @@ function RulesTab() {
           <tbody>
             {rules.map((r) => (
               <tr key={r._id} className="border-b">
-                <td className="py-2 font-medium">{r.name}</td>
-                <td className="py-2">{r.node_selector || '--'}</td>
+                <td className="py-2 font-medium">{r.name || '--'}</td>
+                <td className="py-2">{r.node_id || '--'}</td>
                 <td className="py-2 font-mono text-xs">{r.path_prefix}</td>
                 <td className="py-2">
                   <div className="flex flex-wrap gap-1">
