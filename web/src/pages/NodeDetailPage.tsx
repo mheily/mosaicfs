@@ -33,6 +33,7 @@ interface NodeDoc {
   platform?: string;
   last_heartbeat?: string;
   node_id?: string;
+  storage?: Array<{ watch_paths_on_fs?: string[] }>;
 }
 
 interface AgentStatus {
@@ -84,13 +85,17 @@ export default function NodeDetailPage() {
 
   const [storage, setStorage] = useState<StorageInfo[]>([]);
   const [utilization, setUtilization] = useState<UtilizationPoint[]>([]);
-  const [watchPaths, setWatchPaths] = useState<WatchPath[]>([]);
   const [networkMounts, setNetworkMounts] = useState<NetworkMount[]>([]);
   const [recentErrors, setRecentErrors] = useState<RecentError[]>([]);
 
   // Mount editor
   const [showMountForm, setShowMountForm] = useState(false);
   const [editingMount, setEditingMount] = useState<Partial<NetworkMount>>({});
+
+  // Derive watch paths from the node document's storage field (no separate API call needed)
+  const watchPaths: WatchPath[] = (node?.storage ?? [])
+    .flatMap((s) => s.watch_paths_on_fs ?? [])
+    .map((p) => ({ path: p }));
 
   useEffect(() => {
     if (!nodeId) return;
@@ -99,9 +104,6 @@ export default function NodeDetailPage() {
     api<UtilizationPoint[]>(`/api/nodes/${nodeId}/utilization?days=30`)
       .then(setUtilization)
       .catch(() => setUtilization([]));
-    api<WatchPath[]>(`/api/nodes/${nodeId}/watch-paths`)
-      .then(setWatchPaths)
-      .catch(() => setWatchPaths([]));
     api<NetworkMount[]>(`/api/nodes/${nodeId}/network-mounts`)
       .then(setNetworkMounts)
       .catch(() => setNetworkMounts([]));

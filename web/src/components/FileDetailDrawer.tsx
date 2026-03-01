@@ -37,7 +37,7 @@ import { LabelChip } from '@/components/LabelChip';
 import { formatBytes, formatDate } from '@/lib/format';
 import { api } from '@/lib/api';
 
-interface FileDetail {
+export interface FileDetail {
   _id: string;
   path: string;
   export_path: string;

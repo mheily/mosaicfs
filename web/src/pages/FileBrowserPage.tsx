@@ -8,7 +8,7 @@ import {
   ChevronDown,
   Loader2,
 } from 'lucide-react';
-import { FileDetailDrawer } from '@/components/FileDetailDrawer';
+import { FileDetailDrawer, type FileDetail } from '@/components/FileDetailDrawer';
 
 interface VfsEntry {
   name: string;
@@ -117,7 +117,7 @@ export default function FileBrowserPage() {
   const [tree, setTree] = useState<TreeNode[]>([
     { name: '/', path: '/', loaded: false, expanded: false },
   ]);
-  const [selectedFile, setSelectedFile] = useState<VfsEntry | null>(null);
+  const [selectedFile, setSelectedFile] = useState<FileDetail | null>(null);
 
   const loadDirectory = useCallback(async (path: string) => {
     setLoading(true);
@@ -260,7 +260,16 @@ export default function FileBrowserPage() {
                     if (entry.is_dir) {
                       setCurrentPath(entry.path);
                     } else {
-                      setSelectedFile(entry);
+                      setSelectedFile({
+                        _id: entry.file_id ?? '',
+                        path: entry.path,
+                        export_path: entry.path,
+                        node_id: entry.node ?? '',
+                        size: entry.size ?? 0,
+                        mime_type: entry.mime_type ?? '',
+                        mtime: entry.mtime ?? '',
+                        labels: [],
+                      });
                     }
                   }}
                 >
