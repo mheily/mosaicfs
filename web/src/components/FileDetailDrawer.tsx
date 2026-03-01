@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Sheet,
   SheetContent,
@@ -35,7 +35,7 @@ import {
 import { NodeBadge } from '@/components/NodeBadge';
 import { LabelChip } from '@/components/LabelChip';
 import { formatBytes, formatDate } from '@/lib/format';
-import { api } from '@/lib/api';
+import { api, getAuthToken } from '@/lib/api';
 
 export interface FileDetail {
   _id: string;
@@ -64,23 +64,50 @@ export function FileDetailDrawer({ file, onClose }: FileDetailDrawerProps) {
   const [popoverOpen, setPopoverOpen] = useState(false);
   const [annotationsOpen, setAnnotationsOpen] = useState(false);
   const [preview, setPreview] = useState<string | null>(null);
+  // Blob URL for inline image/PDF previews — created from an authed fetch so
+  // we don't need to pass the JWT in a query param or embed it in an <img src>.
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const blobUrlRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (file) {
-      setLabels(file.labels || []);
-      setPreview(null);
+    setPreview(null);
+    setLabels(file?.labels ?? []);
 
-      // Load text/json preview
-      if (
-        file.mime_type?.startsWith('text/') ||
-        file.mime_type === 'application/json'
-      ) {
-        fetch(`/api/files/${file._id}/content`)
-          .then((r) => r.text())
-          .then(setPreview)
-          .catch(() => setPreview(null));
-      }
+    // Revoke previous blob URL before creating a new one
+    if (blobUrlRef.current) {
+      URL.revokeObjectURL(blobUrlRef.current);
+      blobUrlRef.current = null;
+      setBlobUrl(null);
     }
+
+    if (!file) return;
+
+    const isText = file.mime_type?.startsWith('text/') || file.mime_type === 'application/json';
+    const isImage = file.mime_type?.startsWith('image/');
+    const isPdf = file.mime_type === 'application/pdf';
+
+    if (!isText && !isImage && !isPdf) return;
+
+    const token = getAuthToken();
+    fetch(`/api/files/${file._id}/content`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+      .then(async (r) => {
+        if (!r.ok) return;
+        const blob = await r.blob();
+        const url = URL.createObjectURL(blob);
+        blobUrlRef.current = url;
+        setBlobUrl(url);
+        if (isText) setPreview(await blob.text());
+      })
+      .catch(() => {});
+
+    return () => {
+      if (blobUrlRef.current) {
+        URL.revokeObjectURL(blobUrlRef.current);
+        blobUrlRef.current = null;
+      }
+    };
   }, [file]);
 
   useEffect(() => {
@@ -118,6 +145,26 @@ export function FileDetailDrawer({ file, onClose }: FileDetailDrawerProps) {
       // ignore
     }
   };
+
+  async function handleDownload() {
+    if (!file) return;
+    // Reuse the blob already fetched for preview if available; otherwise fetch fresh.
+    const src = blobUrl ?? await (async () => {
+      const token = getAuthToken();
+      const r = await fetch(`/api/files/${file._id}/content`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!r.ok) return null;
+      return URL.createObjectURL(await r.blob());
+    })();
+    if (!src) return;
+    const a = document.createElement('a');
+    a.href = src;
+    a.download = filename(file.path);
+    a.click();
+    // If we created a temporary URL (not the cached blobUrl), release it after a tick.
+    if (src !== blobUrl) setTimeout(() => URL.revokeObjectURL(src), 60_000);
+  }
 
   const filteredSuggestions = suggestions.filter(
     (s) =>
@@ -240,11 +287,11 @@ export function FileDetailDrawer({ file, onClose }: FileDetailDrawerProps) {
               </Collapsible>
 
               {/* Inline Preview */}
-              {file.mime_type?.startsWith('image/') && (
+              {file.mime_type?.startsWith('image/') && blobUrl && (
                 <section className="space-y-2">
                   <h3 className="text-sm font-semibold">Preview</h3>
                   <img
-                    src={`/api/files/${file._id}/content`}
+                    src={blobUrl}
                     alt={filename(file.path)}
                     className="max-h-64 rounded border object-contain"
                   />
@@ -260,11 +307,11 @@ export function FileDetailDrawer({ file, onClose }: FileDetailDrawerProps) {
                     </pre>
                   </section>
                 )}
-              {file.mime_type === 'application/pdf' && (
+              {file.mime_type === 'application/pdf' && blobUrl && (
                 <section className="space-y-2">
                   <h3 className="text-sm font-semibold">Preview</h3>
                   <iframe
-                    src={`/api/files/${file._id}/content`}
+                    src={blobUrl}
                     className="h-96 w-full rounded border"
                     title="PDF preview"
                   />
@@ -273,14 +320,9 @@ export function FileDetailDrawer({ file, onClose }: FileDetailDrawerProps) {
 
               {/* Actions */}
               <div className="flex flex-wrap gap-2">
-                <Button asChild variant="outline" size="sm">
-                  <a
-                    href={`/api/files/${file._id}/content`}
-                    download={filename(file.path)}
-                  >
-                    <Download className="h-4 w-4" />
-                    Download
-                  </a>
+                <Button variant="outline" size="sm" onClick={handleDownload}>
+                  <Download className="h-4 w-4" />
+                  Download
                 </Button>
 
                 <TooltipProvider>
