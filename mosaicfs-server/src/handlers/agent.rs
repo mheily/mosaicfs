@@ -46,6 +46,132 @@ pub fn is_allowed_flow3(doc_type: &str) -> bool {
     !FLOW3_BROWSER_EXCLUDE.contains(&doc_type)
 }
 
+/// GET|POST /db/{*path} — proxy CouchDB replication to the browser.
+/// JWT-authenticated. Applies Flow 3 filtering (excludes credentials and
+/// utilization snapshots so sensitive documents never reach the browser).
+pub async fn db_proxy(
+    State(state): State<Arc<AppState>>,
+    req: axum::extract::Request,
+) -> impl IntoResponse {
+    let method = req.method().clone();
+    let uri_path = req
+        .uri()
+        .path_and_query()
+        .map(|pq| pq.as_str().to_string())
+        .unwrap_or_default();
+
+    // Strip /db prefix and forward the remainder to CouchDB
+    let couch_path = uri_path.strip_prefix("/db").unwrap_or("/");
+    let couch_url = format!("{}{}", state.couchdb_url, couch_path);
+
+    let headers = req.headers().clone();
+    let body_bytes = match axum::body::to_bytes(req.into_body(), 10 * 1024 * 1024).await {
+        Ok(b) => b,
+        Err(_) => return (StatusCode::BAD_REQUEST, "Body too large").into_response(),
+    };
+
+    let client = Client::new();
+    let mut builder = match method {
+        Method::GET  => client.get(&couch_url),
+        Method::POST => client.post(&couch_url),
+        Method::HEAD => client.head(&couch_url),
+        _ => return (StatusCode::METHOD_NOT_ALLOWED, "Method not allowed").into_response(),
+    };
+
+    builder = builder.basic_auth(&state.couchdb_user, Some(&state.couchdb_password));
+
+    if let Some(ct) = headers.get(header::CONTENT_TYPE) {
+        builder = builder.header(header::CONTENT_TYPE, ct);
+    }
+    if !body_bytes.is_empty() {
+        builder = builder.body(body_bytes.to_vec());
+    }
+
+    let resp = match builder.send().await {
+        Ok(r) => r,
+        Err(e) => {
+            warn!(error = %e, "Browser db proxy request failed");
+            return (StatusCode::BAD_GATEWAY, "CouchDB unreachable").into_response();
+        }
+    };
+
+    let status = StatusCode::from_u16(resp.status().as_u16())
+        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let resp_content_type = resp.headers().get(header::CONTENT_TYPE).cloned();
+    let body = resp.bytes().await.unwrap_or_default();
+
+    // Apply Flow 3 filtering
+    let filtered = if couch_path.contains("/_bulk_get") {
+        filter_bulk_get_flow3(&body).unwrap_or_else(|_| body.to_vec())
+    } else if couch_path.contains("/_changes") {
+        filter_changes_flow3(&body).unwrap_or_else(|_| body.to_vec())
+    } else if method == Method::GET && status.is_success() {
+        // Single-document GET: return not_found for excluded types
+        if let Ok(doc) = serde_json::from_slice::<serde_json::Value>(&body) {
+            let doc_type = doc.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            if !doc_type.is_empty() && !is_allowed_flow3(doc_type) {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({"error": "not_found", "reason": "missing"})),
+                )
+                    .into_response();
+            }
+        }
+        body.to_vec()
+    } else {
+        body.to_vec()
+    };
+
+    let mut resp_builder = axum::response::Response::builder().status(status);
+    if let Some(ct) = resp_content_type {
+        resp_builder = resp_builder.header(header::CONTENT_TYPE, ct);
+    }
+    resp_builder
+        .body(Body::from(filtered))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+fn filter_changes_flow3(body: &[u8]) -> anyhow::Result<Vec<u8>> {
+    let mut parsed: serde_json::Value = serde_json::from_slice(body)?;
+    if let Some(results) = parsed.get_mut("results").and_then(|v| v.as_array_mut()) {
+        results.retain(|change| {
+            let id = change.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            // Fast path: filter by well-known ID prefixes without needing include_docs
+            if id.starts_with("credential::") || id.starts_with("utilization::") {
+                return false;
+            }
+            // Slow path: check type field when include_docs=true
+            if let Some(doc) = change.get("doc") {
+                if let Some(doc_type) = doc.get("type").and_then(|v| v.as_str()) {
+                    return is_allowed_flow3(doc_type);
+                }
+            }
+            true
+        });
+    }
+    Ok(serde_json::to_vec(&parsed)?)
+}
+
+fn filter_bulk_get_flow3(body: &[u8]) -> anyhow::Result<Vec<u8>> {
+    // _bulk_get response: {"results": [{"id": "...", "docs": [{"ok": {<doc>}}]}]}
+    let mut parsed: serde_json::Value = serde_json::from_slice(body)?;
+    if let Some(results) = parsed.get_mut("results").and_then(|v| v.as_array_mut()) {
+        results.retain(|entry| {
+            if let Some(docs) = entry.get("docs").and_then(|v| v.as_array()) {
+                if let Some(first) = docs.first() {
+                    if let Some(ok_doc) = first.get("ok") {
+                        if let Some(doc_type) = ok_doc.get("type").and_then(|v| v.as_str()) {
+                            return is_allowed_flow3(doc_type);
+                        }
+                    }
+                }
+            }
+            true
+        });
+    }
+    Ok(serde_json::to_vec(&parsed)?)
+}
+
 /// Proxy CouchDB replication requests from agents.
 /// Agents authenticate with HMAC; the proxy forwards to CouchDB with admin credentials.
 pub async fn replicate_proxy(

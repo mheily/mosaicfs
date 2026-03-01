@@ -26,7 +26,7 @@ pub async fn register_node(
     };
 
     let mut doc = if let Some(mut existing) = existing {
-        existing["friendly_name"] = serde_json::Value::String(friendly_name);
+        existing["name"] = serde_json::Value::String(friendly_name);
         existing["platform"] = serde_json::Value::String(platform);
         existing["status"] = serde_json::Value::String("online".to_string());
         existing["last_heartbeat"] = serde_json::Value::String(Utc::now().to_rfc3339());
@@ -40,7 +40,7 @@ pub async fn register_node(
         let mut doc = serde_json::json!({
             "_id": doc_id,
             "type": "node",
-            "friendly_name": friendly_name,
+            "name": friendly_name,
             "platform": platform,
             "status": "online",
             "last_heartbeat": Utc::now().to_rfc3339(),

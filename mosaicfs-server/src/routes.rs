@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{header, HeaderValue, StatusCode};
 use axum::middleware;
 use axum::response::IntoResponse;
 use axum::routing::{any, delete, get, patch, post, put};
@@ -22,6 +22,8 @@ const LOGIN_RATE_WINDOW_SECS: u64 = 60;
 
 pub fn build_router(state: Arc<AppState>) -> Router {
     let jwt_routes = Router::new()
+        // CouchDB browser replication proxy (Flow 3)
+        .route("/db/{*path}", any(agent::db_proxy))
         // Auth
         .route("/api/auth/whoami", get(whoami))
         .route("/api/auth/logout", post(logout))
@@ -144,6 +146,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             ServeDir::new("web/dist")
                 .fallback(ServeFile::new("web/dist/index.html")),
         )
+        .layer(middleware::from_fn(asset_cache_middleware))
         .with_state(state)
 }
 
@@ -398,4 +401,36 @@ async fn delete_credential(
             Json(serde_json::json!({ "error": { "code": "internal", "message": e.to_string() } })),
         ),
     }
+}
+
+// ── Cache control middleware ──
+
+async fn asset_cache_middleware(
+    req: axum::extract::Request,
+    next: middleware::Next,
+) -> impl IntoResponse {
+    let is_asset = req.uri().path().starts_with("/assets/");
+    let mut response = next.run(req).await;
+    if is_asset {
+        // Hashed filenames are immutable — cache forever.
+        response.headers_mut().insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("public, max-age=31536000, immutable"),
+        );
+    } else {
+        let is_html = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.starts_with("text/html"))
+            .unwrap_or(false);
+        if is_html {
+            // index.html must revalidate so browsers pick up new bundle filenames.
+            response.headers_mut().insert(
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("no-cache"),
+            );
+        }
+    }
+    response
 }

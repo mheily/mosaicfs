@@ -14,11 +14,13 @@ import { cn } from '@/lib/utils';
 interface FileEntry {
   _id: string;
   name: string;
-  path: string;
   size: number;
   mtime: string;
-  node_id: string;
-  node_name?: string;
+  source: {
+    node_id: string;
+    export_path: string;
+    export_parent: string;
+  };
 }
 
 interface FileTableProps {
@@ -134,8 +136,8 @@ export function FileTable({
               <TableCell>
                 <NodeBadge
                   status="online"
-                  name={file.node_name || file.node_id}
-                  nodeId={file.node_id}
+                  name={file.source.node_id}
+                  nodeId={file.source.node_id}
                 />
               </TableCell>
             </TableRow>
