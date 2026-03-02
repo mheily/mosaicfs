@@ -107,6 +107,7 @@ export default function VfsPage() {
   // CRUD
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [newDirName, setNewDirName] = useState('');
+  const [createError, setCreateError] = useState('');
   const [showRenameDialog, setShowRenameDialog] = useState(false);
   const [renameName, setRenameName] = useState('');
 
@@ -187,6 +188,7 @@ export default function VfsPage() {
     if (!newDirName.trim()) return;
     const parentPath = selectedPath || '/';
     const newPath = parentPath === '/' ? `/${newDirName}` : `${parentPath}/${newDirName}`;
+    setCreateError('');
     try {
       await api('/api/vfs/directories', {
         method: 'POST',
@@ -195,9 +197,10 @@ export default function VfsPage() {
       await loadTree();
       setShowCreateDialog(false);
       setNewDirName('');
+      setCreateError('');
       setSelectedPath(newPath);
-    } catch {
-      // ignore
+    } catch (err) {
+      setCreateError(err instanceof Error ? err.message : 'Failed to create directory');
     }
   }
 
@@ -537,22 +540,25 @@ export default function VfsPage() {
       {/* Create Directory Dialog */}
       {showCreateDialog && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/50" onClick={() => setShowCreateDialog(false)} />
+          <div className="absolute inset-0 bg-black/50" onClick={() => { setShowCreateDialog(false); setCreateError(''); }} />
           <div className="relative w-full max-w-sm rounded-lg bg-background p-6 shadow-lg">
             <h3 className="mb-4 text-lg font-semibold">Create Directory</h3>
             <form onSubmit={(e) => { e.preventDefault(); handleCreate(); }}>
             <input
               type="text"
               value={newDirName}
-              onChange={(e) => setNewDirName(e.target.value)}
+              onChange={(e) => { setNewDirName(e.target.value); setCreateError(''); }}
               placeholder="Directory name"
               className="mb-4 flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               autoFocus
             />
+            {createError && (
+              <p className="mb-3 text-sm text-destructive">{createError}</p>
+            )}
             <div className="flex justify-end gap-2">
               <button
                 type="button"
-                onClick={() => setShowCreateDialog(false)}
+                onClick={() => { setShowCreateDialog(false); setCreateError(''); }}
                 className="rounded-md border px-4 py-2 text-sm hover:bg-accent"
               >
                 Cancel
