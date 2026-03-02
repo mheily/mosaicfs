@@ -65,6 +65,7 @@ function filename(path: string): string {
 
 export function FileDetailDrawer({ file, onClose }: FileDetailDrawerProps) {
   const [labels, setLabels] = useState<string[]>([]);
+  const [effectiveLabels, setEffectiveLabels] = useState<string[]>([]);
   const [labelInput, setLabelInput] = useState('');
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [popoverOpen, setPopoverOpen] = useState(false);
@@ -76,7 +77,8 @@ export function FileDetailDrawer({ file, onClose }: FileDetailDrawerProps) {
 
   useEffect(() => {
     setPreview(null);
-    setLabels(file?.labels ?? []);
+    setLabels([]);
+    setEffectiveLabels([]);
     setTokenUrl(null);
 
     if (!file) return;
@@ -84,6 +86,20 @@ export function FileDetailDrawer({ file, onClose }: FileDetailDrawerProps) {
     // Fetch a short-lived signed download URL for preview and the download button
     api<DownloadTokenResponse>(`/api/files/${file._id}/token`)
       .then((data) => setTokenUrl(data.url))
+      .catch(() => {});
+
+    // Fetch direct assignment labels (what the user has explicitly tagged)
+    api<{ items: Array<{ labels: string[] }> }>(
+      `/api/labels/assignments?file_id=${encodeURIComponent(file._id)}`,
+    )
+      .then((data) => setLabels(data.items[0]?.labels ?? []))
+      .catch(() => {});
+
+    // Fetch effective labels — direct + any matching label rules
+    api<{ labels: string[] }>(
+      `/api/labels/effective?file_id=${encodeURIComponent(file._id)}`,
+    )
+      .then((data) => setEffectiveLabels(data.labels ?? []))
       .catch(() => {});
 
     // Text preview: fetch content with auth header to display in <pre>
@@ -112,12 +128,13 @@ export function FileDetailDrawer({ file, onClose }: FileDetailDrawerProps) {
   const addLabel = async (label: string) => {
     if (!file || !label.trim() || labels.includes(label.trim())) return;
     const trimmed = label.trim();
+    const newLabels = [...labels, trimmed];
     try {
-      await api(`/api/files/${file._id}/labels`, {
-        method: 'POST',
-        body: JSON.stringify({ label: trimmed }),
+      await api('/api/labels/assignments', {
+        method: 'PUT',
+        body: JSON.stringify({ file_id: file._id, labels: newLabels }),
       });
-      setLabels((prev) => [...prev, trimmed]);
+      setLabels(newLabels);
       setLabelInput('');
       setPopoverOpen(false);
     } catch {
@@ -127,11 +144,13 @@ export function FileDetailDrawer({ file, onClose }: FileDetailDrawerProps) {
 
   const removeLabel = async (label: string) => {
     if (!file) return;
+    const newLabels = labels.filter((l) => l !== label);
     try {
-      await api(`/api/files/${file._id}/labels/${encodeURIComponent(label)}`, {
-        method: 'DELETE',
+      await api('/api/labels/assignments', {
+        method: 'PUT',
+        body: JSON.stringify({ file_id: file._id, labels: newLabels }),
       });
-      setLabels((prev) => prev.filter((l) => l !== label));
+      setLabels(newLabels);
     } catch {
       // ignore
     }
@@ -144,6 +163,10 @@ export function FileDetailDrawer({ file, onClose }: FileDetailDrawerProps) {
     a.download = filename(file.path);
     a.click();
   }
+
+  // Labels derived from matching rules — shown outlined, no remove button
+  const labelSet = new Set(labels);
+  const inheritedLabels = effectiveLabels.filter((l) => !labelSet.has(l));
 
   const filteredSuggestions = suggestions.filter(
     (s) =>
@@ -207,6 +230,13 @@ export function FileDetailDrawer({ file, onClose }: FileDetailDrawerProps) {
                       label={label}
                       inherited={false}
                       onRemove={() => removeLabel(label)}
+                    />
+                  ))}
+                  {inheritedLabels.map((label) => (
+                    <LabelChip
+                      key={`rule-${label}`}
+                      label={label}
+                      inherited={true}
                     />
                   ))}
                   <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
