@@ -158,10 +158,7 @@ export function FileDetailDrawer({ file, onClose }: FileDetailDrawerProps) {
 
   function handleDownload() {
     if (!file || !tokenUrl) return;
-    const a = document.createElement('a');
-    a.href = tokenUrl;
-    a.download = filename(file.path);
-    a.click();
+    window.open(tokenUrl, '_blank', 'noopener,noreferrer');
   }
 
   // Labels derived from matching rules — shown outlined, no remove button

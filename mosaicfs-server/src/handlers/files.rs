@@ -281,7 +281,7 @@ async fn serve_file_content(state: &AppState, doc_id: &str, headers: HeaderMap) 
 
     // Parse Range header early — needed for both local and proxy paths
     let range = headers.get(header::RANGE).and_then(|v| v.to_str().ok()).and_then(parse_range);
-    let disposition = format!("attachment; filename=\"{}\"", name.replace('"', "\\\""));
+    let disposition = format!("inline; filename=\"{}\"", name.replace('"', "\\\""));
 
     // Try local file first; if not present, proxy to the source agent
     let path = std::path::Path::new(export_path);

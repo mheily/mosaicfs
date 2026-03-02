@@ -35,6 +35,11 @@ RUN mkdir -p mosaicfs-common/src mosaicfs-server/src mosaicfs-agent/src mosaicfs
     && cargo build --release --bin mosaicfs-server --bin mosaicfs-agent \
     && rm -rf mosaicfs-common/src mosaicfs-server/src mosaicfs-agent/src mosaicfs-vfs/src
 
+# CACHEBUST invalidates the source-copy layer without re-running the slow
+# dependency pre-build above. Pass --build-arg CACHEBUST=$(date +%s) to force
+# a fresh compile of only the application source.
+ARG CACHEBUST=none
+
 # Copy real sources and rebuild (only changed crates recompile)
 COPY mosaicfs-common/ ./mosaicfs-common/
 COPY mosaicfs-server/ ./mosaicfs-server/
@@ -52,6 +57,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # mosaicfs-server serves web/dist relative to its working directory
 WORKDIR /app
+
+# Inherit CACHEBUST so that --build-arg CACHEBUST=<ts> also busts the
+# COPY --from=rust-builder layer in this stage.
+ARG CACHEBUST=none
 
 COPY --from=rust-builder /build/target/release/mosaicfs-server /usr/local/bin/mosaicfs-server
 COPY --from=rust-builder /build/target/release/mosaicfs-agent   /usr/local/bin/mosaicfs-agent
