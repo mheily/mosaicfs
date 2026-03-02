@@ -72,10 +72,83 @@ interface MountSource {
 
 interface StepDef {
   op: string;
-  value?: string;
   invert?: boolean;
   on_match?: string;
   [key: string]: unknown;
+}
+
+// Frontend step format — uses generic value/comparator fields for all op types
+interface FrontendStep {
+  op: string;
+  value: string;
+  comparator: string;
+  invert: boolean;
+  on_match: 'include' | 'exclude' | 'continue';
+}
+
+function backendToFrontendStep(s: StepDef): FrontendStep {
+  const invert = Boolean(s.invert);
+  const on_match = (s.on_match as FrontendStep['on_match']) || 'include';
+  switch (s.op) {
+    case 'glob':
+    case 'regex':
+    case 'mime':
+      return { op: s.op, value: (s.pattern as string) || '', comparator: '', invert, on_match };
+    case 'age':
+    case 'access_age': {
+      const days = (s.days as number) || 0;
+      const comp = (s.comparison as string) || 'gt';
+      return { op: s.op, value: `${days} days`, comparator: comp === 'lt' ? 'newer_than' : 'older_than', invert, on_match };
+    }
+    case 'size': {
+      const bytes = (s.bytes as number) || 0;
+      const comp = (s.comparison as string) || 'gt';
+      let num = bytes, unit = 'B';
+      if (bytes >= 1024 ** 3) { num = bytes / 1024 ** 3; unit = 'GB'; }
+      else if (bytes >= 1024 ** 2) { num = bytes / 1024 ** 2; unit = 'MB'; }
+      else if (bytes >= 1024) { num = bytes / 1024; unit = 'KB'; }
+      return { op: s.op, value: `${num} ${unit}`, comparator: comp === 'lt' ? 'smaller_than' : 'larger_than', invert, on_match };
+    }
+    case 'node':
+      return { op: s.op, value: (s.node_id as string) || '', comparator: '', invert, on_match };
+    case 'label':
+      return { op: s.op, value: (s.label as string) || '', comparator: '', invert, on_match };
+    case 'annotation':
+      return { op: s.op, value: (s.plugin_name as string) || '', comparator: '', invert, on_match };
+    default:
+      return { op: s.op, value: '', comparator: '', invert, on_match };
+  }
+}
+
+function frontendToBackendStep(s: FrontendStep): StepDef {
+  const base: StepDef = { op: s.op, invert: s.invert, on_match: s.on_match };
+  switch (s.op) {
+    case 'glob':
+    case 'regex':
+    case 'mime':
+      return { ...base, pattern: s.value };
+    case 'age':
+    case 'access_age': {
+      const [numStr, unit = 'days'] = s.value.split(' ');
+      const num = parseFloat(numStr) || 0;
+      const toDay: Record<string, number> = { minutes: 1 / (60 * 24), hours: 1 / 24, days: 1 };
+      return { ...base, days: Math.floor(num * (toDay[unit] ?? 1)), comparison: s.comparator === 'newer_than' ? 'lt' : 'gt' };
+    }
+    case 'size': {
+      const [numStr, unit = 'MB'] = s.value.split(' ');
+      const num = parseFloat(numStr) || 0;
+      const toBytes: Record<string, number> = { B: 1, KB: 1024, MB: 1024 ** 2, GB: 1024 ** 3 };
+      return { ...base, bytes: Math.floor(num * (toBytes[unit] ?? 1)), comparison: s.comparator === 'smaller_than' ? 'lt' : 'gt' };
+    }
+    case 'node':
+      return { ...base, node_id: s.value };
+    case 'label':
+      return { ...base, label: s.value };
+    case 'annotation':
+      return { ...base, plugin_name: s.value };
+    default:
+      return base;
+  }
 }
 
 interface DirectoryInfo {
@@ -97,7 +170,7 @@ export default function VfsPage() {
   // Mount editor sheet
   const [showMountEditor, setShowMountEditor] = useState(false);
   const [mounts, setMounts] = useState<MountSource[]>([]);
-  const [steps, setSteps] = useState<StepDef[]>([]);
+  const [steps, setSteps] = useState<FrontendStep[]>([]);
 
   // Preview
   const [preview, setPreview] = useState<PreviewResult | null>(null);
@@ -137,7 +210,7 @@ export default function VfsPage() {
       .then((info) => {
         setDirInfo(info);
         setMounts(info.mounts || []);
-        setSteps(info.steps || []);
+        setSteps((info.steps || []).map(backendToFrontendStep));
       })
       .catch(() => setDirInfo(null))
       .finally(() => setLoading(false));
@@ -150,7 +223,7 @@ export default function VfsPage() {
     const previewPathParam = selectedPath.replace(/^\//, '');
     api<PreviewResult>(`/api/vfs/preview/${previewPathParam}`, {
       method: 'POST',
-      body: JSON.stringify({ mounts, steps: debouncedSteps }),
+      body: JSON.stringify({ mounts, steps: debouncedSteps.map(frontendToBackendStep) }),
     })
       .then(setPreview)
       .catch(() => setPreview(null))
@@ -213,6 +286,18 @@ export default function VfsPage() {
       });
       await loadTree();
       setShowRenameDialog(false);
+    } catch {
+      // ignore
+    }
+  }
+
+  async function handleSaveSteps() {
+    if (!selectedPath) return;
+    try {
+      await api(`/api/vfs/directories/${encodeURIComponent(selectedPath)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ mounts, steps: steps.map(frontendToBackendStep) }),
+      });
     } catch {
       // ignore
     }
@@ -368,7 +453,15 @@ export default function VfsPage() {
 
             {/* Step Pipeline */}
             <div>
-              <h3 className="mb-2 text-sm font-semibold">Step Pipeline</h3>
+              <div className="mb-2 flex items-center justify-between">
+                <h3 className="text-sm font-semibold">Step Pipeline</h3>
+                <button
+                  onClick={handleSaveSteps}
+                  className="inline-flex items-center gap-1 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground shadow hover:bg-primary/90"
+                >
+                  Save Pipeline
+                </button>
+              </div>
               <StepEditor steps={steps} onChange={setSteps} />
             </div>
 
@@ -520,7 +613,7 @@ export default function VfsPage() {
                       `/api/vfs/directories/${encodeURIComponent(selectedPath!)}`,
                       {
                         method: 'PATCH',
-                        body: JSON.stringify({ mounts, steps }),
+                        body: JSON.stringify({ mounts, steps: steps.map(frontendToBackendStep) }),
                       },
                     );
                     setShowMountEditor(false);

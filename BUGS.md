@@ -1,5 +1,11 @@
 # Known Bugs
 
+## Mismatch between frontend and backend field names
+
+There has been a pattern of frontend documents not matching the Rust backend expectations.
+Example: node_id vs node. We should do a full audit of the architecture doc and codebase
+to make everything consistent.
+
 ## TLS certificate verification disabled in `mosaicfs-agent init`
 
 **File:** `mosaicfs-agent/src/init.rs:129`

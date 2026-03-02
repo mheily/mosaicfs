@@ -228,6 +228,19 @@ fn parse_step_based_mounts(mounts_json: &serde_json::Value) -> Vec<MountEntry> {
             if let Ok(entry) = serde_json::from_value::<MountEntry>(m.clone()) {
                 return Some(entry);
             }
+            // Try flat format saved by the UI: {"node":"...", "path":"...", "strategy":"..."}
+            if let Some(node) = m.get("node").and_then(|v| v.as_str()) {
+                let export_path = m.get("path").and_then(|v| v.as_str()).unwrap_or("/").to_string();
+                return Some(MountEntry {
+                    mount_id: format!("m{}", i),
+                    source: MountSource::Node { node_id: node.to_string(), export_path },
+                    strategy: MountStrategy::Flatten,
+                    source_prefix: None,
+                    steps: vec![],
+                    default_result: StepResult::Include,
+                    conflict_policy: ConflictPolicy::LastWriteWins,
+                });
+            }
             // Fall back to step-based format: {"steps":[{"type":"node","node_id":"..."},{"type":"path_prefix","prefix":"..."}]}
             let steps = m.get("steps")?.as_array()?;
             let mut node_id: Option<String> = None;
@@ -498,7 +511,7 @@ pub async fn delete_directory(
 #[derive(Deserialize)]
 pub struct PreviewRequest {
     #[serde(default)]
-    pub mounts: Vec<MountEntry>,
+    pub mounts: serde_json::Value,
     #[serde(default, alias = "steps")]
     pub inherited_steps: Vec<Step>,
 }
@@ -534,13 +547,14 @@ pub async fn preview_directory(
         .collect();
 
     // If the caller didn't supply mounts, load them from the saved directory doc.
-    let mounts = if body.mounts.is_empty() {
+    let request_mounts = parse_step_based_mounts(&body.mounts);
+    let mounts = if request_mounts.is_empty() {
         match state.db.get_document(&dir_id(&virtual_path)).await {
             Ok(doc) => parse_step_based_mounts(doc.get("mounts").unwrap_or(&serde_json::json!([]))),
             Err(_) => vec![],
         }
     } else {
-        body.mounts
+        request_mounts
     };
 
     match readdir::evaluate_readdir(

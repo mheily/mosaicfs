@@ -91,8 +91,16 @@ pub async fn evaluate_readdir(
             let mut all_steps: Vec<Step> = inherited_steps.to_vec();
             all_steps.extend(mount.steps.clone());
 
+            // When directory-level steps are present they act as an explicit filter:
+            // files that fall through without matching any step should be excluded.
+            // If there are no inherited steps, honour the mount's own default (Include).
+            let effective_default = if inherited_steps.is_empty() {
+                mount.default_result.clone()
+            } else {
+                StepResult::Exclude
+            };
             let step_result =
-                steps::evaluate_steps(&all_steps, file_doc, file_id, &mount.default_result, &ctx);
+                steps::evaluate_steps(&all_steps, file_doc, file_id, &effective_default, &ctx);
 
             if step_result != StepResult::Include {
                 continue;
