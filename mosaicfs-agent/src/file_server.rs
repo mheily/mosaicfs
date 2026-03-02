@@ -10,6 +10,7 @@ use serde::Deserialize;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::AsyncReadExt;
+use tokio_util::io::ReaderStream;
 use tracing::{info, warn};
 
 pub struct FileServerState {
@@ -101,15 +102,12 @@ async fn serve_content(
             .body(Body::from(buf))
             .unwrap()
     } else {
-        let mut buf = Vec::with_capacity(total_size as usize);
-        if let Err(e) = file.read_to_end(&mut buf).await {
-            warn!(error = %e, "Failed to read file");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
+        let stream = ReaderStream::new(file);
         Response::builder()
             .status(StatusCode::OK)
-            .header(header::CONTENT_LENGTH, buf.len().to_string())
-            .body(Body::from(buf))
+            .header(header::CONTENT_LENGTH, total_size.to_string())
+            .header(header::ACCEPT_RANGES, "bytes")
+            .body(Body::from_stream(stream))
             .unwrap()
     }
 }

@@ -10,6 +10,7 @@ use hmac::{Hmac, Mac};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncReadExt;
+use tokio_util::io::ReaderStream;
 use tracing::warn;
 
 use crate::couchdb::CouchError;
@@ -338,8 +339,8 @@ async fn serve_file_content(state: &AppState, doc_id: &str, headers: HeaderMap) 
                 .unwrap()
         }
         None => {
-            // Full file — include Digest header (SHA-256)
-            let mut file = match tokio::fs::File::open(path).await {
+            // Full file — stream to avoid buffering large files in memory
+            let file = match tokio::fs::File::open(path).await {
                 Ok(f) => f,
                 Err(e) => {
                     warn!(error = %e, "Failed to open file");
@@ -347,23 +348,14 @@ async fn serve_file_content(state: &AppState, doc_id: &str, headers: HeaderMap) 
                 }
             };
 
-            let mut buf = Vec::with_capacity(total_size as usize);
-            if let Err(e) = file.read_to_end(&mut buf).await {
-                warn!(error = %e, "Failed to read file");
-                return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to read file").into_response();
-            }
-
-            let digest = Sha256::digest(&buf);
-            let digest_header = format!("sha-256=:{}", base64_encode(&digest));
-
+            let stream = ReaderStream::new(file);
             Response::builder()
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, mime_type)
-                .header(header::CONTENT_LENGTH, buf.len().to_string())
+                .header(header::CONTENT_LENGTH, total_size.to_string())
                 .header(header::CONTENT_DISPOSITION, &disposition)
                 .header(header::ACCEPT_RANGES, "bytes")
-                .header("Digest", &digest_header)
-                .body(Body::from(buf))
+                .body(Body::from_stream(stream))
                 .unwrap()
         }
     }
@@ -479,14 +471,7 @@ async fn proxy_to_agent(
         return (StatusCode::BAD_GATEWAY, Json(error_json("Agent returned error"))).into_response();
     }
 
-    let body_bytes = match resp.bytes().await {
-        Ok(b) => b,
-        Err(e) => {
-            warn!(error = %e, "Failed to read agent response body");
-            return (StatusCode::BAD_GATEWAY, Json(error_json("Failed to read agent response"))).into_response();
-        }
-    };
-
+    let content_length = resp.content_length();
     let status = if range.is_some() {
         StatusCode::PARTIAL_CONTENT
     } else {
@@ -496,9 +481,12 @@ async fn proxy_to_agent(
     let mut builder = Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, mime_type)
-        .header(header::CONTENT_LENGTH, body_bytes.len().to_string())
         .header(header::CONTENT_DISPOSITION, disposition)
         .header(header::ACCEPT_RANGES, "bytes");
+
+    if let Some(len) = content_length {
+        builder = builder.header(header::CONTENT_LENGTH, len.to_string());
+    }
 
     if let Some((start, end)) = range {
         let end_val = end.unwrap_or(file_size.saturating_sub(1));
@@ -508,7 +496,7 @@ async fn proxy_to_agent(
         );
     }
 
-    builder.body(Body::from(body_bytes)).unwrap()
+    builder.body(Body::from_stream(resp.bytes_stream())).unwrap()
 }
 
 /// Parse a Range header value like "bytes=0-499" or "bytes=500-"
