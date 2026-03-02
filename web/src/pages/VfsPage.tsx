@@ -146,9 +146,10 @@ export default function VfsPage() {
   useEffect(() => {
     if (!selectedPath) return;
     setPreviewLoading(true);
-    api<PreviewResult>(`/api/vfs/directories/${encodeURIComponent(selectedPath)}/preview`, {
+    const previewPathParam = selectedPath.replace(/^\//, '');
+    api<PreviewResult>(`/api/vfs/preview/${previewPathParam}`, {
       method: 'POST',
-      body: JSON.stringify({ steps: debouncedSteps }),
+      body: JSON.stringify({ mounts, steps: debouncedSteps }),
     })
       .then(setPreview)
       .catch(() => setPreview(null))

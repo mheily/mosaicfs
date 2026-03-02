@@ -275,7 +275,7 @@ fn parse_step_based_mounts(mounts_json: &serde_json::Value) -> Vec<MountEntry> {
 pub struct CreateDirectoryRequest {
     #[serde(rename = "path")]
     pub virtual_path: String,
-    pub name: String,
+    pub name: Option<String>,
 }
 
 pub async fn create_directory(
@@ -292,6 +292,16 @@ pub async fn create_directory(
     if state.db.get_document(&doc_id).await.is_ok() {
         return (StatusCode::CONFLICT, Json(error_json("conflict", "Directory already exists")));
     }
+
+    // Derive name from path if not provided
+    let name = body.name.unwrap_or_else(|| {
+        body.virtual_path
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap_or("")
+            .to_string()
+    });
 
     // Compute parent path
     let parent_path = if body.virtual_path == "/" {
@@ -318,7 +328,7 @@ pub async fn create_directory(
         "type": "virtual_directory",
         "inode": inode,
         "virtual_path": body.virtual_path,
-        "name": body.name,
+        "name": name,
         "parent_path": parent_path,
         "created_at": Utc::now().to_rfc3339(),
         "enforce_steps_on_children": false,
@@ -341,7 +351,8 @@ pub async fn get_directory(
     State(state): State<Arc<AppState>>,
     Path(path): Path<String>,
 ) -> impl IntoResponse {
-    let virtual_path = format!("/{}", path);
+    let path = path.trim_start_matches('/');
+    let virtual_path = if path.is_empty() { "/".to_string() } else { format!("/{}", path) };
     let doc_id = dir_id(&virtual_path);
 
     match state.db.get_document(&doc_id).await {
@@ -373,7 +384,8 @@ pub async fn patch_directory(
     Path(path): Path<String>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let virtual_path = format!("/{}", path);
+    let path = path.trim_start_matches('/');
+    let virtual_path = if path.is_empty() { "/".to_string() } else { format!("/{}", path) };
     let doc_id = dir_id(&virtual_path);
 
     let mut doc = match state.db.get_document(&doc_id).await {
@@ -396,6 +408,9 @@ pub async fn patch_directory(
     if let Some(mounts) = body.get("mounts") {
         doc["mounts"] = mounts.clone();
     }
+    if let Some(steps) = body.get("steps") {
+        doc["steps"] = steps.clone();
+    }
 
     match state.db.put_document(&doc_id, &doc).await {
         Ok(_) => (StatusCode::OK, Json(serde_json::json!({ "ok": true }))),
@@ -413,7 +428,8 @@ pub async fn delete_directory(
     Path(path): Path<String>,
     Query(query): Query<DeleteDirQuery>,
 ) -> impl IntoResponse {
-    let virtual_path = format!("/{}", path);
+    let path = path.trim_start_matches('/');
+    let virtual_path = if path.is_empty() { "/".to_string() } else { format!("/{}", path) };
     let doc_id = dir_id(&virtual_path);
 
     let doc = match state.db.get_document(&doc_id).await {
@@ -481,8 +497,9 @@ pub async fn delete_directory(
 
 #[derive(Deserialize)]
 pub struct PreviewRequest {
-    pub mounts: Vec<MountEntry>,
     #[serde(default)]
+    pub mounts: Vec<MountEntry>,
+    #[serde(default, alias = "steps")]
     pub inherited_steps: Vec<Step>,
 }
 
@@ -491,7 +508,8 @@ pub async fn preview_directory(
     Path(path): Path<String>,
     Json(body): Json<PreviewRequest>,
 ) -> impl IntoResponse {
-    let virtual_path = format!("/{}", path);
+    let path = path.trim_start_matches('/');
+    let virtual_path = if path.is_empty() { "/".to_string() } else { format!("/{}", path) };
 
     // Get child directories for this path
     let all_dirs = match state.db.all_docs_by_prefix("dir::", true).await {
@@ -515,11 +533,21 @@ pub async fn preview_directory(
         })
         .collect();
 
+    // If the caller didn't supply mounts, load them from the saved directory doc.
+    let mounts = if body.mounts.is_empty() {
+        match state.db.get_document(&dir_id(&virtual_path)).await {
+            Ok(doc) => parse_step_based_mounts(doc.get("mounts").unwrap_or(&serde_json::json!([]))),
+            Err(_) => vec![],
+        }
+    } else {
+        body.mounts
+    };
+
     match readdir::evaluate_readdir(
         &state.db,
         &state.label_cache,
         &state.access_cache,
-        &body.mounts,
+        &mounts,
         &body.inherited_steps,
         &child_dir_names,
     )
