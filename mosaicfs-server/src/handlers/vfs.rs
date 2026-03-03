@@ -121,12 +121,21 @@ pub async fn list_vfs(
         cached
     } else {
         // Collect inherited steps from ancestors
-        let inherited_steps = match readdir::collect_inherited_steps(&state.db, path).await {
+        let mut inherited_steps = match readdir::collect_inherited_steps(&state.db, path).await {
             Ok(s) => s,
             Err(e) => {
                 return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_json("internal", &e.to_string())));
             }
         };
+
+        // Apply this directory's own saved step pipeline
+        if let Some(dir_steps) = dir_doc.get("steps").and_then(|v| v.as_array()) {
+            for s in dir_steps {
+                if let Ok(step) = serde_json::from_value::<Step>(s.clone()) {
+                    inherited_steps.push(step);
+                }
+            }
+        }
 
         match readdir::evaluate_readdir(
             &state.db,
