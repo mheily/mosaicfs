@@ -119,8 +119,8 @@ export function FileDetailDrawer({ file, onClose }: FileDetailDrawerProps) {
 
   useEffect(() => {
     if (popoverOpen) {
-      api<string[]>('/api/labels')
-        .then(setSuggestions)
+      api<{ labels: string[] }>('/api/labels')
+        .then((data) => setSuggestions(data.labels ?? []))
         .catch(() => setSuggestions([]));
     }
   }, [popoverOpen]);
