@@ -16,6 +16,7 @@ import NodesPage from '@/pages/NodesPage';
 import NodeDetailPage from '@/pages/NodeDetailPage';
 import StoragePage from '@/pages/StoragePage';
 import SettingsPage from '@/pages/SettingsPage';
+import DbConsolePage from '@/pages/DbConsolePage';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -78,6 +79,7 @@ function AppRoutes() {
           <Route path="/nodes/:nodeId" element={<NodeDetailPage />} />
           <Route path="/storage" element={<StoragePage />} />
           <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/db-console" element={<DbConsolePage />} />
         </Route>
       </Route>
     </Routes>

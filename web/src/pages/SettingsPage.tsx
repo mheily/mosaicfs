@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { api } from '@/lib/api';
+import { useNavigate } from 'react-router-dom';
 import {
   Key,
   HardDrive,
@@ -14,6 +15,7 @@ import {
   Upload,
   Eye,
   EyeOff,
+  Terminal,
 } from 'lucide-react';
 
 interface Credential {
@@ -351,6 +353,7 @@ interface RestoreResult {
 }
 
 function AboutTab() {
+  const navigate = useNavigate();
   const [info, setInfo] = useState<SystemInfo | null>(null);
   const [backupStatus, setBackupStatus] = useState<BackupStatus | null>(null);
   const [restoreFile, setRestoreFile] = useState<File | null>(null);
@@ -436,7 +439,7 @@ function AboutTab() {
 
       <div className="rounded-lg border bg-card p-4 shadow-sm">
         <h3 className="mb-3 text-sm font-semibold">PouchDB</h3>
-        <div className="space-y-2 text-sm">
+        <div className="mb-3 space-y-2 text-sm">
           <div>
             <span className="text-muted-foreground">Document Count: </span>
             <span className="font-medium">{info?.pouchdb_doc_count ?? '--'}</span>
@@ -446,6 +449,13 @@ function AboutTab() {
             <span className="font-medium">{info?.pouchdb_update_seq ?? '--'}</span>
           </div>
         </div>
+        <button
+          onClick={() => navigate('/db-console')}
+          className="inline-flex items-center gap-2 rounded-md border px-4 py-2 text-sm hover:bg-accent"
+        >
+          <Terminal className="h-4 w-4" />
+          Database Console
+        </button>
       </div>
 
       <div className="rounded-lg border bg-card p-4 shadow-sm">
