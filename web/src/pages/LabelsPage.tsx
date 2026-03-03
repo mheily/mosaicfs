@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useLiveQuery } from '@/hooks/useLiveQuery';
+import { getDB } from '@/lib/pouchdb';
 import { api } from '@/lib/api';
 import { Tag, BookOpen, Plus, X } from 'lucide-react';
 import { FileDetailDrawer } from '@/components/FileDetailDrawer';
@@ -7,9 +8,8 @@ import { FileDetailDrawer } from '@/components/FileDetailDrawer';
 interface LabelAssignment {
   _id: string;
   type: string;
-  path: string;
+  file_id: string;
   labels: string[];
-  node?: string;
 }
 
 interface LabelRule {
@@ -60,11 +60,43 @@ export default function LabelsPage() {
   );
 }
 
+interface FileInfo {
+  export_path: string;
+  node_id: string;
+}
+
 function AssignmentsTab() {
   const { data: assignments, loading } = useLiveQuery<LabelAssignment>({
     type: 'label_assignment',
   });
+  const [fileInfoMap, setFileInfoMap] = useState<Record<string, FileInfo>>({});
   const [selectedFile, setSelectedFile] = useState<{ path: string; name: string } | null>(null);
+
+  useEffect(() => {
+    if (assignments.length === 0) return;
+    const db = getDB();
+    Promise.all(
+      assignments.map(async (a) => {
+        if (!a.file_id) return null;
+        try {
+          const doc = await db.get(a.file_id) as Record<string, unknown>;
+          const source = doc.source as Record<string, string> | undefined;
+          return [a.file_id, {
+            export_path: source?.export_path ?? '',
+            node_id: source?.node_id ?? '',
+          }] as [string, FileInfo];
+        } catch {
+          return null;
+        }
+      }),
+    ).then((entries) => {
+      const map: Record<string, FileInfo> = {};
+      for (const entry of entries) {
+        if (entry) map[entry[0]] = entry[1];
+      }
+      setFileInfoMap(map);
+    });
+  }, [assignments]);
 
   if (loading) return <p className="text-sm text-muted-foreground">Loading...</p>;
 
@@ -82,33 +114,37 @@ function AssignmentsTab() {
             </tr>
           </thead>
           <tbody>
-            {assignments.map((a) => (
-              <tr
-                key={a._id}
-                className="cursor-pointer border-b hover:bg-accent"
-                onClick={() =>
-                  setSelectedFile({
-                    path: a.path,
-                    name: a.path.split('/').pop() || a.path,
-                  })
-                }
-              >
-                <td className="py-2 font-medium">{a.path}</td>
-                <td className="py-2">
-                  <div className="flex flex-wrap gap-1">
-                    {a.labels.map((l) => (
-                      <span
-                        key={l}
-                        className="inline-flex rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
-                      >
-                        {l}
-                      </span>
-                    ))}
-                  </div>
-                </td>
-                <td className="py-2">{a.node || '--'}</td>
-              </tr>
-            ))}
+            {assignments.map((a) => {
+              const info = fileInfoMap[a.file_id];
+              const path = info?.export_path ?? '';
+              const node = info?.node_id ?? '';
+              return (
+                <tr
+                  key={a._id}
+                  className="cursor-pointer border-b hover:bg-accent"
+                  onClick={() =>
+                    path
+                      ? setSelectedFile({ path, name: path.split('/').pop() || path })
+                      : undefined
+                  }
+                >
+                  <td className="py-2 font-mono text-xs">{path || '--'}</td>
+                  <td className="py-2">
+                    <div className="flex flex-wrap gap-1">
+                      {a.labels.map((l) => (
+                        <span
+                          key={l}
+                          className="inline-flex rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
+                        >
+                          {l}
+                        </span>
+                      ))}
+                    </div>
+                  </td>
+                  <td className="py-2">{node || '--'}</td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       )}
