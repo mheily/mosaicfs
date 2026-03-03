@@ -156,9 +156,11 @@ impl LabelCache {
 }
 
 fn rule_matches_file(rule: &serde_json::Value, node_id: &str, export_path: &str) -> bool {
-    let rule_node = rule.get("node_id").and_then(|v| v.as_str()).unwrap_or("");
-    if rule_node != node_id {
-        return false;
+    // node_id filter is optional; if set, file must be on that node
+    if let Some(rule_node) = rule.get("node_id").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+        if rule_node != node_id {
+            return false;
+        }
     }
     let prefix = rule.get("path_prefix").and_then(|v| v.as_str()).unwrap_or("");
     export_path.starts_with(prefix)

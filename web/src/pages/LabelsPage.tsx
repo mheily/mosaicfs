@@ -18,6 +18,7 @@ interface LabelRule {
   name?: string;
   node_id?: string;
   path_prefix: string;
+  glob?: string;
   labels: string[];
   enabled: boolean;
 }
@@ -155,6 +156,7 @@ function AssignmentsTab() {
 function RulesTab() {
   const { data: rules, loading } = useLiveQuery<LabelRule>({ type: 'label_rule' });
   const [showEditor, setShowEditor] = useState(false);
+  const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
   const [editingRule, setEditingRule] = useState<Partial<LabelRule>>({
     name: '',
     path_prefix: '',
@@ -179,19 +181,19 @@ function RulesTab() {
     try {
       const body = {
         name: editingRule.name,
-        node_id: editingRule.node_id,
+        node_id: editingRule.node_id || undefined,
         path_prefix: editingRule.path_prefix,
+        glob: editingRule.glob || undefined,
         enabled: editingRule.enabled,
-        labels: labelsInput
-          .split(',')
-          .map((s) => s.trim())
-          .filter(Boolean),
+        labels: labelsInput.split(',').map((s) => s.trim()).filter(Boolean),
       };
-      await api('/api/labels/rules', {
-        method: 'POST',
-        body: JSON.stringify(body),
-      });
+      if (editingRuleId) {
+        await api(`/api/labels/rules/${editingRuleId}`, { method: 'PATCH', body: JSON.stringify(body) });
+      } else {
+        await api('/api/labels/rules', { method: 'POST', body: JSON.stringify(body) });
+      }
       setShowEditor(false);
+      setEditingRuleId(null);
       setEditingRule({ name: '', path_prefix: '', labels: [], enabled: true });
       setLabelsInput('');
     } catch {
@@ -205,7 +207,7 @@ function RulesTab() {
     <>
       <div className="mb-4 flex justify-end">
         <button
-          onClick={() => setShowEditor(true)}
+          onClick={() => { setEditingRuleId(null); setEditingRule({ name: '', path_prefix: '', labels: [], enabled: true }); setLabelsInput(''); setShowEditor(true); }}
           className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow hover:bg-primary/90"
         >
           <Plus className="h-4 w-4" />
@@ -228,7 +230,17 @@ function RulesTab() {
           </thead>
           <tbody>
             {rules.map((r) => (
-              <tr key={r._id} className="border-b">
+              <tr
+                key={r._id}
+                className="cursor-pointer border-b hover:bg-accent"
+                onClick={() => {
+                  const ruleId = r._id.replace(/^label_rule::/, '');
+                  setEditingRuleId(ruleId);
+                  setEditingRule({ name: r.name, node_id: r.node_id, path_prefix: r.path_prefix, glob: r.glob, enabled: r.enabled });
+                  setLabelsInput(r.labels.join(', '));
+                  setShowEditor(true);
+                }}
+              >
                 <td className="py-2 font-medium">{r.name || '--'}</td>
                 <td className="py-2">{r.node_id || '--'}</td>
                 <td className="py-2 font-mono text-xs">{r.path_prefix}</td>
@@ -246,7 +258,7 @@ function RulesTab() {
                 </td>
                 <td className="py-2">
                   <button
-                    onClick={() => handleToggleEnabled(r)}
+                    onClick={(e) => { e.stopPropagation(); handleToggleEnabled(r); }}
                     className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
                       r.enabled ? 'bg-primary' : 'bg-muted'
                     }`}
@@ -270,7 +282,7 @@ function RulesTab() {
           <div className="absolute inset-0 bg-black/50" onClick={() => setShowEditor(false)} />
           <div className="relative w-full max-w-md bg-background p-6 shadow-lg">
             <div className="mb-4 flex items-center justify-between">
-              <h3 className="text-lg font-semibold">Add Label Rule</h3>
+              <h3 className="text-lg font-semibold">{editingRuleId ? 'Edit Label Rule' : 'Add Label Rule'}</h3>
               <button onClick={() => setShowEditor(false)}>
                 <X className="h-5 w-5" />
               </button>
@@ -288,6 +300,17 @@ function RulesTab() {
               </div>
 
               <div className="space-y-2">
+                <label className="text-sm font-medium">Node ID</label>
+                <input
+                  type="text"
+                  value={editingRule.node_id || ''}
+                  onChange={(e) => setEditingRule((r) => ({ ...r, node_id: e.target.value }))}
+                  className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  placeholder="node-abc123"
+                />
+              </div>
+
+              <div className="space-y-2">
                 <label className="text-sm font-medium">Path Prefix</label>
                 <input
                   type="text"
@@ -295,6 +318,17 @@ function RulesTab() {
                   onChange={(e) => setEditingRule((r) => ({ ...r, path_prefix: e.target.value }))}
                   className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   placeholder="/media/photos"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Glob</label>
+                <input
+                  type="text"
+                  value={editingRule.glob || ''}
+                  onChange={(e) => setEditingRule((r) => ({ ...r, glob: e.target.value }))}
+                  className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  placeholder="*.pdf"
                 />
               </div>
 

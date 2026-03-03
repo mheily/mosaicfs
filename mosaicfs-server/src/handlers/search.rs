@@ -22,25 +22,9 @@ pub async fn search(
     State(state): State<Arc<AppState>>,
     Query(query): Query<SearchQuery>,
 ) -> impl IntoResponse {
-    // If label filter is set, build set of file IDs with that label
+    // If label filter is set, build set of file IDs with that label (assignments + rules)
     let label_file_ids: Option<HashSet<String>> = if let Some(ref label) = query.label {
-        let mut ids = HashSet::new();
-
-        // Check direct assignments
-        if let Ok(resp) = state.db.all_docs_by_prefix("label_assignment::", true).await {
-            for row in &resp.rows {
-                if let Some(doc) = &row.doc {
-                    if let Some(labels) = doc.get("labels").and_then(|v| v.as_array()) {
-                        if labels.iter().any(|l| l.as_str() == Some(label)) {
-                            if let Some(fid) = doc.get("file_id").and_then(|v| v.as_str()) {
-                                ids.insert(fid.to_string());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
+        let ids = state.label_cache.files_with_label(label).into_iter().collect();
         Some(ids)
     } else {
         None
