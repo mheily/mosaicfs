@@ -131,13 +131,13 @@ export function FileTable({
               onClick={() => onFileClick(file)}
             >
               <TableCell className="font-medium">{file.name}</TableCell>
-              <TableCell>{formatBytes(file.size)}</TableCell>
-              <TableCell>{formatDate(file.mtime)}</TableCell>
+              <TableCell>{file.size != null ? formatBytes(file.size) : '—'}</TableCell>
+              <TableCell>{file.mtime ? formatDate(file.mtime) : '—'}</TableCell>
               <TableCell>
                 <NodeBadge
                   status="online"
-                  name={file.source.node_id}
-                  nodeId={file.source.node_id}
+                  name={file.source?.node_id ?? '—'}
+                  nodeId={file.source?.node_id}
                 />
               </TableCell>
             </TableRow>

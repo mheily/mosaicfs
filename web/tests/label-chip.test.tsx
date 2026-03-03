@@ -43,4 +43,15 @@ describe('LabelChip', () => {
 
     expect(onRemove).toHaveBeenCalledTimes(1);
   });
+
+  // ── Boundary tests ──
+
+  it('renders empty string label without crash', () => {
+    expect(() => renderChip({ label: '', inherited: false })).not.toThrow();
+  });
+
+  it('renders label with special characters', () => {
+    renderChip({ label: 'my-label/v2', inherited: false });
+    expect(screen.getByText('my-label/v2')).toBeInTheDocument();
+  });
 });

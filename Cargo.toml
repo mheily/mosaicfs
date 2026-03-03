@@ -35,3 +35,4 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 sha2 = "0.10"
 hmac = "0.12"
 hex = "0.4"
+ts-rs = { version = "10", features = ["chrono-impl", "serde-json-impl"] }

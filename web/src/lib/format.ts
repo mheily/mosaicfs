@@ -1,4 +1,5 @@
 export function formatBytes(bytes: number): string {
+  if (bytes == null || isNaN(bytes)) return '—';
   if (bytes === 0) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
   const i = Math.floor(Math.log(bytes) / Math.log(1024));
@@ -6,12 +7,17 @@ export function formatBytes(bytes: number): string {
 }
 
 export function formatDate(dateStr: string): string {
-  return new Date(dateStr).toLocaleString();
+  if (!dateStr) return '—';
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return '—';
+  return d.toLocaleString();
 }
 
 export function formatRelative(dateStr: string): string {
+  if (!dateStr) return '—';
   const now = Date.now();
   const then = new Date(dateStr).getTime();
+  if (isNaN(then)) return '—';
   const diff = now - then;
   const seconds = Math.floor(diff / 1000);
   if (seconds < 60) return 'just now';

@@ -59,7 +59,8 @@ interface FileDetailDrawerProps {
   onClose: () => void;
 }
 
-function filename(path: string): string {
+function filename(path: string | undefined | null): string {
+  if (!path) return '(unknown)';
   return path.split('/').pop() || path;
 }
 
@@ -189,31 +190,31 @@ export function FileDetailDrawer({ file, onClose }: FileDetailDrawerProps) {
                 <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5">
                   <span className="text-muted-foreground">Path</span>
                   <span className="break-all font-mono text-xs">
-                    {file.path}
+                    {file.path ?? '—'}
                   </span>
 
                   <span className="text-muted-foreground">Export path</span>
                   <span className="break-all font-mono text-xs">
-                    {file.export_path}
+                    {file.export_path ?? '—'}
                   </span>
 
                   <span className="text-muted-foreground">Node</span>
                   <span>
                     <NodeBadge
                       status="online"
-                      name={file.node_id}
+                      name={file.node_id ?? '—'}
                       nodeId={file.node_id}
                     />
                   </span>
 
                   <span className="text-muted-foreground">Size</span>
-                  <span>{formatBytes(file.size)}</span>
+                  <span>{file.size != null ? formatBytes(file.size) : '—'}</span>
 
                   <span className="text-muted-foreground">MIME type</span>
-                  <span className="font-mono text-xs">{file.mime_type}</span>
+                  <span className="font-mono text-xs">{file.mime_type ?? '—'}</span>
 
                   <span className="text-muted-foreground">Modified</span>
-                  <span>{formatDate(file.mtime)}</span>
+                  <span>{file.mtime ? formatDate(file.mtime) : '—'}</span>
                 </div>
               </section>
 

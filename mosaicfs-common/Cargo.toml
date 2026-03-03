@@ -15,3 +15,4 @@ glob = "0.3"
 regex = "1"
 async-trait = "0.1"
 bytes = "1"
+ts-rs = { workspace = true }
