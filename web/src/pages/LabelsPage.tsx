@@ -3,7 +3,7 @@ import { useLiveQuery } from '@/hooks/useLiveQuery';
 import { getDB } from '@/lib/pouchdb';
 import { api } from '@/lib/api';
 import { Tag, BookOpen, Plus, X } from 'lucide-react';
-import { FileDetailDrawer } from '@/components/FileDetailDrawer';
+import { FileDetailDrawer, type FileDetail } from '@/components/FileDetailDrawer';
 
 interface LabelAssignment {
   _id: string;
@@ -60,17 +60,12 @@ export default function LabelsPage() {
   );
 }
 
-interface FileInfo {
-  export_path: string;
-  node_id: string;
-}
-
 function AssignmentsTab() {
   const { data: assignments, loading } = useLiveQuery<LabelAssignment>({
     type: 'label_assignment',
   });
-  const [fileInfoMap, setFileInfoMap] = useState<Record<string, FileInfo>>({});
-  const [selectedFile, setSelectedFile] = useState<{ path: string; name: string } | null>(null);
+  const [fileInfoMap, setFileInfoMap] = useState<Record<string, FileDetail>>({});
+  const [selectedFile, setSelectedFile] = useState<FileDetail | null>(null);
 
   useEffect(() => {
     if (assignments.length === 0) return;
@@ -81,16 +76,23 @@ function AssignmentsTab() {
         try {
           const doc = await db.get(a.file_id) as Record<string, unknown>;
           const source = doc.source as Record<string, string> | undefined;
+          const exportPath = source?.export_path ?? '';
           return [a.file_id, {
-            export_path: source?.export_path ?? '',
+            _id: a.file_id,
+            path: exportPath,
+            export_path: exportPath,
             node_id: source?.node_id ?? '',
-          }] as [string, FileInfo];
+            size: (doc.size as number) ?? 0,
+            mime_type: (doc.mime_type as string) ?? '',
+            mtime: (doc.mtime as string) ?? '',
+            labels: a.labels,
+          }] as [string, FileDetail];
         } catch {
           return null;
         }
       }),
     ).then((entries) => {
-      const map: Record<string, FileInfo> = {};
+      const map: Record<string, FileDetail> = {};
       for (const entry of entries) {
         if (entry) map[entry[0]] = entry[1];
       }
@@ -116,19 +118,13 @@ function AssignmentsTab() {
           <tbody>
             {assignments.map((a) => {
               const info = fileInfoMap[a.file_id];
-              const path = info?.export_path ?? '';
-              const node = info?.node_id ?? '';
               return (
                 <tr
                   key={a._id}
                   className="cursor-pointer border-b hover:bg-accent"
-                  onClick={() =>
-                    path
-                      ? setSelectedFile({ path, name: path.split('/').pop() || path })
-                      : undefined
-                  }
+                  onClick={() => info ? setSelectedFile(info) : undefined}
                 >
-                  <td className="py-2 font-mono text-xs">{path || '--'}</td>
+                  <td className="py-2 font-mono text-xs">{info?.export_path || '--'}</td>
                   <td className="py-2">
                     <div className="flex flex-wrap gap-1">
                       {a.labels.map((l) => (
@@ -141,7 +137,7 @@ function AssignmentsTab() {
                       ))}
                     </div>
                   </td>
-                  <td className="py-2">{node || '--'}</td>
+                  <td className="py-2">{info?.node_id || '--'}</td>
                 </tr>
               );
             })}
