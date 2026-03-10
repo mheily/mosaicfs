@@ -135,6 +135,28 @@ export default function FileBrowserPage() {
     loadDirectory(currentPath);
   }, [currentPath, loadDirectory]);
 
+  // Auto-expand root "/" on mount so subdirectories are visible immediately
+  const [rootExpanded, setRootExpanded] = useState(false);
+  useEffect(() => {
+    if (!rootExpanded) {
+      setRootExpanded(true);
+      (async () => {
+        try {
+          const response = await api<VfsApiResponse>(`/api/vfs?path=${encodeURIComponent('/')}`);
+          const children: TreeNode[] = response.directories.map((d) => ({
+            name: d.name,
+            path: d.virtual_path,
+            loaded: false,
+            expanded: false,
+          }));
+          setTree([{ name: '/', path: '/', loaded: true, expanded: true, children }]);
+        } catch {
+          // ignore
+        }
+      })();
+    }
+  }, [rootExpanded]);
+
   async function toggleTreeNode(path: string) {
     setTree((prev) => {
       const update = (nodes: TreeNode[]): TreeNode[] =>
