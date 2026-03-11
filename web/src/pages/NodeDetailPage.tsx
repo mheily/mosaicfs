@@ -7,7 +7,6 @@ import { percentColor, percentBarColor } from '@/lib/format';
 import {
   Server,
   HardDrive,
-  Wifi,
   AlertTriangle,
   Plus,
   Trash2,
@@ -252,7 +251,7 @@ export default function NodeDetailPage() {
                 />
                 <YAxis tick={{ fontSize: 11 }} domain={[0, 100]} unit="%" />
                 <Tooltip
-                  labelFormatter={(v: string) => new Date(v).toLocaleString()}
+                  labelFormatter={(v) => new Date(String(v)).toLocaleString()}
                 />
                 <Line type="monotone" dataKey="cpu" stroke="#3b82f6" name="CPU" strokeWidth={2} dot={false} />
                 <Line type="monotone" dataKey="memory" stroke="#8b5cf6" name="Memory" strokeWidth={2} dot={false} />

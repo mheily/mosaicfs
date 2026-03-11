@@ -5,6 +5,9 @@ members = [
     "mosaicfs-server",
     "mosaicfs-vfs",
 ]
+exclude = [
+    "web/src-tauri",
+]
 resolver = "2"
 
 [workspace.package]

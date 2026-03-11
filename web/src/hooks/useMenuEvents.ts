@@ -12,7 +12,7 @@ export function useMenuEvents() {
 
     (async () => {
       const { listen } = await import('@tauri-apps/api/event' as string);
-      unlisten = await listen<string>('menu-action', (event) => {
+      unlisten = await listen('menu-action', (event: { payload: string }) => {
         switch (event.payload) {
           case 'go-back':
             navigate(-1);

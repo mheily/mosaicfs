@@ -174,8 +174,8 @@ export default function StoragePage() {
                   tickFormatter={(v: number) => formatBytes(v)}
                 />
                 <Tooltip
-                  labelFormatter={(v: string) => new Date(v).toLocaleString()}
-                  formatter={(v: number) => formatBytes(v)}
+                  labelFormatter={(v) => new Date(String(v)).toLocaleString()}
+                  formatter={(v) => formatBytes(Number(v))}
                 />
                 <Line
                   type="monotone"

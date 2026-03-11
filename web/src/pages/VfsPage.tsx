@@ -164,7 +164,7 @@ interface PreviewResult {
 export default function VfsPage() {
   const [tree, setTree] = useState<VfsTreeNode[]>([]);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
-  const [dirInfo, setDirInfo] = useState<DirectoryInfo | null>(null);
+  const [_dirInfo, setDirInfo] = useState<DirectoryInfo | null>(null);
   const [loading, setLoading] = useState(false);
 
   // Mount editor sheet

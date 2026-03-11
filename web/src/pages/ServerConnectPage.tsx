@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { setBaseUrl } from '@/lib/api';
-import { setServerUrl } from '@/lib/tauri-store';
 
 export default function ServerConnectPage() {
   const [url, setUrl] = useState('');
@@ -27,6 +26,7 @@ export default function ServerConnectPage() {
       await res.json();
 
       // Server is reachable — persist and apply
+      const { setServerUrl } = await import('@/lib/tauri-store');
       await setServerUrl(trimmed);
       setBaseUrl(trimmed);
       navigate('/login', { replace: true });

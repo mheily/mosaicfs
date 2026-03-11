@@ -16,3 +16,10 @@ This exposes the access key and secret key to a MitM attack at enrollment time.
 
 The fix is to use `Client::new()` (verification on by default) and, if self-signed
 certs are needed, accept a user-supplied CA certificate path instead.
+
+## TLS verification fails in Tauri desktop
+
+
+● The MosaicFS server uses a self-signed HTTPS certificate, and the Tauri webview rejects it. The
+  fetch() in the browser context won't trust self-signed certs. 
+
