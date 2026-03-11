@@ -26,5 +26,12 @@ check-types-fresh:
 # Production image: mosaicfs-server + mosaicfs-agent + web UI
 # BUILDAH_ISOLATION=chroot bypasses rootless-Podman cgroup auth issues;
 # Docker ignores it.
+tauri-dev:
+	cd web && npm run tauri:dev
+
+tauri-build:
+	cd web && npm run tauri:build
+
+
 mosaicfs-image:
 	BUILDAH_ISOLATION=chroot $(DOCKER) build $(BUILD_FLAGS) -f Dockerfile.mosaicfs -t localhost/mosaicfs:latest .

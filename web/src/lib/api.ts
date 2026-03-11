@@ -1,5 +1,15 @@
+let baseUrl = '';
 let authToken: string | null = null;
 let onUnauthorized: (() => void) | null = null;
+
+export function setBaseUrl(url: string) {
+  // Strip trailing slash
+  baseUrl = url.replace(/\/+$/, '');
+}
+
+export function getBaseUrl() {
+  return baseUrl;
+}
 
 export function setAuthToken(token: string | null) {
   authToken = token;
@@ -29,7 +39,8 @@ export async function api<T = unknown>(
     headers.set('Content-Type', 'application/json');
   }
 
-  const res = await fetch(path, { ...options, headers });
+  const url = baseUrl ? `${baseUrl}${path}` : path;
+  const res = await fetch(url, { ...options, headers });
 
   if (res.status === 401) {
     onUnauthorized?.();

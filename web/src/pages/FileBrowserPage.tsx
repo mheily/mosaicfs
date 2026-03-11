@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api } from '@/lib/api';
 import { formatBytes, formatDate } from '@/lib/format';
+import { isTauri } from '@/lib/platform';
+import { useFileListKeyboard } from '@/hooks/useFileListKeyboard';
 import {
   Folder,
   File,
@@ -66,13 +68,17 @@ function DirectoryTreeItem({
   onSelect,
   onToggle,
   selectedPath,
+  compact,
 }: {
   node: TreeNode;
   onSelect: (path: string) => void;
   onToggle: (path: string) => void;
   selectedPath: string;
+  compact?: boolean;
 }) {
   const isSelected = selectedPath === node.path;
+  const iconSize = compact ? 'h-3 w-3' : 'h-3.5 w-3.5';
+  const folderSize = compact ? 'h-3.5 w-3.5' : 'h-4 w-4';
 
   return (
     <div>
@@ -86,11 +92,11 @@ function DirectoryTreeItem({
         }`}
       >
         {node.expanded ? (
-          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <ChevronDown className={`${iconSize} shrink-0 text-muted-foreground`} />
         ) : (
-          <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <ChevronRight className={`${iconSize} shrink-0 text-muted-foreground`} />
         )}
-        <Folder className="h-4 w-4 shrink-0 text-blue-500" />
+        <Folder className={`${folderSize} shrink-0 text-blue-500`} />
         <span className="truncate">{node.name}</span>
       </button>
       {node.expanded && node.children && (
@@ -102,6 +108,7 @@ function DirectoryTreeItem({
               onSelect={onSelect}
               onToggle={onToggle}
               selectedPath={selectedPath}
+              compact={compact}
             />
           ))}
         </div>
@@ -111,6 +118,7 @@ function DirectoryTreeItem({
 }
 
 export default function FileBrowserPage() {
+  const compact = isTauri();
   const [currentPath, setCurrentPath] = useState('/');
   const [files, setFiles] = useState<VfsEntry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -118,6 +126,7 @@ export default function FileBrowserPage() {
     { name: '/', path: '/', loaded: false, expanded: false },
   ]);
   const [selectedFile, setSelectedFile] = useState<FileDetail | null>(null);
+  const [selectedIndex, setSelectedIndex] = useState(-1);
 
   const loadDirectory = useCallback(async (path: string) => {
     setLoading(true);
@@ -133,6 +142,7 @@ export default function FileBrowserPage() {
 
   useEffect(() => {
     loadDirectory(currentPath);
+    setSelectedIndex(-1);
   }, [currentPath, loadDirectory]);
 
   // Auto-expand root "/" on mount so subdirectories are visible immediately
@@ -214,13 +224,81 @@ export default function FileBrowserPage() {
     }
   }
 
+  const navigateToParent = useCallback(() => {
+    if (currentPath !== '/') {
+      const parts = currentPath.split('/').filter(Boolean);
+      parts.pop();
+      setCurrentPath(parts.length > 0 ? '/' + parts.join('/') : '/');
+    }
+  }, [currentPath]);
+
+  function openFileDetail(entry: VfsEntry) {
+    setSelectedFile({
+      _id: entry.file_id ?? '',
+      path: entry.name,
+      export_path: entry.name,
+      node_id: entry.node ?? '',
+      size: entry.size ?? 0,
+      mime_type: entry.mime_type ?? '',
+      mtime: entry.mtime ?? '',
+      labels: [],
+    });
+  }
+
+  const { tableRef } = useFileListKeyboard({
+    files,
+    selectedIndex,
+    setSelectedIndex,
+    onNavigate: setCurrentPath,
+    onParent: navigateToParent,
+    onOpenDrawer: (index: number) => {
+      const entry = files[index];
+      if (entry) openFileDetail(entry);
+    },
+    onCloseDrawer: () => setSelectedFile(null),
+    drawerOpen: !!selectedFile,
+  });
+
+  // Click handlers differ between Tauri (selection model) and web (immediate action)
+  function handleRowClick(entry: VfsEntry, index: number) {
+    if (compact) {
+      // Tauri: single click selects
+      setSelectedIndex(index);
+    } else {
+      // Web: single click opens/navigates
+      if (entry.is_dir) {
+        setCurrentPath(entry.path);
+      } else {
+        openFileDetail(entry);
+      }
+    }
+  }
+
+  function handleRowDoubleClick(entry: VfsEntry) {
+    if (!compact) return; // Web mode uses single click
+    if (entry.is_dir) {
+      setCurrentPath(entry.path);
+    } else {
+      openFileDetail(entry);
+    }
+  }
+
   const breadcrumbs = currentPath === '/' ? ['/'] : currentPath.split('/').filter(Boolean);
+
+  // Style classes that vary by mode
+  const sidebarWidth = compact ? 'w-56' : 'w-64';
+  const sidebarBg = compact ? 'bg-muted/20' : '';
+  const cellPy = compact ? 'py-1' : 'py-2';
+  const textSize = compact ? 'text-xs' : 'text-sm';
+  const iconSize = compact ? 'h-3.5 w-3.5' : 'h-4 w-4';
 
   return (
     <div className="flex h-full">
       {/* Left: Directory Tree */}
-      <div className="w-64 shrink-0 overflow-auto border-r p-3">
-        <h2 className="mb-2 text-sm font-semibold text-muted-foreground">Directories</h2>
+      <div className={`${sidebarWidth} shrink-0 overflow-auto border-r p-3 ${sidebarBg}`}>
+        {!compact && (
+          <h2 className="mb-2 text-sm font-semibold text-muted-foreground">Directories</h2>
+        )}
         {tree.map((node) => (
           <DirectoryTreeItem
             key={node.path}
@@ -228,89 +306,84 @@ export default function FileBrowserPage() {
             onSelect={setCurrentPath}
             onToggle={toggleTreeNode}
             selectedPath={currentPath}
+            compact={compact}
           />
         ))}
       </div>
 
       {/* Right: File Table */}
       <div className="flex-1 overflow-auto p-4">
-        {/* Breadcrumbs */}
-        <nav className="mb-4 flex items-center gap-1 text-sm">
-          <button
-            onClick={() => setCurrentPath('/')}
-            className="text-primary hover:underline"
-          >
-            root
-          </button>
-          {breadcrumbs.map((seg, i) => {
-            if (currentPath === '/' && i === 0) return null;
-            const path = '/' + breadcrumbs.slice(0, i + 1).join('/');
-            return (
-              <span key={path} className="flex items-center gap-1">
-                <ChevronRight className="h-3 w-3 text-muted-foreground" />
-                <button
-                  onClick={() => setCurrentPath(path)}
-                  className="text-primary hover:underline"
-                >
-                  {seg}
-                </button>
-              </span>
-            );
-          })}
-        </nav>
+        {/* Breadcrumbs (only in web mode — FinderLayout has its own) */}
+        {!compact && (
+          <nav className="mb-4 flex items-center gap-1 text-sm">
+            <button
+              onClick={() => setCurrentPath('/')}
+              className="text-primary hover:underline"
+            >
+              root
+            </button>
+            {breadcrumbs.map((seg, i) => {
+              if (currentPath === '/' && i === 0) return null;
+              const path = '/' + breadcrumbs.slice(0, i + 1).join('/');
+              return (
+                <span key={path} className="flex items-center gap-1">
+                  <ChevronRight className="h-3 w-3 text-muted-foreground" />
+                  <button
+                    onClick={() => setCurrentPath(path)}
+                    className="text-primary hover:underline"
+                  >
+                    {seg}
+                  </button>
+                </span>
+              );
+            })}
+          </nav>
+        )}
 
         {loading ? (
           <div className="flex items-center justify-center py-12">
             <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
           </div>
         ) : (
-          <table className="w-full text-sm">
+          <table className={`w-full ${textSize}`}>
             <thead>
               <tr className="border-b text-left text-muted-foreground">
                 <th className="pb-2 font-medium">Name</th>
                 <th className="pb-2 font-medium">Size</th>
                 <th className="pb-2 font-medium">Modified</th>
-                <th className="pb-2 font-medium">Node</th>
+                {!compact && <th className="pb-2 font-medium">Node</th>}
               </tr>
             </thead>
-            <tbody>
-              {files.map((entry) => (
+            <tbody ref={tableRef}>
+              {files.map((entry, index) => (
                 <tr
                   key={entry.path}
-                  className="cursor-pointer border-b hover:bg-accent"
-                  onClick={() => {
-                    if (entry.is_dir) {
-                      setCurrentPath(entry.path);
-                    } else {
-                      setSelectedFile({
-                        _id: entry.file_id ?? '',
-                        path: entry.name,
-                        export_path: entry.name,
-                        node_id: entry.node ?? '',
-                        size: entry.size ?? 0,
-                        mime_type: entry.mime_type ?? '',
-                        mtime: entry.mtime ?? '',
-                        labels: [],
-                      });
-                    }
-                  }}
+                  className={`cursor-pointer border-b hover:bg-accent ${
+                    compact && index === selectedIndex
+                      ? 'bg-primary/15 text-foreground'
+                      : compact
+                        ? 'even:bg-muted/30'
+                        : ''
+                  }`}
+                  onClick={() => handleRowClick(entry, index)}
+                  onDoubleClick={() => handleRowDoubleClick(entry)}
                 >
-                  <td className="flex items-center gap-2 py-2">
+                  <td className={`flex items-center gap-2 ${cellPy}`}>
                     {entry.is_dir ? (
-                      <Folder className="h-4 w-4 text-blue-500" />
+                      <Folder className={`${iconSize} text-blue-500`} />
                     ) : (
-                      <File className="h-4 w-4 text-muted-foreground" />
+                      <File className={`${iconSize} text-muted-foreground`} />
                     )}
                     {entry.name}
                   </td>
-                  <td className="py-2">{entry.size != null ? formatBytes(entry.size) : '--'}</td>
-                  <td className="py-2">{entry.mtime ? formatDate(entry.mtime) : '--'}</td>
-                  <td className="py-2">{entry.node || '--'}</td>
+                  <td className={cellPy}>{entry.size != null ? formatBytes(entry.size) : '--'}</td>
+                  <td className={cellPy}>{entry.mtime ? formatDate(entry.mtime) : '--'}</td>
+                  {!compact && <td className={cellPy}>{entry.node || '--'}</td>}
                 </tr>
               ))}
               {files.length === 0 && (
                 <tr>
-                  <td colSpan={4} className="py-8 text-center text-muted-foreground">
+                  <td colSpan={compact ? 3 : 4} className="py-8 text-center text-muted-foreground">
                     Empty directory
                   </td>
                 </tr>

@@ -1,19 +1,18 @@
-import { useState, useEffect } from 'react';
-import { useLiveQuery } from '@/hooks/useLiveQuery';
-import { getDB } from '@/lib/pouchdb';
+import { useState, useEffect, useCallback } from 'react';
 import { api } from '@/lib/api';
 import { Tag, BookOpen, Plus, X } from 'lucide-react';
 import { FileDetailDrawer, type FileDetail } from '@/components/FileDetailDrawer';
 
 interface LabelAssignment {
-  _id: string;
+  id: string;
   type: string;
   file_id: string;
   labels: string[];
 }
 
 interface LabelRule {
-  _id: string;
+  id: string;
+  rule_id: string;
   type: string;
   name?: string;
   node_id?: string;
@@ -21,6 +20,23 @@ interface LabelRule {
   glob?: string;
   labels: string[];
   enabled: boolean;
+}
+
+interface AssignmentsApiResponse {
+  items: LabelAssignment[];
+}
+
+interface RulesApiResponse {
+  items: LabelRule[];
+}
+
+interface FileApiResponse {
+  id: string;
+  name: string;
+  size: number;
+  mime_type: string;
+  mtime: string;
+  source?: { node_id?: string; export_path?: string };
 }
 
 export default function LabelsPage() {
@@ -62,30 +78,43 @@ export default function LabelsPage() {
 }
 
 function AssignmentsTab() {
-  const { data: assignments, loading } = useLiveQuery<LabelAssignment>({
-    type: 'label_assignment',
-  });
+  const [assignments, setAssignments] = useState<LabelAssignment[]>([]);
+  const [loading, setLoading] = useState(true);
   const [fileInfoMap, setFileInfoMap] = useState<Record<string, FileDetail>>({});
   const [selectedFile, setSelectedFile] = useState<FileDetail | null>(null);
 
+  const fetchAssignments = useCallback(async () => {
+    try {
+      const res = await api<AssignmentsApiResponse>('/api/labels/assignments');
+      setAssignments(res.items);
+    } catch {
+      setAssignments([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchAssignments();
+  }, [fetchAssignments]);
+
   useEffect(() => {
     if (assignments.length === 0) return;
-    const db = getDB();
     Promise.all(
       assignments.map(async (a) => {
         if (!a.file_id) return null;
         try {
-          const doc = await db.get(a.file_id) as Record<string, unknown>;
-          const source = doc.source as Record<string, string> | undefined;
-          const exportPath = source?.export_path ?? '';
+          const fileUuid = a.file_id.replace(/^file::/, '');
+          const doc = await api<FileApiResponse>(`/api/files/${fileUuid}`);
+          const exportPath = doc.source?.export_path ?? '';
           return [a.file_id, {
             _id: a.file_id,
             path: exportPath,
             export_path: exportPath,
-            node_id: source?.node_id ?? '',
-            size: (doc.size as number) ?? 0,
-            mime_type: (doc.mime_type as string) ?? '',
-            mtime: (doc.mtime as string) ?? '',
+            node_id: doc.source?.node_id ?? '',
+            size: doc.size ?? 0,
+            mime_type: doc.mime_type ?? '',
+            mtime: doc.mtime ?? '',
             labels: a.labels,
           }] as [string, FileDetail];
         } catch {
@@ -121,7 +150,7 @@ function AssignmentsTab() {
               const info = fileInfoMap[a.file_id];
               return (
                 <tr
-                  key={a._id}
+                  key={a.id}
                   className="cursor-pointer border-b hover:bg-accent"
                   onClick={() => info ? setSelectedFile(info) : undefined}
                 >
@@ -154,7 +183,8 @@ function AssignmentsTab() {
 }
 
 function RulesTab() {
-  const { data: rules, loading } = useLiveQuery<LabelRule>({ type: 'label_rule' });
+  const [rules, setRules] = useState<LabelRule[]>([]);
+  const [loading, setLoading] = useState(true);
   const [showEditor, setShowEditor] = useState(false);
   const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
   const [editingRule, setEditingRule] = useState<Partial<LabelRule>>({
@@ -165,13 +195,28 @@ function RulesTab() {
   });
   const [labelsInput, setLabelsInput] = useState('');
 
+  const fetchRules = useCallback(async () => {
+    try {
+      const res = await api<RulesApiResponse>('/api/labels/rules');
+      setRules(res.items);
+    } catch {
+      setRules([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchRules();
+  }, [fetchRules]);
+
   async function handleToggleEnabled(rule: LabelRule) {
     try {
-      const ruleId = rule._id.replace(/^label_rule::/, '');
-      await api(`/api/labels/rules/${ruleId}`, {
+      await api(`/api/labels/rules/${rule.rule_id}`, {
         method: 'PATCH',
         body: JSON.stringify({ enabled: !rule.enabled }),
       });
+      fetchRules();
     } catch {
       // ignore
     }
@@ -196,6 +241,7 @@ function RulesTab() {
       setEditingRuleId(null);
       setEditingRule({ name: '', path_prefix: '', labels: [], enabled: true });
       setLabelsInput('');
+      fetchRules();
     } catch {
       // ignore
     }
@@ -231,11 +277,10 @@ function RulesTab() {
           <tbody>
             {rules.map((r) => (
               <tr
-                key={r._id}
+                key={r.id}
                 className="cursor-pointer border-b hover:bg-accent"
                 onClick={() => {
-                  const ruleId = r._id.replace(/^label_rule::/, '');
-                  setEditingRuleId(ruleId);
+                  setEditingRuleId(r.rule_id);
                   setEditingRule({ name: r.name, node_id: r.node_id, path_prefix: r.path_prefix, glob: r.glob, enabled: r.enabled });
                   setLabelsInput(r.labels.join(', '));
                   setShowEditor(true);

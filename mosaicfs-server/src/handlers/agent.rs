@@ -72,9 +72,11 @@ pub async fn db_proxy(
 
     let client = Client::new();
     let mut builder = match method {
-        Method::GET  => client.get(&couch_url),
-        Method::POST => client.post(&couch_url),
-        Method::HEAD => client.head(&couch_url),
+        Method::GET    => client.get(&couch_url),
+        Method::POST   => client.post(&couch_url),
+        Method::PUT    => client.put(&couch_url),
+        Method::DELETE => client.delete(&couch_url),
+        Method::HEAD   => client.head(&couch_url),
         _ => return (StatusCode::METHOD_NOT_ALLOWED, "Method not allowed").into_response(),
     };
 

@@ -1,26 +1,47 @@
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useLiveQuery } from '@/hooks/useLiveQuery';
+import { api } from '@/lib/api';
 import { formatRelative } from '@/lib/format';
 import { Server } from 'lucide-react';
 import { NodeBadge } from '@/components/NodeBadge';
 
-interface NodeDoc {
-  _id: string;
+interface NodeItem {
+  id: string;
   type: string;
   name: string;
+  friendly_name?: string;
   status: string;
   platform?: string;
   last_heartbeat?: string;
   node_id?: string;
 }
 
+interface NodesApiResponse {
+  items: NodeItem[];
+}
+
 const STATUS_OPTIONS = ['all', 'online', 'offline', 'degraded'] as const;
 
 export default function NodesPage() {
   const navigate = useNavigate();
-  const { data: nodes, loading } = useLiveQuery<NodeDoc>({ type: 'node' });
+  const [nodes, setNodes] = useState<NodeItem[]>([]);
+  const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState<string>('all');
+
+  const fetchNodes = useCallback(async () => {
+    try {
+      const res = await api<NodesApiResponse>('/api/nodes');
+      setNodes(res.items);
+    } catch {
+      setNodes([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchNodes();
+  }, [fetchNodes]);
 
   const filtered =
     statusFilter === 'all' ? nodes : nodes.filter((n) => n.status === statusFilter);
@@ -62,11 +83,11 @@ export default function NodesPage() {
           <tbody>
             {filtered.map((node) => (
               <tr
-                key={node._id}
+                key={node.id}
                 className="cursor-pointer border-b hover:bg-accent"
-                onClick={() => navigate(`/nodes/${node.node_id || node._id.replace(/^node::/, '')}`)}
+                onClick={() => navigate(`/nodes/${node.node_id || node.id.replace(/^node::/, '')}`)}
               >
-                <td className="py-2 font-medium">{node.name}</td>
+                <td className="py-2 font-medium">{node.friendly_name || node.name}</td>
                 <td className="py-2">
                   <NodeBadge status={node.status} />
                 </td>

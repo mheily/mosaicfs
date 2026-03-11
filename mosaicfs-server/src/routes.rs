@@ -8,6 +8,7 @@ use axum::response::IntoResponse;
 use axum::routing::{any, delete, get, patch, post, put};
 use axum::{Json, Router};
 use serde::Deserialize;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::auth::hmac_auth::{self, HmacClaims};
@@ -141,6 +142,24 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         // Token-authenticated file download (token replaces JWT for streaming use cases)
         .route("/api/files/{file_id}/download", get(files::download_file));
 
+    // CORS: allow Tauri desktop app origins
+    let cors = CorsLayer::new()
+        .allow_origin(AllowOrigin::predicate(|origin, _| {
+            let o = origin.as_bytes();
+            // macOS/Linux Tauri origin
+            o == b"tauri://localhost"
+                // Windows Tauri origin
+                || o == b"https://tauri.localhost"
+                // Dev server
+                || o.starts_with(b"http://localhost:")
+        }))
+        .allow_methods(tower_http::cors::Any)
+        .allow_headers([
+            header::AUTHORIZATION,
+            header::CONTENT_TYPE,
+            header::ACCEPT,
+        ]);
+
     Router::new()
         .merge(public_routes)
         .merge(jwt_routes)
@@ -149,6 +168,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             ServeDir::new("web/dist")
                 .fallback(ServeFile::new("web/dist/index.html")),
         )
+        .layer(cors)
         .layer(middleware::from_fn(asset_cache_middleware))
         .with_state(state)
 }

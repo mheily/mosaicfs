@@ -3,10 +3,24 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
 
+const isTauri = !!process.env.TAURI_ENV_PLATFORM;
+
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  envPrefix: ['VITE_', 'TAURI_ENV_'],
   optimizeDeps: {
     include: ['pouchdb', 'pouchdb-find', 'cookie'],
+  },
+  build: {
+    // Tauri uses WebKit on macOS — target Safari 16 for compatibility
+    ...(isTauri ? { target: 'safari16' } : {}),
+    rollupOptions: {
+      // Tauri packages are only available in the desktop runtime.
+      // Mark them as external so the web-only build doesn't fail.
+      external: isTauri ? [] : [
+        /^@tauri-apps\//,
+      ],
+    },
   },
   resolve: {
     alias: {
@@ -27,6 +41,8 @@ export default defineConfig({
     },
   },
   server: {
+    port: 5173,
+    strictPort: true,
     proxy: {
       '/api': {
         target: 'https://localhost:8443',

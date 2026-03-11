@@ -1,6 +1,6 @@
 import PouchDB from 'pouchdb';
 import PouchDBFind from 'pouchdb-find';
-import { getAuthToken } from '@/lib/api';
+import { getAuthToken, getBaseUrl } from '@/lib/api';
 
 PouchDB.plugin(PouchDBFind);
 
@@ -31,9 +31,10 @@ export function startSync(remoteUrl: string) {
   // the HTTP adapter. A path like "/db/mosaicfs" would fall back to IndexedDB,
   // creating a local database instead of connecting to the remote. Resolve to
   // an absolute URL first.
+  const base = getBaseUrl() || window.location.origin;
   const absoluteUrl = remoteUrl.startsWith('http')
     ? remoteUrl
-    : new URL(remoteUrl, window.location.origin).href;
+    : new URL(remoteUrl, base).href;
   const remote = new PouchDB(absoluteUrl, {
     skip_setup: true,
     fetch: (url, opts) => {

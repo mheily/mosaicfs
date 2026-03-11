@@ -3,8 +3,11 @@ import { BrowserRouter, Routes, Route, Navigate, Outlet } from 'react-router-dom
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from 'next-themes';
 import { AuthProvider, useAuth } from '@/contexts/AuthContext';
+import { api, setBaseUrl, getBaseUrl } from '@/lib/api';
+import { isTauri } from '@/lib/platform';
 import { Toaster } from '@/components/ui/sonner';
 import { Layout } from '@/components/Layout';
+import { FinderLayout } from '@/components/FinderLayout';
 import LoginPage from '@/pages/LoginPage';
 import BootstrapPage from '@/pages/BootstrapPage';
 import DashboardPage from '@/pages/DashboardPage';
@@ -17,6 +20,7 @@ import NodeDetailPage from '@/pages/NodeDetailPage';
 import StoragePage from '@/pages/StoragePage';
 import SettingsPage from '@/pages/SettingsPage';
 import DbConsolePage from '@/pages/DbConsolePage';
+import ServerConnectPage from '@/pages/ServerConnectPage';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -36,26 +40,60 @@ function AuthGuard({ bootstrapNeeded }: { bootstrapNeeded: boolean }) {
 
 function AppRoutes() {
   const [bootstrapNeeded, setBootstrapNeeded] = useState<boolean | null>(null);
+  const [tauriReady, setTauriReady] = useState(!isTauri());
+
+  // In Tauri mode, load the stored server URL before anything else
+  useEffect(() => {
+    if (!isTauri()) return;
+    (async () => {
+      try {
+        const { getServerUrl } = await import('@/lib/tauri-store');
+        const url = await getServerUrl();
+        if (url) {
+          setBaseUrl(url);
+        }
+      } catch {
+        // Store not available — will redirect to /connect
+      }
+      setTauriReady(true);
+    })();
+  }, []);
 
   useEffect(() => {
-    fetch('/api/system/bootstrap-status')
-      .then((r) => r.json())
-      .then((data: { needs_bootstrap: boolean }) => {
+    if (!tauriReady) return;
+    api<{ needs_bootstrap: boolean }>('/api/system/bootstrap-status')
+      .then((data) => {
         setBootstrapNeeded(data.needs_bootstrap);
       })
       .catch(() => {
         // If the check fails, assume no bootstrap needed and show login
         setBootstrapNeeded(false);
       });
-  }, []);
+  }, [tauriReady]);
 
-  if (bootstrapNeeded === null) {
-    // Still loading bootstrap status — render nothing to avoid flash
+  if (!tauriReady || bootstrapNeeded === null) {
     return null;
+  }
+
+  const tauri = isTauri();
+  const FileLayout = tauri ? FinderLayout : Layout;
+
+  // In Tauri mode, if no server URL is configured, redirect to /connect
+  if (tauri && !getBaseUrl()) {
+    return (
+      <Routes>
+        <Route path="/connect" element={<ServerConnectPage />} />
+        <Route path="*" element={<Navigate to="/connect" replace />} />
+      </Routes>
+    );
   }
 
   return (
     <Routes>
+      {/* Tauri-only: server connect page */}
+      {tauri && (
+        <Route path="/connect" element={<ServerConnectPage />} />
+      )}
       <Route
         path="/setup"
         element={
@@ -69,9 +107,12 @@ function AppRoutes() {
         element={bootstrapNeeded ? <Navigate to="/setup" replace /> : <LoginPage />}
       />
       <Route element={<AuthGuard bootstrapNeeded={bootstrapNeeded} />}>
+        {/* In Tauri mode, /files uses FinderLayout; everything else uses standard Layout */}
+        <Route element={<FileLayout />}>
+          <Route path="/files" element={<FileBrowserPage />} />
+        </Route>
         <Route element={<Layout />}>
           <Route path="/" element={<DashboardPage />} />
-          <Route path="/files" element={<FileBrowserPage />} />
           <Route path="/search" element={<SearchPage />} />
           <Route path="/labels" element={<LabelsPage />} />
           <Route path="/vfs" element={<VfsPage />} />
