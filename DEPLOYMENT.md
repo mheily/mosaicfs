@@ -39,8 +39,7 @@ sudo chmod 600 /etc/mosaicfs/couchdb.env
 ### 2. Agent config — `agent.toml`
 
 Create `/etc/mosaicfs/agent.toml`. The `access_key_id` and `secret_key` come
-from the MosaicFS web UI (Settings → Credentials). On the very first deploy,
-use the bootstrap token printed in the server log instead — see
+from the first-time bootstrap process — see
 [First-time bootstrap](#first-time-bootstrap) below.
 
 ```sh
@@ -73,16 +72,17 @@ podman kube play --replace deploy/mosaicfs.yaml
 ## First-time bootstrap
 
 On the first run the MosaicFS server has no credentials in the database. It
-prints a one-time bootstrap token to stdout that lets you log in and create
-a permanent credential:
+generates a one-time bootstrap token, writes it to the server log, and waits
+for it to be redeemed:
 
 ```sh
 podman logs mosaicfs-mosaicfs-server | grep -i bootstrap
 ```
 
-Log in to the web UI at `https://<nas-ip>:8443` using the bootstrap token,
-then go to Settings → Credentials to create a regular access key. Update
-`agent.toml` with the new key and restart:
+Open the web UI at `https://<nas-ip>:8443`. It will detect that bootstrap is
+required and prompt for the token. Enter the token — the server will
+immediately create the initial admin credential and return the `access_key_id`
+and `secret_key`. Copy both values into `agent.toml`, then restart:
 
 ```sh
 podman kube play --replace deploy/mosaicfs.yaml
