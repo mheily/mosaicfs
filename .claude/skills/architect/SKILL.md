@@ -10,14 +10,25 @@ argument-hint: [description of the change]
 
 # Architect Skill
 
-You are producing or revising architecture documents. Your output will be committed
-to the repository and will guide future implementation work. Errors in these documents
-waste significant human and machine effort downstream. Accuracy matters more than speed.
+You are producing or revising architecture documents as part of the project's
+change management process (see Project Decisions for the full 5-step workflow).
+This skill covers steps 1-2: clarifying the architecture and developing the
+detailed plan. Your output will be committed to a numbered directory under
+`docs/changes/` and will guide future implementation work. Errors in these
+documents waste significant human and machine effort downstream. Accuracy
+matters more than speed.
+
+## Phase 0: Load Project Context
+
+Read the project decisions and constraints before doing anything else. These
+represent settled choices and principles that constrain your proposals:
+
+[Project Decisions](../decisions/SKILL.md)
 
 ## Phase 1: Inventory the Current State
 
-Before proposing anything, review the auto-generated inventory below. This was
-produced by scanning the actual codebase at invocation time.
+Review the auto-generated inventory below. This was produced by scanning the
+actual codebase at invocation time.
 
 ```!
 bash .claude/skills/architect/inventory.sh
@@ -87,5 +98,9 @@ Structure your architecture document as follows:
 5. **What Does Not Change** — Explicitly list components, crates, and interfaces
    that are unaffected. This prevents the reader from wondering whether you forgot
    about them.
+6. **Deferred** — Ideas, enhancements, or features that came up during design but
+   are not needed for the current goal. Each item gets a one-line rationale for
+   why it can wait. This is where YAGNI lives — it captures the ideas without
+   letting them bloat the current scope.
 
 $ARGUMENTS
