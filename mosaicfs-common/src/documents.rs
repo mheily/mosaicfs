@@ -258,12 +258,53 @@ pub struct StorageEntry {
 #[ts(export)]
 pub struct NetworkMount {
     pub mount_id: String,
+    pub filesystem_id: String,
     pub remote_node_id: String,
     pub remote_base_export_path: String,
     pub local_mount_path: String,
     pub mount_type: String,
     #[serde(default)]
     pub priority: i32,
+}
+
+// ── Filesystem Document ──
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+#[ts(export)]
+pub struct FilesystemDocument {
+    #[serde(rename = "type")]
+    pub doc_type: FilesystemType,
+    pub filesystem_id: String,
+    pub friendly_name: String,
+    pub owning_node_id: String,
+    pub export_root: String,
+    #[serde(default)]
+    pub availability: Vec<NodeAvailability>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+#[ts(export)]
+pub enum FilesystemType {
+    #[serde(rename = "filesystem")]
+    Filesystem,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+#[ts(export)]
+pub struct NodeAvailability {
+    pub node_id: String,
+    pub local_mount_path: String,
+    /// "local" when this is the owning node, otherwise the OS mount type
+    /// (e.g. "nfs", "cifs", "icloud_local", "gdrive_local").
+    pub mount_type: String,
+    pub last_seen: DateTime<Utc>,
+}
+
+impl FilesystemDocument {
+    pub fn doc_id(filesystem_id: &str) -> String {
+        format!("filesystem::{}", filesystem_id)
+    }
 }
 
 // ── Credential Document ──
@@ -700,6 +741,20 @@ pub fn document_type(value: &serde_json::Value) -> Option<&str> {
     value.get("type")?.as_str()
 }
 
+pub fn derive_filesystem_id(owning_node_id: &str, export_root: &str) -> String {
+    let s: String = export_root
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let collapsed: String = s
+        .split('-')
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    format!("{}::{}", owning_node_id, collapsed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -780,6 +835,34 @@ mod tests {
             network_mounts: None,
         };
         round_trip_couch("node::node-laptop", doc);
+    }
+
+    #[test]
+    fn test_filesystem_document() {
+        let doc = FilesystemDocument {
+            doc_type: FilesystemType::Filesystem,
+            filesystem_id: "fs-laptop-home".to_string(),
+            friendly_name: "Laptop home".to_string(),
+            owning_node_id: "node-laptop".to_string(),
+            export_root: "/home/user".to_string(),
+            availability: vec![NodeAvailability {
+                node_id: "node-laptop".to_string(),
+                local_mount_path: "/home/user".to_string(),
+                mount_type: "local".to_string(),
+                last_seen: now(),
+            }],
+            created_at: now(),
+        };
+        round_trip_couch("filesystem::fs-laptop-home", doc);
+    }
+
+    #[test]
+    fn test_derive_filesystem_id() {
+        assert_eq!(
+            derive_filesystem_id("node-laptop", "/home/user"),
+            "node-laptop::home-user"
+        );
+        assert_eq!(derive_filesystem_id("node-host", "/"), "node-host::");
     }
 
     #[test]
