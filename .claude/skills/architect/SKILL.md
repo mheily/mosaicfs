@@ -67,14 +67,21 @@ probably unnecessary. Remove it.
 - **Acknowledge scope when replacing components.** If proposing to replace a UI
   framework, quantify what exists today (pages, components, features) and state
   whether the replacement targets feature parity, a subset, or a superset.
+- **Phases are organized by topical focus, not by deployability.** MosaicFS has not been released — there are no users to keep
+  unbroken, no rollback story to preserve, no deploy gates between phases. Think of an implementation phase as a
+  git commit in a pull request, and think of an implementation plan as a series of commits inside that PR.
+  - Order phases by topical clarity (one concern per phase), not by what keeps the tree green.
+  - It is acceptable for tests to fail or features to be broken between phases, as long as everything works after the final phase.
+  - Do not add transitional scaffolding (feature flags, dual-write periods, parallel old/new code paths, metrics-driven cutovers,
+  deprecation shims) just to keep a midpoint working.
+  - It's fine for phase N to delete code that phase N+1 will replace, even if the tree doesn't compile in between.
+  - Still call out cross-phase dependencies (phase N needs phase M's output) — that's about correctness of the final state, not
+  about shippability of intermediate states.
 
 ## Phase 3: Internal Consistency
 
 Before finalizing, verify:
 
-- **Phasing dependencies**: If Phase N depends on work from Phase M, confirm that
-  Phase M actually delivers what Phase N needs. Read your own phase descriptions
-  critically.
 - **Endpoint references**: If you reference an API endpoint, confirm whether it
   already exists or is being newly created. State which.
 - **Performance claims**: If you claim a latency or performance characteristic,
@@ -93,8 +100,7 @@ Structure your architecture document as follows:
    ground truth the reader uses to evaluate your proposals.
 2. **Goal** — What the change achieves, in one or two sentences.
 3. **Changes** — Each change as a delta (today / proposed / justification).
-4. **Implementation Phases** — Ordered phases with explicit deliverables and
-   dependencies between phases.
+4. **Implementation Phases** — Ordered phases with explicit deliverables.
 5. **What Does Not Change** — Explicitly list components, crates, and interfaces
    that are unaffected. This prevents the reader from wondering whether you forgot
    about them.
