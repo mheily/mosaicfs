@@ -2,7 +2,6 @@ mod backend;
 mod config;
 mod couchdb;
 mod crawler;
-mod file_server;
 mod init;
 mod node;
 mod notifications;
@@ -25,7 +24,6 @@ const DEFAULT_STATE_DIR: &str = "/var/lib/mosaicfs";
 const DB_NAME: &str = "mosaicfs";
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 const CRAWL_INTERVAL: Duration = Duration::from_secs(15);
-const FILE_SERVER_PORT: u16 = 8444;
 const REPLICATION_FLUSH_INTERVAL_S: u64 = 60;
 const REPLICATION_FULL_SCAN_INTERVAL_S: u64 = 86400; // daily
 
@@ -61,30 +59,12 @@ async fn main() -> anyhow::Result<()> {
     let node_id = config.resolve_node_id(&state_dir)?;
     info!(node_id = %node_id, "Agent identity resolved");
 
-    // Determine file server URL using container hostname (resolvable by other services)
-    let file_server_host = hostname::get()
-        .map(|h| h.to_string_lossy().to_string())
-        .unwrap_or_else(|_| "localhost".to_string());
-    let file_server_url = format!("http://{}:{}", file_server_host, FILE_SERVER_PORT);
-
-    // Generate a per-run agent token for the internal file server
-    let agent_token = uuid::Uuid::new_v4().to_string();
-
-    // Start the file server in the background
-    {
-        let token = agent_token.clone();
-        tokio::spawn(async move {
-            file_server::start(token, FILE_SERVER_PORT).await;
-        });
-    }
-
     // Connect to CouchDB
     let db = CouchClient::from_env(DB_NAME);
     db.ensure_db().await?;
     info!("CouchDB connection established");
 
-    // Register node (includes file_server_url and agent_token)
-    node::register_node(&db, &node_id, &config.watch_paths, &file_server_url, &agent_token).await?;
+    node::register_node(&db, &node_id, &config.watch_paths).await?;
 
     // Start replication subsystem
     let replication_handle = match replication_subsystem::start(replication_subsystem::ReplicationConfig {

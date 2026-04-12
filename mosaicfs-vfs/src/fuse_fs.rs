@@ -22,7 +22,6 @@ use crate::couchdb::CouchClient;
 use crate::inode::{DirInode, FileInode, InodeEntry, InodeTable};
 use crate::readdir::{self, ReaddirDirEntry, VfsStepContext};
 use crate::tiered_access::{self, AccessResult, NetworkMountInfo};
-
 const TTL: Duration = Duration::from_secs(5);
 const BLOCK_SIZE: u32 = 512;
 
@@ -407,75 +406,12 @@ impl Filesystem for MosaicFs {
         match access_result {
             AccessResult::LocalPath(path) => {
                 let fh = self.alloc_fh();
-                self.open_files
-                    .lock()
-                    .unwrap()
-                    .insert(fh, (file.clone(), path));
+                self.open_files.lock().unwrap().insert(fh, (file.clone(), path));
                 reply.opened(fh, 0);
-            }
-            AccessResult::NeedsFetch(fetch_info) => {
-                // Attempt remote fetch (Tier 4)
-                let fetch_result = self.rt.block_on(fetch_remote_file(
-                    &fetch_info,
-                    &self.cache,
-                    &self.db,
-                    &self.config,
-                ));
-
-                match fetch_result {
-                    Ok(path) => {
-                        let fh = self.alloc_fh();
-                        self.open_files
-                            .lock()
-                            .unwrap()
-                            .insert(fh, (file.clone(), path));
-                        reply.opened(fh, 0);
-                    }
-                    Err(e) => {
-                        warn!(file_id = %file.file_id, error = %e, "Tier 4 remote fetch failed, trying Tier 4b replica failover");
-                        // Tier 4 failed — try Tier 4b (replica failover)
-                        let tier4b_result = self.rt.block_on(tiered_access::resolve_from_replica_for_open(
-                            &file,
-                            &self.config.node_id,
-                            &self.config.watch_paths,
-                            &self.config.network_mounts,
-                            &self.cache,
-                            &self.db,
-                        ));
-                        match tier4b_result {
-                            tiered_access::AccessResult::LocalPath(path) => {
-                                let fh = self.alloc_fh();
-                                self.open_files.lock().unwrap().insert(fh, (file.clone(), path));
-                                reply.opened(fh, 0);
-                            }
-                            tiered_access::AccessResult::NeedsFetch(fetch_info2) => {
-                                // Tier 4b returned another fetch (agent replica)
-                                let fetch2 = self.rt.block_on(fetch_remote_file(
-                                    &fetch_info2, &self.cache, &self.db, &self.config,
-                                ));
-                                match fetch2 {
-                                    Ok(path) => {
-                                        let fh = self.alloc_fh();
-                                        self.open_files.lock().unwrap().insert(fh, (file.clone(), path));
-                                        reply.opened(fh, 0);
-                                    }
-                                    Err(e2) => {
-                                        warn!(file_id = %file.file_id, error = %e2, "Tier 4b agent fetch also failed");
-                                        reply.error(libc::EIO);
-                                    }
-                                }
-                            }
-                            tiered_access::AccessResult::NotAccessible(msg) => {
-                                warn!(file_id = %file.file_id, reason = %msg, "File not accessible (all tiers failed)");
-                                reply.error(libc::EIO);
-                            }
-                        }
-                    }
-                }
             }
             AccessResult::NotAccessible(msg) => {
                 warn!(file_id = %file.file_id, reason = %msg, "File not accessible");
-                reply.error(libc::ENOENT);
+                reply.error(libc::EIO);
             }
         }
     }
@@ -541,89 +477,6 @@ impl Filesystem for MosaicFs {
     }
 }
 
-/// Fetch a file from a remote agent and cache it.
-async fn fetch_remote_file(
-    info: &tiered_access::FetchInfo,
-    cache: &FileCache,
-    _db: &CouchClient,
-    config: &FuseConfig,
-) -> anyhow::Result<PathBuf> {
-    let file_uuid = info
-        .file_id
-        .strip_prefix("file::")
-        .unwrap_or(&info.file_id);
-
-    let url = format!(
-        "{}/api/agent/transfer/{}",
-        info.transfer_endpoint.trim_end_matches('/'),
-        urlencoding::encode(&info.file_id)
-    );
-
-    let client = reqwest::Client::new();
-    let resp = client.get(&url).send().await?;
-
-    if !resp.status().is_success() {
-        anyhow::bail!(
-            "Remote fetch failed: HTTP {}",
-            resp.status()
-        );
-    }
-
-    // Get digest header if present (for verification)
-    let digest_header = resp
-        .headers()
-        .get("Digest")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
-
-    let staging_path = cache.staging_path();
-    let bytes = resp.bytes().await?;
-
-    // Verify digest if present
-    if let Some(digest_str) = digest_header {
-        if let Some(expected) = parse_digest_header(&digest_str) {
-            use sha2::Digest;
-            let actual = sha2::Sha256::digest(&bytes);
-            if actual.as_slice() != expected.as_slice() {
-                anyhow::bail!("Digest verification failed for {}", info.file_id);
-            }
-        }
-    }
-
-    // Write to staging
-    std::fs::write(&staging_path, &bytes)?;
-
-    // Atomic move to final location
-    let final_path = cache.entry_path(file_uuid);
-    let shard_dir = final_path.parent().unwrap();
-    std::fs::create_dir_all(shard_dir)?;
-    std::fs::rename(&staging_path, &final_path)?;
-
-    // Update cache index
-    let source = format!("remote:{}", info.node_id);
-    if FileCache::should_use_block_mode(info.size) {
-        let mut bm = crate::block_map::BlockMap::new();
-        bm.insert(0..bytes.len() as u64);
-        cache.store_block_entry(file_uuid, &info.file_id, &info.mtime, info.size, &bm, &source)?;
-    } else {
-        cache.store_full_file(file_uuid, &info.file_id, &info.mtime, info.size, &source)?;
-    }
-
-    // Run eviction check
-    let _ = cache.evict_lru(config.cache_cap, config.min_free_space);
-
-    Ok(final_path)
-}
-
-fn parse_digest_header(header: &str) -> Option<Vec<u8>> {
-    // Format: "sha-256=:base64data:"
-    let prefix = "sha-256=:";
-    let value = header.strip_prefix(prefix)?;
-    let value = value.strip_suffix(':')?;
-    use base64::Engine;
-    base64::engine::general_purpose::STANDARD.decode(value).ok()
-}
-
 fn chrono_to_system_time(dt: DateTime<Utc>) -> SystemTime {
     let secs = dt.timestamp();
     let nanos = dt.timestamp_subsec_nanos();
@@ -660,7 +513,6 @@ pub fn mount(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sha2::Digest;
 
     #[test]
     fn test_chrono_to_system_time() {
@@ -670,23 +522,6 @@ mod tests {
         let st = chrono_to_system_time(dt);
         let duration = st.duration_since(UNIX_EPOCH).unwrap();
         assert_eq!(duration.as_secs(), dt.timestamp() as u64);
-    }
-
-    #[test]
-    fn test_parse_digest_header() {
-        // Valid digest
-        let hash = sha2::Sha256::digest(b"hello world");
-        let encoded = base64::Engine::encode(
-            &base64::engine::general_purpose::STANDARD,
-            &hash,
-        );
-        let header = format!("sha-256=:{}:", encoded);
-        let parsed = parse_digest_header(&header).unwrap();
-        assert_eq!(parsed, hash.as_slice());
-
-        // Invalid format
-        assert!(parse_digest_header("invalid").is_none());
-        assert!(parse_digest_header("sha-256=:bad_base64:").is_none());
     }
 
     #[test]

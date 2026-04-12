@@ -3,9 +3,8 @@
 //! Tier 1: Local file on this node (direct read from export_path)
 //! Tier 2: Network mount (CIFS/NFS) — translate path via node's network_mounts
 //! Tier 3: Cloud sync (iCloud/Google Drive local) — local sync directory
-//! Tier 4: Remote agent HTTP fetch — HMAC-signed request to owning agent
-//! Tier 4b: Replica failover — fetch from a replica target when Tier 4 fails
-//!           because the owning node is offline.
+//! Replica failover: fetch from a replica target when no node-local path satisfies
+//!                   the open (directory, S3, B2 backends).
 //!
 //! Each tier is tried in order. If a tier fails, the next one is attempted.
 
@@ -23,19 +22,8 @@ use crate::inode::FileInode;
 pub enum AccessResult {
     /// File is available at this local path (Tier 1, 2, 3, or from cache).
     LocalPath(PathBuf),
-    /// File needs to be fetched from a remote agent.
-    NeedsFetch(FetchInfo),
     /// File is not accessible.
     NotAccessible(String),
-}
-
-#[derive(Debug, Clone)]
-pub struct FetchInfo {
-    pub file_id: String,
-    pub node_id: String,
-    pub transfer_endpoint: String,
-    pub size: u64,
-    pub mtime: String,
 }
 
 /// Network mount info from a node document.
@@ -157,32 +145,8 @@ pub async fn resolve_file(
         }
     }
 
-    // Tier 4: Remote agent fetch
-    match get_transfer_endpoint(db, &file.source_node_id).await {
-        Some(endpoint) => {
-            info!(
-                file_id = %file.file_id,
-                node_id = %file.source_node_id,
-                "Tier 4: remote agent fetch needed"
-            );
-            AccessResult::NeedsFetch(FetchInfo {
-                file_id: file.file_id.clone(),
-                node_id: file.source_node_id.clone(),
-                transfer_endpoint: endpoint,
-                size: file.size,
-                mtime: file.mtime.to_rfc3339(),
-            })
-        }
-        None => {
-            // Tier 4b: Replica failover — node is offline, check replica documents
-            debug!(
-                file_id = %file.file_id,
-                node_id = %file.source_node_id,
-                "Tier 4 failed (node offline), trying Tier 4b replica failover"
-            );
-            resolve_from_replica(file, db, watch_paths, network_mounts, cache).await
-        }
-    }
+    // No node-local access path; fall through to replica failover.
+    resolve_from_replica(file, db, watch_paths, cache).await
 }
 
 /// Public entry point for Tier 4b called from fuse_fs after Tier 4 fails.
@@ -194,7 +158,8 @@ pub async fn resolve_from_replica_for_open(
     cache: &FileCache,
     db: &CouchClient,
 ) -> AccessResult {
-    resolve_from_replica(file, db, watch_paths, network_mounts, cache).await
+    let _ = (local_node_id, network_mounts);
+    resolve_from_replica(file, db, watch_paths, cache).await
 }
 
 /// Tier 4b: Attempt to serve a file from a replica target when the owning
@@ -203,7 +168,6 @@ async fn resolve_from_replica(
     file: &FileInode,
     db: &CouchClient,
     watch_paths: &[PathBuf],
-    network_mounts: &[NetworkMountInfo],
     cache: &FileCache,
 ) -> AccessResult {
     let file_uuid = file.file_id.strip_prefix("file::").unwrap_or(&file.file_id);
@@ -257,29 +221,6 @@ async fn resolve_from_replica(
     );
 
     match backend_type {
-        "agent" => {
-            // Fetch from the replica agent using the same Tier 4 mechanism
-            let replica_source_node = replica
-                .get("source").and_then(|s| s.get("node_id")).and_then(|v| v.as_str())
-                .unwrap_or("");
-
-            // Find a different node that has this file
-            if let Some(endpoint) = get_agent_replica_endpoint(db, remote_key).await {
-                return AccessResult::NeedsFetch(FetchInfo {
-                    file_id: file.file_id.clone(),
-                    node_id: replica_source_node.to_string(),
-                    transfer_endpoint: endpoint,
-                    size: file.size,
-                    mtime: file.mtime.to_rfc3339(),
-                });
-            }
-            warn!(file_id = %file.file_id, "Tier 4b: agent replica node also offline");
-            AccessResult::NotAccessible(format!(
-                "File {} not accessible: owning node and replica agent both offline",
-                file.file_id
-            ))
-        }
-
         "directory" => {
             // Attempt direct access if the directory is locally mounted
             let backend_doc = match get_backend_doc(db, target_name).await {
@@ -493,15 +434,6 @@ async fn download_from_s3(
     Ok(resp.bytes().await?.to_vec())
 }
 
-/// Retrieve the transfer endpoint for a replica agent node.
-async fn get_agent_replica_endpoint(db: &CouchClient, remote_key: &str) -> Option<String> {
-    // The remote_key for agent targets encodes the destination path.
-    // We can't easily derive the node URL from it alone.
-    // In a full implementation, this would look up the node document
-    // for the replica agent and get its transfer endpoint.
-    None // Simplified for Phase 6 — agent Tier 4b requires explicit node_id mapping
-}
-
 /// Retrieve a storage backend document from CouchDB.
 async fn get_backend_doc(db: &CouchClient, target_name: &str) -> Option<serde_json::Value> {
     db.get_document(&format!("storage_backend::{}", target_name)).await.ok()
@@ -571,23 +503,6 @@ fn is_icloud_evicted(path: &Path) -> bool {
         let _ = path;
         false
     }
-}
-
-/// Look up a node's transfer endpoint from CouchDB.
-async fn get_transfer_endpoint(db: &CouchClient, node_id: &str) -> Option<String> {
-    let doc_id = format!("node::{}", node_id);
-    let doc = db.get_document(&doc_id).await.ok()?;
-
-    // Check node is online
-    let status = doc.get("status").and_then(|v| v.as_str())?;
-    if status != "online" {
-        return None;
-    }
-
-    doc.get("transfer")
-        .and_then(|t| t.get("endpoint"))
-        .and_then(|e| e.as_str())
-        .map(|s| s.to_string())
 }
 
 #[cfg(test)]

@@ -5,66 +5,13 @@ use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use chrono::Utc;
-use hmac::{Hmac, Mac};
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 use tokio::io::AsyncReadExt;
 use tokio_util::io::ReaderStream;
 use tracing::warn;
 
 use crate::couchdb::CouchError;
 use crate::state::AppState;
-
-// ── Download tokens ──────────────────────────────────────────────────────────
-//
-// A download token is a short-lived credential that allows unauthenticated
-// access to a specific file's content. It is HMAC-SHA256 signed with the
-// server's JWT secret so no server-side storage is required.
-//
-// Token format: "{expiry_unix_ts}.{hmac_hex}"
-// HMAC message: "dl:{doc_id}:{expiry_unix_ts}"
-
-const DOWNLOAD_TOKEN_EXPIRY_SECS: i64 = 7200; // 2 hours — enough for video streaming
-
-fn issue_download_token(secret: &[u8], doc_id: &str) -> String {
-    let expiry = Utc::now().timestamp() + DOWNLOAD_TOKEN_EXPIRY_SECS;
-    let message = format!("dl:{}:{}", doc_id, expiry);
-    let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC accepts any key size");
-    mac.update(message.as_bytes());
-    let sig = hex::encode(mac.finalize().into_bytes());
-    format!("{}.{}", expiry, sig)
-}
-
-fn validate_download_token(secret: &[u8], doc_id: &str, token: &str) -> bool {
-    let (expiry_str, sig) = match token.split_once('.') {
-        Some(pair) => pair,
-        None => return false,
-    };
-    let expiry: i64 = match expiry_str.parse() {
-        Ok(n) => n,
-        Err(_) => return false,
-    };
-    if Utc::now().timestamp() > expiry {
-        return false;
-    }
-    let message = format!("dl:{}:{}", doc_id, expiry_str);
-    let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC accepts any key size");
-    mac.update(message.as_bytes());
-    let expected = hex::encode(mac.finalize().into_bytes());
-    constant_time_eq(sig.as_bytes(), expected.as_bytes())
-}
-
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
-}
 
 #[derive(Deserialize, Default)]
 pub struct ListFilesQuery {
@@ -190,67 +137,7 @@ pub async fn get_file_by_path(
     }
 }
 
-/// POST /api/files/{file_id}/token — issue a short-lived download token
-pub async fn get_file_token(
-    State(state): State<Arc<AppState>>,
-    Path(file_id): Path<String>,
-) -> impl IntoResponse {
-    let doc_id = if file_id.starts_with("file::") {
-        file_id.clone()
-    } else {
-        format!("file::{}", file_id)
-    };
-
-    // Verify the file exists before issuing a token
-    match state.db.get_document(&doc_id).await {
-        Ok(_) => {}
-        Err(CouchError::NotFound(_)) => {
-            return (StatusCode::NOT_FOUND, Json(error_json("File not found"))).into_response();
-        }
-        Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_json(&e.to_string()))).into_response();
-        }
-    }
-
-    let token = issue_download_token(&state.jwt_secret, &doc_id);
-    let encoded_id = urlencoding::encode(&doc_id).into_owned();
-    let encoded_token = urlencoding::encode(&token).into_owned();
-    let url = format!("/api/files/{}/download?token={}", encoded_id, encoded_token);
-
-    (StatusCode::OK, Json(serde_json::json!({
-        "token": token,
-        "url": url,
-        "expires_in": DOWNLOAD_TOKEN_EXPIRY_SECS,
-    }))).into_response()
-}
-
-/// GET /api/files/{file_id}/download?token=… — token-authenticated content download
-/// (public route; JWT not required — the signed token provides authorization)
-pub async fn download_file(
-    State(state): State<Arc<AppState>>,
-    Path(file_id): Path<String>,
-    Query(query): Query<DownloadTokenQuery>,
-    headers: HeaderMap,
-) -> Response {
-    let doc_id = if file_id.starts_with("file::") {
-        file_id.clone()
-    } else {
-        format!("file::{}", file_id)
-    };
-
-    if !validate_download_token(&state.jwt_secret, &doc_id, &query.token) {
-        return (StatusCode::UNAUTHORIZED, "Invalid or expired download token").into_response();
-    }
-
-    serve_file_content(&state, &doc_id, headers).await
-}
-
-#[derive(Deserialize)]
-pub struct DownloadTokenQuery {
-    pub token: String,
-}
-
-/// Shared file-serving logic used by both the JWT-authed and token-authed routes.
+/// Shared file-serving logic used by JWT-authed routes.
 async fn serve_file_content(state: &AppState, doc_id: &str, headers: HeaderMap) -> Response {
     let doc = match state.db.get_document(doc_id).await {
         Ok(d) => d,
@@ -267,7 +154,6 @@ async fn serve_file_content(state: &AppState, doc_id: &str, headers: HeaderMap) 
 
     let name = doc.get("name").and_then(|v| v.as_str()).unwrap_or("file");
     let mime_type = doc.get("mime_type").and_then(|v| v.as_str()).unwrap_or("application/octet-stream");
-    let file_size = doc.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
 
     // Get the source path — for local files, read directly
     let export_path = doc
@@ -280,14 +166,15 @@ async fn serve_file_content(state: &AppState, doc_id: &str, headers: HeaderMap) 
         return (StatusCode::NOT_FOUND, Json(error_json("File has no source path"))).into_response();
     }
 
-    // Parse Range header early — needed for both local and proxy paths
+    // Parse Range header
     let range = headers.get(header::RANGE).and_then(|v| v.to_str().ok()).and_then(parse_range);
     let disposition = format!("inline; filename=\"{}\"", name.replace('"', "\\\""));
 
-    // Try local file first; if not present, proxy to the source agent
     let path = std::path::Path::new(export_path);
     if !path.exists() {
-        return proxy_to_agent(&state, &doc, export_path, file_size, range, mime_type, &disposition).await;
+        return (StatusCode::NOT_FOUND, Json(error_json(
+            "File not present on this node and inter-node transport has been removed"
+        ))).into_response();
     }
 
     let metadata = match tokio::fs::metadata(path).await {
@@ -402,103 +289,6 @@ pub async fn get_file_access(
     }
 }
 
-/// Proxy a file content request to the source agent's internal file server.
-async fn proxy_to_agent(
-    state: &crate::state::AppState,
-    doc: &serde_json::Value,
-    export_path: &str,
-    file_size: u64,
-    range: Option<(u64, Option<u64>)>,
-    mime_type: &str,
-    disposition: &str,
-) -> Response {
-    let node_id = doc
-        .get("source")
-        .and_then(|s| s.get("node_id"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-
-    if node_id.is_empty() {
-        return (StatusCode::NOT_FOUND, Json(error_json("File has no source node"))).into_response();
-    }
-
-    let node_doc = match state.db.get_document(&format!("node::{}", node_id)).await {
-        Ok(d) => d,
-        Err(_) => {
-            return (StatusCode::BAD_GATEWAY, Json(error_json("Source node not found"))).into_response();
-        }
-    };
-
-    let file_server_url = match node_doc.get("file_server_url").and_then(|v| v.as_str()) {
-        Some(u) => u.to_string(),
-        None => {
-            return (StatusCode::NOT_FOUND, Json(error_json("File not accessible: agent has no file server"))).into_response();
-        }
-    };
-    let agent_token = match node_doc.get("agent_token").and_then(|v| v.as_str()) {
-        Some(t) => t.to_string(),
-        None => {
-            return (StatusCode::NOT_FOUND, Json(error_json("File not accessible: agent has no token"))).into_response();
-        }
-    };
-
-    let mut proxy_url = format!(
-        "{}/internal/files/content?path={}",
-        file_server_url,
-        urlencoding::encode(export_path),
-    );
-    if let Some((start, end)) = range {
-        let end_val = end.unwrap_or(file_size.saturating_sub(1));
-        proxy_url.push_str(&format!("&start={}&end={}", start, end_val));
-    }
-
-    let client = reqwest::Client::new();
-    let resp = match client
-        .get(&proxy_url)
-        .header("Authorization", format!("Bearer {}", agent_token))
-        .send()
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            warn!(error = %e, url = %proxy_url, "Failed to reach agent file server");
-            return (StatusCode::BAD_GATEWAY, Json(error_json("Failed to reach agent"))).into_response();
-        }
-    };
-
-    let proxy_status = resp.status();
-    if !proxy_status.is_success() {
-        return (StatusCode::BAD_GATEWAY, Json(error_json("Agent returned error"))).into_response();
-    }
-
-    let content_length = resp.content_length();
-    let status = if range.is_some() {
-        StatusCode::PARTIAL_CONTENT
-    } else {
-        StatusCode::OK
-    };
-
-    let mut builder = Response::builder()
-        .status(status)
-        .header(header::CONTENT_TYPE, mime_type)
-        .header(header::CONTENT_DISPOSITION, disposition)
-        .header(header::ACCEPT_RANGES, "bytes");
-
-    if let Some(len) = content_length {
-        builder = builder.header(header::CONTENT_LENGTH, len.to_string());
-    }
-
-    if let Some((start, end)) = range {
-        let end_val = end.unwrap_or(file_size.saturating_sub(1));
-        builder = builder.header(
-            header::CONTENT_RANGE,
-            format!("bytes {}-{}/{}", start, end_val, file_size),
-        );
-    }
-
-    builder.body(Body::from_stream(resp.bytes_stream())).unwrap()
-}
-
 /// Parse a Range header value like "bytes=0-499" or "bytes=500-"
 fn parse_range(range_str: &str) -> Option<(u64, Option<u64>)> {
     let range_str = range_str.strip_prefix("bytes=")?;
@@ -512,11 +302,6 @@ fn parse_range(range_str: &str) -> Option<(u64, Option<u64>)> {
         }
     });
     Some((start, end))
-}
-
-fn base64_encode(data: &[u8]) -> String {
-    use base64::Engine;
-    base64::engine::general_purpose::STANDARD.encode(data)
 }
 
 fn strip_internals(doc: &mut serde_json::Value) {

@@ -3,6 +3,5 @@ import type { NetworkMount } from "./NetworkMount";
 import type { NodeStatus } from "./NodeStatus";
 import type { NodeType } from "./NodeType";
 import type { StorageEntry } from "./StorageEntry";
-import type { TransferConfig } from "./TransferConfig";
 
-export type NodeDocument = { type: NodeType, friendly_name: string, platform: string, status: NodeStatus, last_heartbeat: string, vfs_capable: boolean, vfs_backend: string | null, capabilities: Array<string>, transfer: TransferConfig | null, storage: Array<StorageEntry> | null, network_mounts: Array<NetworkMount> | null, };
+export type NodeDocument = { type: NodeType, friendly_name: string, platform: string, status: NodeStatus, last_heartbeat: string, vfs_capable: boolean, vfs_backend: string | null, capabilities: Array<string>, storage: Array<StorageEntry> | null, network_mounts: Array<NetworkMount> | null, };

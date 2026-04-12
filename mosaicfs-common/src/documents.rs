@@ -212,8 +212,6 @@ pub struct NodeDocument {
     #[serde(default)]
     pub capabilities: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub transfer: Option<TransferConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub storage: Option<Vec<StorageEntry>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub network_mounts: Option<Vec<NetworkMount>>,
@@ -235,13 +233,6 @@ pub enum NodeStatus {
     Offline,
     #[serde(rename = "degraded")]
     Degraded,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
-pub struct TransferConfig {
-    pub endpoint: String,
-    pub protocol: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
@@ -458,9 +449,15 @@ pub struct PluginDocument {
     pub created_at: DateTime<Utc>,
 }
 
-fn default_workers() -> i32 { 2 }
-fn default_timeout() -> i32 { 60 }
-fn default_max_attempts() -> i32 { 3 }
+fn default_workers() -> i32 {
+    2
+}
+fn default_timeout() -> i32 {
+    60
+}
+fn default_max_attempts() -> i32 {
+    3
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 #[ts(export)]
@@ -534,7 +531,9 @@ pub struct NotificationDocument {
     pub resolved_at: Option<DateTime<Utc>>,
 }
 
-fn default_occurrence_count() -> i64 { 1 }
+fn default_occurrence_count() -> i64 {
+    1
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 #[ts(export)]
@@ -705,15 +704,15 @@ pub fn document_type(value: &serde_json::Value) -> Option<&str> {
 mod tests {
     use super::*;
 
-    fn round_trip<T: Serialize + for<'de> Deserialize<'de> + PartialEq + std::fmt::Debug>(
-        doc: &T,
-    ) {
+    fn round_trip<T: Serialize + for<'de> Deserialize<'de> + PartialEq + std::fmt::Debug>(doc: &T) {
         let json = serde_json::to_string(doc).expect("serialize");
         let back: T = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(doc, &back);
     }
 
-    fn round_trip_couch<T: Serialize + for<'de> Deserialize<'de> + PartialEq + std::fmt::Debug + Clone + ts_rs::TS>(
+    fn round_trip_couch<
+        T: Serialize + for<'de> Deserialize<'de> + PartialEq + std::fmt::Debug + Clone + ts_rs::TS,
+    >(
         id: &str,
         doc: T,
     ) {
@@ -777,7 +776,6 @@ mod tests {
             vfs_capable: true,
             vfs_backend: None,
             capabilities: vec![],
-            transfer: None,
             storage: None,
             network_mounts: None,
         };
@@ -936,7 +934,9 @@ mod tests {
             schedule: Some("02:00-06:00".to_string()),
             poll_interval_s: None,
             bandwidth_limit_mbps: Some(50),
-            retention: RetentionConfig { keep_deleted_days: 30 },
+            retention: RetentionConfig {
+                keep_deleted_days: 30,
+            },
             remove_unmatched: false,
             cloud_storage: None,
             enabled: true,

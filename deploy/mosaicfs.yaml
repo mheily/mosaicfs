@@ -171,11 +171,6 @@ spec:
       env:
         - name: MOSAICFS_STATE_DIR
           value: /var/lib/mosaicfs/agent
-      ports:
-        # File server for peer-to-peer replication; expose as hostPort if
-        # agents on other hosts need to reach this one.
-        - containerPort: 8444
-          protocol: TCP
       volumeMounts:
         - name: mosaicfs-config
           mountPath: /etc/mosaicfs
