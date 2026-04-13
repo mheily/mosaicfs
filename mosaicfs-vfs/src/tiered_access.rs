@@ -26,12 +26,13 @@ pub enum AccessResult {
     NotAccessible(String),
 }
 
-/// Network mount info from a node document.
+/// View of a filesystem document projected for the local node.
 #[derive(Debug, Clone)]
-pub struct NetworkMountInfo {
-    pub remote_node_id: String,
-    pub remote_base_export_path: String,
-    pub local_mount_path: String,
+pub struct FilesystemView {
+    pub filesystem_id: String,
+    pub owning_node_id: String,
+    pub export_root: String,
+    pub local_mount_path: Option<String>,
     pub mount_type: String,
 }
 
@@ -40,7 +41,7 @@ pub async fn resolve_file(
     file: &FileInode,
     local_node_id: &str,
     watch_paths: &[PathBuf],
-    network_mounts: &[NetworkMountInfo],
+    filesystems: &[FilesystemView],
     cache: &FileCache,
     db: &CouchClient,
 ) -> AccessResult {
@@ -91,56 +92,40 @@ pub async fn resolve_file(
         }
     }
 
-    // Tier 2: Network mount (CIFS/NFS)
-    for mount in network_mounts {
-        if mount.remote_node_id == file.source_node_id
-            && (mount.mount_type == "cifs" || mount.mount_type == "nfs")
-        {
-            if let Some(translated) = translate_network_path(
-                &file.source_export_path,
-                &mount.remote_base_export_path,
-                &mount.local_mount_path,
-            ) {
-                let path = Path::new(&translated);
-                if path.exists() {
-                    debug!(
-                        file_id = %file.file_id,
-                        mount_type = %mount.mount_type,
-                        "Tier 2: network mount access"
-                    );
-                    return AccessResult::LocalPath(path.to_path_buf());
-                }
-            }
+    // Tier 2/3: Find a FilesystemView whose owning_node_id matches the file's
+    // source_node_id and whose export_root is a prefix of source_export_path.
+    for fs in filesystems {
+        if fs.owning_node_id != file.source_node_id {
+            continue;
         }
-    }
-
-    // Tier 3: Cloud sync local directory (iCloud/Google Drive)
-    for mount in network_mounts {
-        if mount.remote_node_id == file.source_node_id
-            && (mount.mount_type == "icloud_local" || mount.mount_type == "gdrive_local")
-        {
-            if let Some(translated) = translate_network_path(
-                &file.source_export_path,
-                &mount.remote_base_export_path,
-                &mount.local_mount_path,
-            ) {
-                let path = Path::new(&translated);
-                if path.exists() {
-                    // For iCloud, check eviction via extended attribute
-                    if mount.mount_type == "icloud_local" && is_icloud_evicted(path) {
-                        debug!(
-                            file_id = %file.file_id,
-                            "Tier 3: iCloud file evicted, falling through to Tier 4"
-                        );
-                        continue;
-                    }
+        if !file.source_export_path.starts_with(&fs.export_root) {
+            continue;
+        }
+        let local_mount = match &fs.local_mount_path {
+            Some(m) => m,
+            None => continue,
+        };
+        if let Some(translated) = translate_network_path(
+            &file.source_export_path,
+            &fs.export_root,
+            local_mount,
+        ) {
+            let path = Path::new(&translated);
+            if path.exists() {
+                // For iCloud, check eviction via extended attribute
+                if fs.mount_type == "icloud_local" && is_icloud_evicted(path) {
                     debug!(
                         file_id = %file.file_id,
-                        mount_type = %mount.mount_type,
-                        "Tier 3: cloud sync local access"
+                        "Tier 3: iCloud file evicted, falling through to replica failover"
                     );
-                    return AccessResult::LocalPath(path.to_path_buf());
+                    continue;
                 }
+                debug!(
+                    file_id = %file.file_id,
+                    mount_type = %fs.mount_type,
+                    "Tier 2/3: filesystem mount access"
+                );
+                return AccessResult::LocalPath(path.to_path_buf());
             }
         }
     }
@@ -149,16 +134,16 @@ pub async fn resolve_file(
     resolve_from_replica(file, db, watch_paths, cache).await
 }
 
-/// Public entry point for Tier 4b called from fuse_fs after Tier 4 fails.
+/// Public entry point for replica failover called from fuse_fs.
 pub async fn resolve_from_replica_for_open(
     file: &FileInode,
     local_node_id: &str,
     watch_paths: &[PathBuf],
-    network_mounts: &[NetworkMountInfo],
+    filesystems: &[FilesystemView],
     cache: &FileCache,
     db: &CouchClient,
 ) -> AccessResult {
-    let _ = (local_node_id, network_mounts);
+    let _ = (local_node_id, filesystems);
     resolve_from_replica(file, db, watch_paths, cache).await
 }
 

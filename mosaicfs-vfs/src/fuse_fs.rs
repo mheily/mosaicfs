@@ -21,7 +21,7 @@ use crate::cache::FileCache;
 use crate::couchdb::CouchClient;
 use crate::inode::{DirInode, FileInode, InodeEntry, InodeTable};
 use crate::readdir::{self, ReaddirDirEntry, VfsStepContext};
-use crate::tiered_access::{self, AccessResult, NetworkMountInfo};
+use crate::tiered_access::{self, AccessResult, FilesystemView};
 const TTL: Duration = Duration::from_secs(5);
 const BLOCK_SIZE: u32 = 512;
 
@@ -29,7 +29,7 @@ const BLOCK_SIZE: u32 = 512;
 pub struct FuseConfig {
     pub node_id: String,
     pub watch_paths: Vec<PathBuf>,
-    pub network_mounts: Vec<NetworkMountInfo>,
+    pub filesystems: Vec<FilesystemView>,
     pub mount_point: PathBuf,
     pub cache_dir: PathBuf,
     /// Max cache size in bytes (default 10 GB).
@@ -43,7 +43,7 @@ impl Default for FuseConfig {
         Self {
             node_id: String::new(),
             watch_paths: Vec::new(),
-            network_mounts: Vec::new(),
+            filesystems: Vec::new(),
             mount_point: PathBuf::from("/mnt/mosaicfs"),
             cache_dir: PathBuf::from("/var/lib/mosaicfs/cache"),
             cache_cap: 10 * 1024 * 1024 * 1024,
@@ -398,7 +398,7 @@ impl Filesystem for MosaicFs {
             &file,
             &self.config.node_id,
             &self.config.watch_paths,
-            &self.config.network_mounts,
+            &self.config.filesystems,
             &self.cache,
             &self.db,
         ));
@@ -410,8 +410,35 @@ impl Filesystem for MosaicFs {
                 reply.opened(fh, 0);
             }
             AccessResult::NotAccessible(msg) => {
-                warn!(file_id = %file.file_id, reason = %msg, "File not accessible");
-                reply.error(libc::EIO);
+                // Lazy reload: refresh filesystem views and retry once
+                warn!(file_id = %file.file_id, reason = %msg, "File not accessible, refreshing filesystem views");
+                let refreshed = self.rt.block_on(
+                    crate::filesystem_view::load_filesystems_async(&self.db, &self.config.node_id)
+                );
+                if let Ok(new_fs) = refreshed {
+                    self.config.filesystems = new_fs;
+                    let retry = self.rt.block_on(tiered_access::resolve_file(
+                        &file,
+                        &self.config.node_id,
+                        &self.config.watch_paths,
+                        &self.config.filesystems,
+                        &self.cache,
+                        &self.db,
+                    ));
+                    match retry {
+                        AccessResult::LocalPath(path) => {
+                            let fh = self.alloc_fh();
+                            self.open_files.lock().unwrap().insert(fh, (file.clone(), path));
+                            reply.opened(fh, 0);
+                        }
+                        AccessResult::NotAccessible(msg2) => {
+                            warn!(file_id = %file.file_id, reason = %msg2, "File still not accessible after refresh");
+                            reply.error(libc::EIO);
+                        }
+                    }
+                } else {
+                    reply.error(libc::EIO);
+                }
             }
         }
     }
