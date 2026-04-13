@@ -52,9 +52,30 @@ Represents a directory in the virtual filesystem namespace. Virtual directories 
 
 **Multiple appearances.** A file may appear in multiple virtual directories simultaneously. The rule engine evaluates each directory's mounts independently — there is no global deduplication. A `proposal.docx` modified yesterday might satisfy both a "Recent documents" directory (matched by an age step) and a "Work documents" directory (matched by a path source). Both are valid virtual locations for the same file. The file document's `inode` is the same in both listings, so the OS treats the two directory entries as hard links to the same file.
 
-### Node Document
+### Filesystem Document
 
-Represents a device participating in the MosaicFS network. The `storage` array describes the filesystem and disk topology visible to the agent. Point-in-time utilization figures are recorded in separate `utilization_snapshot` documents rather than here, keeping the node document stable and the snapshot history queryable.
+Represents a physical or cloud filesystem that can be exported and mounted. The owning node (the node where the filesystem is physically present or managed) is responsible for publishing this document. Other nodes use it to discover how to access files belonging to this filesystem.
+
+ID Convention: `filesystem::<<owningowning_node_id>::<<sansanitized-export-root>` (e.g. `filesystem::node-laptop::home-user`).
+
+| Field | Type | Description |
+|---|---|---|
+| `_id` | string | Format: `"filesystem::{filesystem_id}"`. |
+| `type` | string | Always `"filesystem"`. |
+| `filesystem_id` | string | Stable identifier. Derived from owning node ID and sanitized export root. |
+| `friendly_name` | string | Human-readable name, e.g. `"Laptop home"`. |
+| `owning_node_id` | string | ID of the node that owns this filesystem. |
+| `export_root` | string | Absolute path on the owning node that is exported. |
+| `availability` | array | List of nodes that currently have this filesystem mounted locally. |
+| `availability[].node_id` | string | ID of the node with local access. |
+| `availability[].local_mount_path` | string | The path on this node where the filesystem is mounted. |
+| `availability[].mount_type` | string | `"local"`, `"nfs"`, `"cifs"`, `"icloud_local"`, etc. |
+| `availability[].last_seen` | string | ISO 8601 timestamp of last heartbeat/update. |
+| `created_at` | string | ISO 8601 creation timestamp. |
+
+Note: `NetworkMount.filesystem_id` and `StorageEntry.filesystem_id` both reference this document.
+
+### Node Document
 
 | Field | Type | Description |
 |---|---|---|

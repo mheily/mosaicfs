@@ -5,6 +5,7 @@ use crate::couchdb::CouchClient;
 
 #[derive(Debug, Clone)]
 pub struct FilesystemView {
+    /// See docs/architecture/07-vfs-access.md for the lazy-resolution invariant.
     pub filesystem_id: String,
     pub owning_node_id: String,
     pub export_root: String,

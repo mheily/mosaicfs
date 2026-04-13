@@ -257,6 +257,7 @@ pub struct StorageEntry {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 #[ts(export)]
 pub struct NetworkMount {
+    /// See docs/architecture/07-vfs-access.md for the lazy-resolution invariant.
     pub mount_id: String,
     pub filesystem_id: String,
     pub remote_node_id: String,
@@ -269,6 +270,9 @@ pub struct NetworkMount {
 
 // ── Filesystem Document ──
 
+/// Represents a physical or cloud filesystem that can be exported and mounted.
+///
+/// See docs/architecture/07-vfs-access.md for the lazy-resolution invariant.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 #[ts(export)]
 pub struct FilesystemDocument {
