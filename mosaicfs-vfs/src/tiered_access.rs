@@ -15,6 +15,7 @@ use tracing::{debug, info, warn};
 
 use crate::cache::FileCache;
 use crate::couchdb::CouchClient;
+pub use crate::filesystem_view::FilesystemView;
 use crate::inode::FileInode;
 
 /// Result of a tiered access attempt.
@@ -24,16 +25,6 @@ pub enum AccessResult {
     LocalPath(PathBuf),
     /// File is not accessible.
     NotAccessible(String),
-}
-
-/// View of a filesystem document projected for the local node.
-#[derive(Debug, Clone)]
-pub struct FilesystemView {
-    pub filesystem_id: String,
-    pub owning_node_id: String,
-    pub export_root: String,
-    pub local_mount_path: Option<String>,
-    pub mount_type: String,
 }
 
 /// Attempt to resolve a file through the tiered access chain.
