@@ -18,7 +18,7 @@ use fuser::{
 use tracing::warn;
 
 use crate::cache::FileCache;
-use crate::couchdb::CouchClient;
+use mosaicfs_common::couchdb::CouchClient;
 use crate::inode::{DirInode, FileInode, InodeEntry, InodeTable};
 use crate::readdir::{self, ReaddirDirEntry, VfsStepContext};
 use crate::tiered_access::{self, AccessResult, FilesystemView};

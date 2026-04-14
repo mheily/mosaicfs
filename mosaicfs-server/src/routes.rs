@@ -14,7 +14,7 @@ use tower_http::services::{ServeDir, ServeFile};
 use crate::auth::hmac_auth::{self, HmacClaims};
 use crate::auth::jwt::{self, Claims};
 use crate::credentials;
-use crate::couchdb::CouchError;
+use mosaicfs_common::couchdb::CouchError;
 use crate::handlers::{agent, files, labels, nodes, notifications, replication, search, system, vfs};
 use crate::state::AppState;
 

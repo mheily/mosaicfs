@@ -1228,9 +1228,13 @@ dependencies = [
  "glob",
  "rand 0.8.5",
  "regex",
+ "reqwest",
  "serde",
  "serde_json",
+ "thiserror 1.0.69",
+ "tracing",
  "ts-rs",
+ "urlencoding",
  "uuid",
 ]
 

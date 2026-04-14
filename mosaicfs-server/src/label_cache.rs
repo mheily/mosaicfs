@@ -3,7 +3,7 @@ use std::sync::RwLock;
 
 use tracing::{debug, info, warn};
 
-use crate::couchdb::CouchClient;
+use mosaicfs_common::couchdb::CouchClient;
 
 /// Materialized label cache: file_uuid → set of labels (union of assignments + rules).
 pub struct LabelCache {

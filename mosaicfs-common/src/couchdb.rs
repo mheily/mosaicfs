@@ -1,13 +1,24 @@
+//! Shared CouchDB HTTP client used by all MosaicFS crates.
+//!
+//! Consolidates the minimal set of CouchDB operations needed across the VFS,
+//! agent, and server binaries into a single implementation. Each binary used
+//! to carry its own copy with slightly different signatures and drifted bug
+//! fixes; this module is the canonical home.
+
 use reqwest::Client;
 use serde::Deserialize;
 use tracing::info;
 
-#[derive(Clone)]
-pub struct CouchClient {
-    client: Client,
-    base_url: String,
-    db_name: String,
-    auth: (String, String),
+#[derive(Debug, thiserror::Error)]
+pub enum CouchError {
+    #[error("HTTP error: {0}")]
+    Http(#[from] reqwest::Error),
+    #[error("CouchDB error: {error} - {reason}")]
+    Couch { error: String, reason: String },
+    #[error("Document not found: {0}")]
+    NotFound(String),
+    #[error("Conflict: {0}")]
+    Conflict(String),
 }
 
 #[derive(Debug, Deserialize)]
@@ -38,23 +49,43 @@ pub struct AllDocsResponse {
 pub struct AllDocsRow {
     pub id: String,
     pub key: String,
+    #[serde(default)]
     pub value: serde_json::Value,
     pub doc: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct ChangesResponse {
-    pub last_seq: String,
-    pub results: Vec<ChangeResult>,
+    pub results: Vec<ChangeRow>,
+    pub last_seq: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct ChangeResult {
+pub struct ChangeRow {
+    #[serde(default)]
+    pub seq: serde_json::Value,
     pub id: String,
-    pub seq: String,
-    pub doc: Option<serde_json::Value>,
+    #[serde(default)]
+    pub changes: Vec<ChangeRev>,
     #[serde(default)]
     pub deleted: bool,
+    pub doc: Option<serde_json::Value>,
+}
+
+impl ChangesResponse {
+    /// Render `last_seq` as a string suitable for the next `since=` query.
+    pub fn last_seq_string(&self) -> String {
+        match &self.last_seq {
+            serde_json::Value::String(s) => s.clone(),
+            serde_json::Value::Number(n) => n.to_string(),
+            v => v.to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChangeRev {
+    pub rev: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -62,16 +93,12 @@ pub struct FindResponse {
     pub docs: Vec<serde_json::Value>,
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum CouchError {
-    #[error("HTTP error: {0}")]
-    Http(#[from] reqwest::Error),
-    #[error("CouchDB error: {error} - {reason}")]
-    Couch { error: String, reason: String },
-    #[error("Document not found: {0}")]
-    NotFound(String),
-    #[error("Conflict: {0}")]
-    Conflict(String),
+#[derive(Clone)]
+pub struct CouchClient {
+    pub client: Client,
+    pub base_url: String,
+    pub db_name: String,
+    pub auth: (String, String),
 }
 
 impl CouchClient {
@@ -91,14 +118,22 @@ impl CouchClient {
         Self::new(&url, db_name, &user, &password)
     }
 
-    fn db_url(&self) -> String {
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    pub fn auth(&self) -> &(String, String) {
+        &self.auth
+    }
+
+    pub fn db_url(&self) -> String {
         format!("{}/{}", self.base_url, self.db_name)
     }
 
     pub async fn ensure_db(&self) -> Result<(), CouchError> {
         let resp = self
             .client
-            .put(&self.db_url())
+            .put(self.db_url())
             .basic_auth(&self.auth.0, Some(&self.auth.1))
             .send()
             .await?;
@@ -215,6 +250,38 @@ impl CouchClient {
         }
     }
 
+    pub async fn changes(
+        &self,
+        since: &str,
+        include_docs: bool,
+        limit: Option<u64>,
+    ) -> Result<ChangesResponse, CouchError> {
+        let mut query: Vec<(String, String)> = vec![("since".to_string(), since.to_string())];
+        if include_docs {
+            query.push(("include_docs".to_string(), "true".to_string()));
+        }
+        if let Some(l) = limit {
+            query.push(("limit".to_string(), l.to_string()));
+        }
+        let resp = self
+            .client
+            .get(format!("{}/_changes", self.db_url()))
+            .basic_auth(&self.auth.0, Some(&self.auth.1))
+            .query(&query)
+            .send()
+            .await?;
+
+        if resp.status().is_success() {
+            Ok(resp.json().await?)
+        } else {
+            let body: CouchResponse = resp.json().await?;
+            Err(CouchError::Couch {
+                error: body.error.unwrap_or_default(),
+                reason: body.reason.unwrap_or_default(),
+            })
+        }
+    }
+
     pub async fn all_docs_by_prefix(
         &self,
         prefix: &str,
@@ -231,35 +298,6 @@ impl CouchClient {
         if include_docs {
             url.push_str("&include_docs=true");
         }
-        let resp = self
-            .client
-            .get(&url)
-            .basic_auth(&self.auth.0, Some(&self.auth.1))
-            .send()
-            .await?;
-
-        if resp.status().is_success() {
-            Ok(resp.json().await?)
-        } else {
-            let body: CouchResponse = resp.json().await?;
-            Err(CouchError::Couch {
-                error: body.error.unwrap_or_default(),
-                reason: body.reason.unwrap_or_default(),
-            })
-        }
-    }
-
-    /// Poll the CouchDB _changes feed starting from `since` sequence.
-    /// Returns (last_seq, list of changed docs with `_deleted` flag).
-    pub async fn changes(
-        &self,
-        since: &str,
-    ) -> Result<ChangesResponse, CouchError> {
-        let url = format!(
-            "{}/_changes?since={}&include_docs=true&limit=1000",
-            self.db_url(),
-            urlencoding::encode(since),
-        );
         let resp = self
             .client
             .get(&url)
@@ -304,7 +342,7 @@ impl CouchClient {
     pub async fn db_info(&self) -> Result<serde_json::Value, CouchError> {
         let resp = self
             .client
-            .get(&self.db_url())
+            .get(self.db_url())
             .basic_auth(&self.auth.0, Some(&self.auth.1))
             .send()
             .await?;
@@ -323,7 +361,7 @@ impl CouchClient {
     pub async fn delete_db(&self) -> Result<(), CouchError> {
         let resp = self
             .client
-            .delete(&self.db_url())
+            .delete(self.db_url())
             .basic_auth(&self.auth.0, Some(&self.auth.1))
             .send()
             .await?;
@@ -340,15 +378,12 @@ impl CouchClient {
         }
     }
 
-    pub async fn find(
-        &self,
-        selector: serde_json::Value,
-    ) -> Result<FindResponse, CouchError> {
+    pub async fn find(&self, selector: serde_json::Value) -> Result<FindResponse, CouchError> {
         let resp = self
             .client
             .post(format!("{}/_find", self.db_url()))
             .basic_auth(&self.auth.0, Some(&self.auth.1))
-            .json(&serde_json::json!({ "selector": selector }))
+            .json(&serde_json::json!({ "selector": selector, "limit": 10000 }))
             .send()
             .await?;
 
@@ -364,7 +399,7 @@ impl CouchClient {
     }
 }
 
-/// Create CouchDB Mango indexes needed by the server
+/// Create the Mango indexes the server relies on for typed queries.
 pub async fn create_indexes(db: &CouchClient) -> Result<(), CouchError> {
     let indexes = vec![
         ("idx-type", serde_json::json!({"fields": ["type"]})),
@@ -384,7 +419,8 @@ pub async fn create_indexes(db: &CouchClient) -> Result<(), CouchError> {
             "type": "json",
         });
 
-        let resp = db.client
+        let resp = db
+            .client
             .post(format!("{}/_index", db.db_url()))
             .basic_auth(&db.auth.0, Some(&db.auth.1))
             .json(&payload)

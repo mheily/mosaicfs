@@ -8,7 +8,7 @@ use chrono::Utc;
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::couchdb::CouchError;
+use mosaicfs_common::couchdb::CouchError;
 use crate::state::AppState;
 
 fn error_json(code: &str, message: &str) -> serde_json::Value {
@@ -682,7 +682,7 @@ pub async fn list_restore_history(
 /// Execute a restore job: find replica documents for files from source_node_id
 /// and update their ownership to destination_node_id.
 async fn run_restore_job(
-    db: &crate::couchdb::CouchClient,
+    db: &mosaicfs_common::couchdb::CouchClient,
     jobs: &RestoreJobStore,
     job_id: &str,
     backend_type: &str,

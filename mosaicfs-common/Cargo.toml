@@ -16,3 +16,7 @@ regex = "1"
 async-trait = "0.1"
 bytes = "1"
 ts-rs = { workspace = true }
+reqwest = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+urlencoding = { workspace = true }

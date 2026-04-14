@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crate::access_cache::AccessCache;
-use crate::couchdb::CouchClient;
+use mosaicfs_common::couchdb::CouchClient;
 use crate::handlers::replication::{RestoreJob, RestoreJobStore};
 use crate::label_cache::LabelCache;
 use crate::readdir_cache::ReaddirCache;

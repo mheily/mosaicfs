@@ -4,7 +4,7 @@ use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use chrono::Utc;
 use rand::Rng;
 
-use crate::couchdb::{CouchClient, CouchError};
+use mosaicfs_common::couchdb::{CouchClient, CouchError};
 
 /// Generate a new access key ID in format MOSAICFS_{16_hex_chars}
 pub fn generate_access_key_id() -> String {

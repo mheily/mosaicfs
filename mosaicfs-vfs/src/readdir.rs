@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use mosaicfs_common::documents::*;
 use mosaicfs_common::steps::{self, StepContext};
 
-use crate::couchdb::CouchClient;
+use mosaicfs_common::couchdb::CouchClient;
 
 /// A file entry produced by readdir evaluation.
 #[derive(Debug, Clone)]

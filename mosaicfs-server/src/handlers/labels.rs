@@ -10,7 +10,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::couchdb::CouchError;
+use mosaicfs_common::couchdb::CouchError;
 use crate::state::AppState;
 
 fn error_json(code: &str, message: &str) -> serde_json::Value {

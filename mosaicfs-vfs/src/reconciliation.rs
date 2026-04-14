@@ -10,7 +10,7 @@ use std::time::Duration;
 use tokio::time;
 use tracing::{info, warn};
 
-use crate::couchdb::CouchClient;
+use mosaicfs_common::couchdb::CouchClient;
 
 /// Monitor CouchDB replication state and trigger reconciliation on reconnect.
 ///

@@ -1,7 +1,7 @@
 use mosaicfs_common::documents::{FilesystemDocument, NodeAvailability};
 use tracing::warn;
 
-use crate::couchdb::CouchClient;
+use mosaicfs_common::couchdb::CouchClient;
 
 #[derive(Debug, Clone)]
 pub struct FilesystemView {

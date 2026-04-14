@@ -7,7 +7,7 @@
 use chrono::Utc;
 use tracing::warn;
 
-use crate::couchdb::CouchClient;
+use mosaicfs_common::couchdb::CouchClient;
 
 /// Emit (or update) a notification document.
 ///

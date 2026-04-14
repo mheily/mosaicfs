@@ -4,7 +4,7 @@ use chrono::Utc;
 use mosaicfs_common::documents::FilesystemDocument;
 use tracing::{info, warn};
 
-use crate::couchdb::{CouchClient, CouchError};
+use mosaicfs_common::couchdb::{CouchClient, CouchError};
 
 /// Write or update the node document on startup
 pub async fn register_node(

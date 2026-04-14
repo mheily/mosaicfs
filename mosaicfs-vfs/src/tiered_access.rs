@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
 
 use crate::cache::FileCache;
-use crate::couchdb::CouchClient;
+use mosaicfs_common::couchdb::CouchClient;
 pub use crate::filesystem_view::FilesystemView;
 use crate::inode::FileInode;
 

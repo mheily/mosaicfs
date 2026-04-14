@@ -1,6 +1,5 @@
 mod access_cache;
 mod auth;
-mod couchdb;
 mod credentials;
 mod handlers;
 mod label_cache;
@@ -39,9 +38,9 @@ async fn main() -> anyhow::Result<()> {
         tracing_subscriber::fmt()
             .with_env_filter(EnvFilter::new("warn"))
             .init();
-        let db = couchdb::CouchClient::from_env(DB_NAME);
+        let db = mosaicfs_common::couchdb::CouchClient::from_env(DB_NAME);
         db.ensure_db().await?;
-        couchdb::create_indexes(&db).await?;
+        mosaicfs_common::couchdb::create_indexes(&db).await?;
         let existing = credentials::list_credentials(&db).await?;
         if !existing.is_empty() {
             eprintln!("Credentials already exist. Use the Settings page to create more.");
@@ -81,12 +80,12 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or(DEFAULT_PORT);
 
     // Initialize CouchDB
-    let db = couchdb::CouchClient::from_env(DB_NAME);
+    let db = mosaicfs_common::couchdb::CouchClient::from_env(DB_NAME);
     db.ensure_db().await?;
     info!("CouchDB connection established");
 
     // Initialize CouchDB indexes
-    couchdb::create_indexes(&db).await?;
+    mosaicfs_common::couchdb::create_indexes(&db).await?;
     info!("CouchDB indexes verified");
 
     // Generate or load TLS certificates
@@ -180,7 +179,7 @@ async fn changes_feed_watcher(
 
     loop {
         interval.tick().await;
-        match state.db.changes(&since).await {
+        match state.db.changes(&since, true, Some(1000)).await {
             Ok(resp) => {
                 for change in &resp.results {
                     if let Some(doc) = &change.doc {
@@ -211,7 +210,7 @@ async fn changes_feed_watcher(
                         }
                     }
                 }
-                since = resp.last_seq;
+                since = resp.last_seq_string();
             }
             Err(e) => {
                 tracing::warn!(error = %e, "Changes feed poll failed");

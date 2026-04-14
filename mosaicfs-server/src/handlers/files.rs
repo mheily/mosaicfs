@@ -10,7 +10,7 @@ use tokio::io::AsyncReadExt;
 use tokio_util::io::ReaderStream;
 use tracing::warn;
 
-use crate::couchdb::CouchError;
+use mosaicfs_common::couchdb::CouchError;
 use crate::state::AppState;
 
 #[derive(Deserialize, Default)]

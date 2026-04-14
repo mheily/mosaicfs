@@ -1,6 +1,5 @@
 mod backend;
 mod config;
-mod couchdb;
 mod crawler;
 mod init;
 mod node;
@@ -17,7 +16,7 @@ use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 use config::AgentConfig;
-use couchdb::CouchClient;
+use mosaicfs_common::couchdb::CouchClient;
 
 const DEFAULT_CONFIG_PATH: &str = "agent.toml";
 const DEFAULT_STATE_DIR: &str = "/var/lib/mosaicfs";

@@ -7,7 +7,7 @@ use axum::Json;
 use chrono::Utc;
 use serde::Deserialize;
 
-use crate::couchdb::CouchError;
+use mosaicfs_common::couchdb::CouchError;
 use crate::state::AppState;
 
 #[derive(Deserialize, Default)]

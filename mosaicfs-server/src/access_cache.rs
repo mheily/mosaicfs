@@ -4,7 +4,7 @@ use std::sync::RwLock;
 use chrono::{DateTime, Utc};
 use tracing::{debug, info};
 
-use crate::couchdb::CouchClient;
+use mosaicfs_common::couchdb::CouchClient;
 
 /// Materialized access cache: file_id → last access time.
 pub struct AccessCache {

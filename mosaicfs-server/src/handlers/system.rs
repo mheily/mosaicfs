@@ -6,7 +6,7 @@ use axum::response::IntoResponse;
 use axum::Json;
 use serde::Deserialize;
 
-use crate::couchdb;
+use mosaicfs_common::couchdb;
 use crate::state::AppState;
 
 fn error_json(code: &str, message: &str) -> serde_json::Value {

@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 
 use mosaicfs_common::documents::{ConflictPolicy, MountEntry, MountSource, MountStrategy, Step, StepResult};
 
-use crate::couchdb::CouchError;
+use mosaicfs_common::couchdb::CouchError;
 use crate::readdir;
 use crate::state::AppState;
 

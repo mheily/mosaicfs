@@ -26,7 +26,7 @@ use tokio::time;
 use tracing::{debug, error, info, warn};
 
 use crate::backend;
-use crate::couchdb::CouchClient;
+use mosaicfs_common::couchdb::CouchClient;
 
 // ── Event types ──────────────────────────────────────────────────────────────
 

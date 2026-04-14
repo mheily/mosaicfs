@@ -1,6 +1,6 @@
 use tracing::{info, warn};
 
-use crate::couchdb::CouchClient;
+use mosaicfs_common::couchdb::CouchClient;
 
 /// Set up bidirectional continuous replication between local and control plane CouchDB.
 pub async fn setup_replication(
@@ -47,7 +47,7 @@ pub async fn setup_replication(
 
     match replicator.put_document(&push_doc["_id"].as_str().unwrap(), &push_doc).await {
         Ok(_) => info!("Push replication configured"),
-        Err(crate::couchdb::CouchError::Conflict(_)) => {
+        Err(mosaicfs_common::couchdb::CouchError::Conflict(_)) => {
             info!("Push replication already configured");
         }
         Err(e) => {
@@ -58,7 +58,7 @@ pub async fn setup_replication(
 
     match replicator.put_document(&pull_doc["_id"].as_str().unwrap(), &pull_doc).await {
         Ok(_) => info!("Pull replication configured"),
-        Err(crate::couchdb::CouchError::Conflict(_)) => {
+        Err(mosaicfs_common::couchdb::CouchError::Conflict(_)) => {
             info!("Pull replication already configured");
         }
         Err(e) => {

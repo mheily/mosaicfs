@@ -12,7 +12,7 @@ use serde::Deserialize;
 use tracing::warn;
 
 use crate::auth::hmac_auth::HmacClaims;
-use crate::couchdb::CouchError;
+use mosaicfs_common::couchdb::CouchError;
 use crate::state::AppState;
 
 /// Allowed document types for agent push replication (Flow 1)

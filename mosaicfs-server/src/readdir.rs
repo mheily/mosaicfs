@@ -6,7 +6,7 @@ use mosaicfs_common::documents::{
 use mosaicfs_common::steps::{self, StepContext};
 
 use crate::access_cache::AccessCache;
-use crate::couchdb::CouchClient;
+use mosaicfs_common::couchdb::CouchClient;
 use crate::label_cache::LabelCache;
 
 /// A file entry produced by readdir evaluation.

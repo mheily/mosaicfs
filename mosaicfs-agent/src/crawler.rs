@@ -8,7 +8,7 @@ use rand::Rng;
 use tracing::{debug, info, warn};
 use walkdir::WalkDir;
 
-use crate::couchdb::CouchClient;
+use mosaicfs_common::couchdb::CouchClient;
 use crate::notifications;
 use crate::replication_subsystem::{FileEvent, ReplicationHandle};
 

@@ -10,7 +10,7 @@ use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use tracing::warn;
 
-use crate::couchdb::CouchError;
+use mosaicfs_common::couchdb::CouchError;
 use crate::state::AppState;
 
 type HmacSha256 = Hmac<Sha256>;
