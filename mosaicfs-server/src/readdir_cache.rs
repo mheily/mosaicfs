@@ -83,6 +83,7 @@ mod tests {
         ReaddirEntry {
             name: "test.txt".to_string(),
             file_id: "file::abc".to_string(),
+            inode: 1,
             size: 100,
             mtime: Utc::now(),
             mime_type: None,

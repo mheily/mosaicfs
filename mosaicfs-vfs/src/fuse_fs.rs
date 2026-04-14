@@ -316,6 +316,7 @@ impl Filesystem for MosaicFs {
                 &inherited_steps,
                 &child_dir_names,
                 &ctx,
+                |_label| Vec::new(),
             )
             .await
             .unwrap_or_default();

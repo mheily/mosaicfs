@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 mosaicfs-common = { path = "../mosaicfs-common" }
+mosaicfs-vfs = { path = "../mosaicfs-vfs" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }

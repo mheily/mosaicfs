@@ -1,16 +1,16 @@
-//! Readdir evaluator for the VFS FUSE layer.
+//! Canonical readdir evaluator.
 //!
-//! Moved from mosaicfs-server per Phase 4.1. This module queries CouchDB
-//! for virtual directory documents and evaluates mount entries against
-//! file documents using the step pipeline.
+//! Resolves a virtual directory's mount entries against file documents and
+//! returns the merged file list. Both the FUSE layer and the server's REST
+//! API call into this module — the former wraps the result into FUSE dirents,
+//! the latter into JSON (see `mosaicfs-server/src/readdir.rs`).
 
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
+use mosaicfs_common::couchdb::CouchClient;
 use mosaicfs_common::documents::*;
 use mosaicfs_common::steps::{self, StepContext};
-
-use mosaicfs_common::couchdb::CouchClient;
 
 /// A file entry produced by readdir evaluation.
 #[derive(Debug, Clone)]
@@ -26,7 +26,7 @@ pub struct ReaddirEntry {
     pub mount_id: String,
 }
 
-/// A directory entry in readdir results.
+/// A directory entry in readdir results (used by FUSE).
 #[derive(Debug, Clone)]
 pub struct ReaddirDirEntry {
     pub name: String,
@@ -34,19 +34,14 @@ pub struct ReaddirDirEntry {
     pub virtual_path: String,
 }
 
-/// Combined readdir result.
-#[derive(Debug, Clone)]
-pub struct ReaddirResult {
-    pub files: Vec<ReaddirEntry>,
-    pub directories: Vec<ReaddirDirEntry>,
-}
-
-/// Context for step evaluation — bridges label/access/replica/annotation lookups.
+/// Default `StepContext` implementation for callers that do not maintain
+/// their own label/access caches (notably the FUSE layer during early
+/// evaluation).
 pub struct VfsStepContext {
-    pub labels: HashMap<String, Vec<String>>,   // file_uuid -> [labels]
-    pub accesses: HashMap<String, DateTime<Utc>>, // file_id -> last_access
-    pub replicas: HashMap<String, Vec<(String, String)>>, // file_uuid -> [(target, status)]
-    pub annotations: HashMap<String, Vec<String>>, // file_uuid -> [plugin_name]
+    pub labels: HashMap<String, Vec<String>>,
+    pub accesses: HashMap<String, DateTime<Utc>>,
+    pub replicas: HashMap<String, Vec<(String, String)>>,
+    pub annotations: HashMap<String, Vec<String>>,
 }
 
 impl VfsStepContext {
@@ -94,25 +89,41 @@ impl StepContext for VfsStepContext {
 }
 
 /// Evaluate readdir for a virtual directory given its mounts.
-pub async fn evaluate_readdir(
+///
+/// `label_files` resolves a label name to the file ids it applies to — the
+/// FUSE layer can pass a no-op while the server uses its `LabelCache`.
+pub async fn evaluate_readdir<C, F>(
     db: &CouchClient,
     mounts: &[MountEntry],
     inherited_steps: &[Step],
     child_dirs: &[String],
-    ctx: &VfsStepContext,
-) -> Result<Vec<ReaddirEntry>, anyhow::Error> {
+    ctx: &C,
+    label_files: F,
+) -> Result<Vec<ReaddirEntry>, anyhow::Error>
+where
+    C: StepContext,
+    F: Fn(&str) -> Vec<String>,
+{
     let mut result_entries: HashMap<String, ReaddirEntry> = HashMap::new();
     let mut conflict_policies: HashMap<String, ConflictPolicy> = HashMap::new();
 
     for mount in mounts {
-        let files = query_mount_files(db, &mount.source).await?;
+        let files = query_mount_files(db, &mount.source, &label_files).await?;
 
         for (file_id, file_doc) in &files {
             let mut all_steps: Vec<Step> = inherited_steps.to_vec();
             all_steps.extend(mount.steps.clone());
 
+            // With ancestor-inherited steps acting as an explicit filter,
+            // unmatched files should be excluded; otherwise use the mount's
+            // own default.
+            let effective_default = if inherited_steps.is_empty() {
+                mount.default_result.clone()
+            } else {
+                StepResult::Exclude
+            };
             let step_result =
-                steps::evaluate_steps(&all_steps, file_doc, file_id, &mount.default_result, ctx);
+                steps::evaluate_steps(&all_steps, file_doc, file_id, &effective_default, ctx);
 
             if step_result != StepResult::Include {
                 continue;
@@ -172,7 +183,7 @@ pub async fn evaluate_readdir(
     Ok(entries)
 }
 
-/// Collect inherited steps from ancestor directories.
+/// Collect inherited steps from ancestor directories (root → parent).
 pub async fn collect_inherited_steps(
     db: &CouchClient,
     virtual_path: &str,
@@ -210,7 +221,7 @@ pub async fn collect_inherited_steps(
     Ok(inherited)
 }
 
-/// Compute the CouchDB document ID for a virtual path.
+/// Compute the CouchDB document ID for a virtual directory path.
 pub fn dir_id_for(path: &str) -> String {
     if path == "/" {
         "dir::root".to_string()
@@ -263,15 +274,16 @@ fn map_filename(
     }
 }
 
-async fn query_mount_files(
+async fn query_mount_files<F>(
     db: &CouchClient,
     source: &MountSource,
-) -> Result<Vec<(String, FileDocument)>, anyhow::Error> {
+    label_files: &F,
+) -> Result<Vec<(String, FileDocument)>, anyhow::Error>
+where
+    F: Fn(&str) -> Vec<String>,
+{
     match source {
-        MountSource::Node {
-            node_id,
-            export_path,
-        } => {
+        MountSource::Node { node_id, export_path } => {
             let selector = serde_json::json!({
                 "type": "file",
                 "status": "active",
@@ -295,7 +307,21 @@ async fn query_mount_files(
             }
             Ok(results)
         }
-        MountSource::Federated { .. } | MountSource::Label { .. } => Ok(vec![]),
+        MountSource::Label { label } => {
+            let ids = label_files(label);
+            let mut results = Vec::new();
+            for file_id in ids {
+                if let Ok(doc) = db.get_document(&file_id).await {
+                    if doc.get("status").and_then(|v| v.as_str()) == Some("active") {
+                        if let Ok(file_doc) = serde_json::from_value::<FileDocument>(doc) {
+                            results.push((file_id, file_doc));
+                        }
+                    }
+                }
+            }
+            Ok(results)
+        }
+        MountSource::Federated { .. } => Ok(vec![]),
     }
 }
 
@@ -303,5 +329,26 @@ fn split_extension(name: &str) -> (&str, &str) {
     match name.rfind('.') {
         Some(pos) if pos > 0 => (&name[..pos], &name[pos + 1..]),
         _ => (name, ""),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ancestor_paths() {
+        assert_eq!(ancestor_paths("/"), vec!["/"]);
+        assert_eq!(ancestor_paths("/a"), vec!["/"]);
+        assert_eq!(ancestor_paths("/a/b"), vec!["/", "/a"]);
+        assert_eq!(ancestor_paths("/a/b/c"), vec!["/", "/a", "/a/b"]);
+    }
+
+    #[test]
+    fn test_split_extension() {
+        assert_eq!(split_extension("report.pdf"), ("report", "pdf"));
+        assert_eq!(split_extension("archive.tar.gz"), ("archive.tar", "gz"));
+        assert_eq!(split_extension("readme"), ("readme", ""));
+        assert_eq!(split_extension(".hidden"), (".hidden", ""));
     }
 }
