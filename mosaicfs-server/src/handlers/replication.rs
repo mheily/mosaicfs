@@ -122,7 +122,7 @@ pub async fn create_storage_backend(
         );
     }
 
-    let doc_id = format!("storage_backend::{}", body.name);
+    let doc_id = mosaicfs_common::replication::storage_backend_doc_id(&body.name);
 
     // Check for duplicate
     if state.db.get_document(&doc_id).await.is_ok() {
@@ -165,7 +165,7 @@ pub async fn get_storage_backend(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    let doc_id = format!("storage_backend::{}", name);
+    let doc_id = mosaicfs_common::replication::storage_backend_doc_id(&name);
     match state.db.get_document(&doc_id).await {
         Ok(mut doc) => {
             strip_internals(&mut doc);
@@ -185,7 +185,7 @@ pub async fn patch_storage_backend(
     Path(name): Path<String>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let doc_id = format!("storage_backend::{}", name);
+    let doc_id = mosaicfs_common::replication::storage_backend_doc_id(&name);
     let mut doc = match state.db.get_document(&doc_id).await {
         Ok(d) => d,
         Err(CouchError::NotFound(_)) => {
@@ -220,7 +220,7 @@ pub async fn delete_storage_backend(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    let doc_id = format!("storage_backend::{}", name);
+    let doc_id = mosaicfs_common::replication::storage_backend_doc_id(&name);
     let doc = match state.db.get_document(&doc_id).await {
         Ok(d) => d,
         Err(CouchError::NotFound(_)) => {
@@ -584,7 +584,7 @@ pub async fn initiate_restore(
     }
 
     // Verify storage backend exists
-    let backend_id = format!("storage_backend::{}", body.target_name);
+    let backend_id = mosaicfs_common::replication::storage_backend_doc_id(&body.target_name);
     let backend_doc = match state.db.get_document(&backend_id).await {
         Ok(d) => d,
         Err(CouchError::NotFound(_)) => {

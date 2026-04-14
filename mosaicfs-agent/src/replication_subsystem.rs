@@ -1021,9 +1021,7 @@ async fn load_rules_and_targets(
 
     for row in backends_resp.rows {
         let doc = match row.doc { Some(d) => d, None => continue };
-        if doc.get("type").and_then(|v| v.as_str()) != Some("storage_backend") { continue; }
-        if doc.get("enabled").and_then(|v| v.as_bool()) != Some(true) { continue; }
-        if doc.get("mode").and_then(|v| v.as_str()) != Some("target") { continue; }
+        if !mosaicfs_common::replication::is_active_storage_target(&doc) { continue; }
 
         let name = doc.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
         let backend_type = doc.get("backend").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -1073,10 +1071,9 @@ async fn load_rules_and_targets(
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default();
 
-        let default_result = match doc.get("default_result").and_then(|v| v.as_str()).unwrap_or("exclude") {
-            "include" => StepResult::Include,
-            _ => StepResult::Exclude,
-        };
+        let default_result = mosaicfs_common::replication::parse_default_result(
+            doc.get("default_result").and_then(|v| v.as_str()).unwrap_or("exclude"),
+        );
 
         rules.push(ReplicationRule {
             rule_id,
