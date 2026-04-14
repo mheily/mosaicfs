@@ -3,7 +3,7 @@ mod auth;
 mod credentials;
 mod handlers;
 mod label_cache;
-mod notifications;
+use mosaicfs_common::notifications;
 mod readdir;
 mod readdir_cache;
 mod routes;

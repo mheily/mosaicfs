@@ -3,7 +3,6 @@ mod config;
 mod crawler;
 mod init;
 mod node;
-mod notifications;
 mod replication;
 mod replication_subsystem;
 
@@ -17,6 +16,7 @@ use tracing_subscriber::EnvFilter;
 
 use config::AgentConfig;
 use mosaicfs_common::couchdb::CouchClient;
+use mosaicfs_common::notifications;
 
 const DEFAULT_CONFIG_PATH: &str = "agent.toml";
 const DEFAULT_STATE_DIR: &str = "/var/lib/mosaicfs";
