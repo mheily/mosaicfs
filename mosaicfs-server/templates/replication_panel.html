@@ -1,0 +1,28 @@
+<h3>Storage backends</h3>
+{% if backends | length == 0 %}
+<p class="muted">No backends configured.</p>
+{% else %}
+<table>
+  <thead><tr><th>Name</th><th>Type</th><th>Enabled</th></tr></thead>
+  <tbody>
+    {% for b in backends %}
+    <tr><td>{{ b.name }}</td><td>{{ b.kind }}</td><td>{{ b.enabled }}</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<h3>Replication rules</h3>
+{% if rules | length == 0 %}
+<p class="muted">No replication rules configured.</p>
+{% else %}
+<table>
+  <thead><tr><th>Rule</th><th>Source</th><th>Target</th><th>Enabled</th></tr></thead>
+  <tbody>
+    {% for r in rules %}
+    <tr><td><code>{{ r.id }}</code></td><td>{{ r.source }}</td><td>{{ r.target }}</td><td>{{ r.enabled }}</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+<p class="muted">Last refresh: {{ now }}</p>

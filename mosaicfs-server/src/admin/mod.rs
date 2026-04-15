@@ -3,9 +3,6 @@
 //! Mounted under `/admin`. Uses Tera for templates, tower-sessions for
 //! cookie-based auth, and HTMX for in-page interactivity. Assets (Pico CSS,
 //! HTMX) are embedded at compile time.
-//!
-//! Phase 1: framework + login + placeholder status page.
-//! Phase 2 adds read-only panels (nodes, notifications, replication).
 
 use std::sync::{Arc, OnceLock};
 
@@ -26,6 +23,8 @@ use crate::credentials;
 use crate::state::AppState;
 use mosaicfs_common::couchdb::CouchError;
 
+mod views;
+
 const SESSION_USER_KEY: &str = "access_key_id";
 
 static TERA: OnceLock<Tera> = OnceLock::new();
@@ -37,6 +36,31 @@ fn tera() -> &'static Tera {
             ("layout.html", include_str!("../../templates/layout.html")),
             ("login.html", include_str!("../../templates/login.html")),
             ("status.html", include_str!("../../templates/status.html")),
+            (
+                "status_panel.html",
+                include_str!("../../templates/status_panel.html"),
+            ),
+            ("nodes.html", include_str!("../../templates/nodes.html")),
+            (
+                "nodes_panel.html",
+                include_str!("../../templates/nodes_panel.html"),
+            ),
+            (
+                "notifications.html",
+                include_str!("../../templates/notifications.html"),
+            ),
+            (
+                "notifications_panel.html",
+                include_str!("../../templates/notifications_panel.html"),
+            ),
+            (
+                "replication.html",
+                include_str!("../../templates/replication.html"),
+            ),
+            (
+                "replication_panel.html",
+                include_str!("../../templates/replication_panel.html"),
+            ),
         ])
         .expect("templates compile");
         tera
@@ -89,7 +113,17 @@ pub fn router() -> Router<Arc<AppState>> {
 
     let protected: Router<Arc<AppState>> = Router::new()
         .route("/admin", get(|| async { Redirect::to("/admin/status") }))
-        .route("/admin/status", get(status_page))
+        .route("/admin/status", get(views::status_page))
+        .route("/admin/status/panel", get(views::status_panel))
+        .route("/admin/nodes", get(views::nodes_page))
+        .route("/admin/nodes/panel", get(views::nodes_panel))
+        .route("/admin/notifications", get(views::notifications_page))
+        .route(
+            "/admin/notifications/panel",
+            get(views::notifications_panel),
+        )
+        .route("/admin/replication", get(views::replication_page))
+        .route("/admin/replication/panel", get(views::replication_panel))
         .layer(middleware::from_fn(require_auth));
 
     Router::new().merge(public).merge(protected).layer(session_layer)
@@ -104,6 +138,7 @@ async fn require_auth(session: Session, req: Request, next: Next) -> Response {
         _ => {
             let path = req.uri().path();
             if path.starts_with("/admin/") && path.ends_with("/panel") {
+                // HTMX poll for an unauthed user: return a gentle 401 body that HTMX will swap.
                 return (StatusCode::UNAUTHORIZED, "Session expired. Reload.")
                     .into_response();
             }
@@ -185,14 +220,6 @@ fn login_error(msg: &str) -> Response {
 async fn logout(session: Session) -> Response {
     let _ = session.flush().await;
     Redirect::to("/admin/login").into_response()
-}
-
-async fn status_page(session: Session) -> Response {
-    let user = user_for_ctx(&session).await;
-    let mut ctx = base_ctx(user.as_deref());
-    ctx.insert("title", "Status — MosaicFS");
-    ctx.insert("version", env!("CARGO_PKG_VERSION"));
-    render("status.html", &ctx)
 }
 
 async fn serve_asset(uri: Uri) -> Response {

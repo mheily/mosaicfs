@@ -1,0 +1,10 @@
+<table>
+  <tr><th>Server version</th><td>{{ version }}</td></tr>
+  <tr><th>Uptime</th><td>{{ uptime }}</td></tr>
+  <tr><th>CouchDB</th><td class="{{ couch_class }}">{{ couch_status }}</td></tr>
+  <tr><th>Needs bootstrap</th><td>{{ needs_bootstrap }}</td></tr>
+  <tr><th>Nodes registered</th><td>{{ node_count }}</td></tr>
+  <tr><th>Nodes with recent heartbeat (≤60s)</th><td>{{ heartbeat_recent }}</td></tr>
+  <tr><th>Unacknowledged notifications</th><td>{{ notification_count }}</td></tr>
+  <tr><th>Last refresh</th><td class="muted">{{ now }}</td></tr>
+</table>

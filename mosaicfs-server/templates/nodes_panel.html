@@ -1,0 +1,21 @@
+{% if nodes | length == 0 %}
+<p class="muted">No nodes registered.</p>
+{% else %}
+<table>
+  <thead>
+    <tr><th>Node ID</th><th>Hostname</th><th>Last heartbeat</th><th>Age</th><th>Status</th></tr>
+  </thead>
+  <tbody>
+    {% for n in nodes %}
+    <tr>
+      <td><code>{{ n.node_id }}</code></td>
+      <td>{{ n.hostname }}</td>
+      <td class="muted">{{ n.last_heartbeat }}</td>
+      <td>{{ n.age }}</td>
+      <td class="{{ n.status_class }}">{{ n.status }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+<p class="muted">Last refresh: {{ now }}</p>

@@ -1,0 +1,8 @@
+{% extends "layout.html" %}
+{% block content %}
+<h2>Notifications</h2>
+<section hx-get="/admin/notifications/panel" hx-trigger="load, every 10s" hx-swap="innerHTML">
+  <p class="muted" aria-busy="true">Loading…</p>
+</section>
+<p class="muted">Acknowledge actions land in Phase 3.</p>
+{% endblock content %}

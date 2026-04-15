@@ -1,0 +1,7 @@
+{% extends "layout.html" %}
+{% block content %}
+<h2>Replication</h2>
+<section hx-get="/admin/replication/panel" hx-trigger="load, every 10s" hx-swap="innerHTML">
+  <p class="muted" aria-busy="true">Loading…</p>
+</section>
+{% endblock content %}

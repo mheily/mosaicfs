@@ -1,11 +1,10 @@
 {% extends "layout.html" %}
 {% block content %}
 <hgroup>
-  <h2>MosaicFS Admin</h2>
-  <p class="muted">Server-side rendered admin UI (change 005, phase 1).</p>
+  <h2>System status</h2>
+  <p class="muted">Server-side rendered admin UI (change 005).</p>
 </hgroup>
-<article>
-  <p>Framework wired. Read-only panels (nodes, notifications, replication) land in phase 2.</p>
-  <p class="muted">Server version: {{ version }}</p>
-</article>
+<section hx-get="/admin/status/panel" hx-trigger="load, every 5s" hx-swap="innerHTML">
+  <p class="muted" aria-busy="true">Loading…</p>
+</section>
 {% endblock content %}

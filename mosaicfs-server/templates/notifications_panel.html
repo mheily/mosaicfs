@@ -1,0 +1,19 @@
+{% if items | length == 0 %}
+<p class="muted">No unacknowledged notifications.</p>
+{% else %}
+<table>
+  <thead><tr><th>Severity</th><th>Category</th><th>Title</th><th>Message</th><th>Created</th></tr></thead>
+  <tbody>
+    {% for n in items %}
+    <tr>
+      <td class="{{ n.severity_class }}">{{ n.severity }}</td>
+      <td>{{ n.category }}</td>
+      <td>{{ n.title }}</td>
+      <td class="muted">{{ n.message }}</td>
+      <td class="muted">{{ n.created_at }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+<p class="muted">Last refresh: {{ now }}</p>
