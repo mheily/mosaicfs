@@ -57,6 +57,7 @@ FROM docker.io/debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
+        libfuse2 \
     && rm -rf /var/lib/apt/lists/*
 
 # mosaicfs-server serves web/dist relative to its working directory

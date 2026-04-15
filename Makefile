@@ -34,4 +34,35 @@ tauri-build:
 
 
 mosaicfs-image:
-	BUILDAH_ISOLATION=chroot $(DOCKER) build $(BUILD_FLAGS) -f Dockerfile.mosaicfs -t localhost/mosaicfs:latest .
+	BUILDAH_ISOLATION=chroot $(DOCKER) build $(BUILD_FLAGS) -f Dockerfile.mosaicfs -t mosaicfs:latest .
+
+# ── Apple `container` dev deployment ─────────────────────────────────────────
+# CouchDB runs in a container (port-forwarded to 127.0.0.1:5984). The
+# Rust server and agent run on the host (via `cargo run`) and talk to
+# CouchDB over localhost, sidestepping Apple `container`'s lack of
+# automatic inter-container DNS.
+
+CONTAINER ?= /usr/local/bin/container
+
+mosaicfs-db-image:
+	$(CONTAINER) build -f Dockerfile.mosaicfs-db -t mosaicfs-db:latest .
+
+.PHONY: deploy-dev run-dev stop-dev
+
+deploy-dev: mosaicfs-db-image
+
+run-dev: deploy-dev
+	$(CONTAINER) run -d --name mosaicfs-db \
+	    -p 127.0.0.1:5984:5984 \
+	    -e COUCHDB_USER=admin \
+	    -e COUCHDB_PASSWORD=changeme \
+	    -v mosaicfs-couchdb-data:/opt/couchdb/data \
+	    mosaicfs-db:latest
+	@echo
+	@echo "CouchDB up at http://127.0.0.1:5984 (admin/changeme)."
+	@echo "Now run the server on the host:"
+	@echo "  COUCHDB_URL=http://127.0.0.1:5984 COUCHDB_USER=admin COUCHDB_PASSWORD=changeme \\"
+	@echo "    cargo run -p mosaicfs-server"
+
+stop-dev:
+	-$(CONTAINER) rm -f mosaicfs-db

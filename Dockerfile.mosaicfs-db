@@ -1,0 +1,2 @@
+FROM docker.io/couchdb:3
+EXPOSE 5984

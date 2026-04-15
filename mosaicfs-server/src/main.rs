@@ -88,9 +88,18 @@ async fn main() -> anyhow::Result<()> {
     mosaicfs_common::couchdb::create_indexes(&db).await?;
     info!("CouchDB indexes verified");
 
-    // Generate or load TLS certificates
-    let rustls_config = tls::ensure_tls_certs(&data_dir)?;
-    info!("TLS certificates ready");
+    let insecure_http = std::env::var("MOSAICFS_INSECURE_HTTP")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+
+    let rustls_config = if insecure_http {
+        tracing::warn!("MOSAICFS_INSECURE_HTTP is set — serving plain HTTP (dev only)");
+        None
+    } else {
+        let cfg = tls::ensure_tls_certs(&data_dir)?;
+        info!("TLS certificates ready");
+        Some(cfg)
+    };
 
     // Generate or load JWT signing secret
     let jwt_secret = auth::jwt::ensure_jwt_secret(&data_dir)?;
@@ -156,14 +165,23 @@ async fn main() -> anyhow::Result<()> {
     // Build router
     let app = routes::build_router(state).layer(TraceLayer::new_for_http());
 
-    // Serve with TLS
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    info!(port = port, "Listening on https://0.0.0.0:{}", port);
+    let scheme = if rustls_config.is_some() { "https" } else { "http" };
+    info!(port = port, "Listening on {}://0.0.0.0:{}", scheme, port);
 
-    let tls_config = axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(rustls_config));
-    axum_server::bind_rustls(addr, tls_config)
-        .serve(app.into_make_service_with_connect_info::<SocketAddr>())
-        .await?;
+    match rustls_config {
+        Some(cfg) => {
+            let tls_config = axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(cfg));
+            axum_server::bind_rustls(addr, tls_config)
+                .serve(app.into_make_service_with_connect_info::<SocketAddr>())
+                .await?;
+        }
+        None => {
+            axum_server::bind(addr)
+                .serve(app.into_make_service_with_connect_info::<SocketAddr>())
+                .await?;
+        }
+    }
 
     Ok(())
 }

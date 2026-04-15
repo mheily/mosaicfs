@@ -33,3 +33,6 @@ web/src-tauri/gen/schemas/
 
 # Agent config (contains credentials — copy agent.toml.example → agent.toml and fill in)
 agent.toml
+
+# Local dev stack config (credentials) used by `make run-dev`
+dev-config/
