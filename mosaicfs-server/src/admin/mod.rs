@@ -1,0 +1,219 @@
+//! Server-side rendered admin UI (change 005).
+//!
+//! Mounted under `/admin`. Uses Tera for templates, tower-sessions for
+//! cookie-based auth, and HTMX for in-page interactivity. Assets (Pico CSS,
+//! HTMX) are embedded at compile time.
+//!
+//! Phase 1: framework + login + placeholder status page.
+//! Phase 2 adds read-only panels (nodes, notifications, replication).
+
+use std::sync::{Arc, OnceLock};
+
+use axum::{
+    extract::{Request, State},
+    http::{header, StatusCode, Uri},
+    middleware::{self, Next},
+    response::{Html, IntoResponse, Redirect, Response},
+    routing::{get, post},
+    Form, Router,
+};
+use serde::Deserialize;
+use tera::{Context, Tera};
+use tower_sessions::cookie::time::Duration;
+use tower_sessions::{cookie::SameSite, MemoryStore, Session, SessionManagerLayer};
+
+use crate::credentials;
+use crate::state::AppState;
+use mosaicfs_common::couchdb::CouchError;
+
+const SESSION_USER_KEY: &str = "access_key_id";
+
+static TERA: OnceLock<Tera> = OnceLock::new();
+
+fn tera() -> &'static Tera {
+    TERA.get_or_init(|| {
+        let mut tera = Tera::default();
+        tera.add_raw_templates(vec![
+            ("layout.html", include_str!("../../templates/layout.html")),
+            ("login.html", include_str!("../../templates/login.html")),
+            ("status.html", include_str!("../../templates/status.html")),
+        ])
+        .expect("templates compile");
+        tera
+    })
+}
+
+pub(crate) fn render(name: &str, ctx: &Context) -> Response {
+    match tera().render(name, ctx) {
+        Ok(body) => Html(body).into_response(),
+        Err(e) => {
+            tracing::error!(template = name, error = %e, "template render failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("template error: {e}"),
+            )
+                .into_response()
+        }
+    }
+}
+
+pub(crate) fn base_ctx(session_user: Option<&str>) -> Context {
+    let mut ctx = Context::new();
+    ctx.insert("authed", &session_user.is_some());
+    if let Some(u) = session_user {
+        ctx.insert("user", u);
+    }
+    ctx
+}
+
+fn insecure_http() -> bool {
+    std::env::var("MOSAICFS_INSECURE_HTTP")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// Build the `/admin` router. Returns a state-typed router to be merged
+/// before the main router applies its state.
+pub fn router() -> Router<Arc<AppState>> {
+    let store = MemoryStore::default();
+    let session_layer = SessionManagerLayer::new(store)
+        .with_name("mosaicfs_admin")
+        .with_same_site(SameSite::Lax)
+        .with_secure(!insecure_http())
+        .with_expiry(tower_sessions::Expiry::OnInactivity(Duration::hours(12)));
+
+    let public: Router<Arc<AppState>> = Router::new()
+        .route("/admin/login", get(login_form).post(login_submit))
+        .route("/admin/logout", post(logout))
+        .route("/admin/assets/{*path}", get(serve_asset));
+
+    let protected: Router<Arc<AppState>> = Router::new()
+        .route("/admin", get(|| async { Redirect::to("/admin/status") }))
+        .route("/admin/status", get(status_page))
+        .layer(middleware::from_fn(require_auth));
+
+    Router::new().merge(public).merge(protected).layer(session_layer)
+}
+
+async fn require_auth(session: Session, req: Request, next: Next) -> Response {
+    if insecure_http() {
+        return next.run(req).await;
+    }
+    match session.get::<String>(SESSION_USER_KEY).await {
+        Ok(Some(_)) => next.run(req).await,
+        _ => {
+            let path = req.uri().path();
+            if path.starts_with("/admin/") && path.ends_with("/panel") {
+                return (StatusCode::UNAUTHORIZED, "Session expired. Reload.")
+                    .into_response();
+            }
+            Redirect::to("/admin/login").into_response()
+        }
+    }
+}
+
+async fn current_user(session: &Session) -> Option<String> {
+    if insecure_http() {
+        return Some("insecure-http".to_string());
+    }
+    session.get::<String>(SESSION_USER_KEY).await.ok().flatten()
+}
+
+pub(crate) async fn user_for_ctx(session: &Session) -> Option<String> {
+    current_user(session).await
+}
+
+async fn login_form(session: Session) -> Response {
+    if current_user(&session).await.is_some() {
+        return Redirect::to("/admin/status").into_response();
+    }
+    let ctx = base_ctx(None);
+    render("login.html", &ctx)
+}
+
+#[derive(Deserialize)]
+struct LoginForm {
+    access_key_id: String,
+    secret_key: String,
+}
+
+async fn login_submit(
+    State(state): State<Arc<AppState>>,
+    session: Session,
+    Form(form): Form<LoginForm>,
+) -> Response {
+    let doc = match state
+        .db
+        .get_document(&format!("credential::{}", form.access_key_id))
+        .await
+    {
+        Ok(d) => d,
+        Err(CouchError::NotFound(_)) => return login_error("Invalid credentials"),
+        Err(e) => {
+            tracing::error!(error=%e, "admin login: couch error");
+            return login_error("Internal error");
+        }
+    };
+
+    if doc.get("enabled").and_then(|v| v.as_bool()) != Some(true) {
+        return login_error("Invalid credentials");
+    }
+    let hash = doc
+        .get("secret_key_hash")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if !credentials::verify_secret(&form.secret_key, hash) {
+        return login_error("Invalid credentials");
+    }
+
+    if let Err(e) = session
+        .insert(SESSION_USER_KEY, &form.access_key_id)
+        .await
+    {
+        tracing::error!(error=%e, "session insert failed");
+        return login_error("Session error");
+    }
+    Redirect::to("/admin/status").into_response()
+}
+
+fn login_error(msg: &str) -> Response {
+    let mut ctx = base_ctx(None);
+    ctx.insert("error", msg);
+    (StatusCode::UNAUTHORIZED, render("login.html", &ctx)).into_response()
+}
+
+async fn logout(session: Session) -> Response {
+    let _ = session.flush().await;
+    Redirect::to("/admin/login").into_response()
+}
+
+async fn status_page(session: Session) -> Response {
+    let user = user_for_ctx(&session).await;
+    let mut ctx = base_ctx(user.as_deref());
+    ctx.insert("title", "Status — MosaicFS");
+    ctx.insert("version", env!("CARGO_PKG_VERSION"));
+    render("status.html", &ctx)
+}
+
+async fn serve_asset(uri: Uri) -> Response {
+    let path = uri.path().trim_start_matches("/admin/assets/");
+    let (bytes, content_type): (&[u8], &str) = match path {
+        "pico.min.css" => (
+            include_bytes!("../../assets/pico.min.css"),
+            "text/css; charset=utf-8",
+        ),
+        "htmx.min.js" => (
+            include_bytes!("../../assets/htmx.min.js"),
+            "application/javascript; charset=utf-8",
+        ),
+        _ => return (StatusCode::NOT_FOUND, "not found").into_response(),
+    };
+    (
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+        ],
+        bytes,
+    )
+        .into_response()
+}

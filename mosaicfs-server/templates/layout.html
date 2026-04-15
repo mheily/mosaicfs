@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ title | default(value="MosaicFS Admin") }}</title>
+<link rel="stylesheet" href="/admin/assets/pico.min.css">
+<script src="/admin/assets/htmx.min.js" defer></script>
+<style>
+  .nav-flex { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
+  .nav-flex .spacer { flex: 1; }
+  .muted { color: var(--pico-muted-color); }
+  .ok { color: var(--pico-color-green-550); }
+  .warn { color: var(--pico-color-amber-550); }
+  .err { color: var(--pico-color-red-550); }
+</style>
+</head>
+<body>
+<main class="container">
+{% if authed %}
+<nav class="nav-flex">
+  <strong><a href="/admin/status">MosaicFS</a></strong>
+  <a href="/admin/status">Status</a>
+  <span class="spacer"></span>
+  {% if user %}<span class="muted">{{ user }}</span>{% endif %}
+  <form method="post" action="/admin/logout" style="margin:0">
+    <button type="submit" class="secondary outline" style="padding:0.25rem 0.75rem">Log out</button>
+  </form>
+</nav>
+<hr>
+{% endif %}
+{% if flash %}<article>{{ flash }}</article>{% endif %}
+{% block content %}{% endblock content %}
+</main>
+</body>
+</html>

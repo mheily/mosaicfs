@@ -161,6 +161,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .merge(public_routes)
         .merge(jwt_routes)
         .merge(hmac_routes)
+        .merge(crate::admin::router())
         .fallback_service(
             ServeDir::new("web/dist")
                 .fallback(ServeFile::new("web/dist/index.html")),

@@ -38,3 +38,5 @@ password-hash = "0.5"
 axum-server = { version = "0.7", features = ["tls-rustls"] }
 bytes = "1"
 regex = "1"
+tera = { version = "1", default-features = false }
+tower-sessions = "0.14"

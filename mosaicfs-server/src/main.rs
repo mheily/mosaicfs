@@ -1,4 +1,5 @@
 mod access_cache;
+mod admin;
 mod auth;
 mod credentials;
 mod handlers;
