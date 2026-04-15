@@ -10,9 +10,13 @@ RUN cd web && npm ci && npx vite build
 # ── Stage 2: Rust binaries ───────────────────────────────────────────────────
 FROM docker.io/rust:bookworm AS rust-builder
 
-# cmake is required by aws-lc-rs (pulled in by rustls)
+# cmake is required by aws-lc-rs (pulled in by rustls);
+# libfuse-dev + pkg-config are required by the fuser crate (mosaicfs-vfs,
+# now a dependency of mosaicfs-server as of change 004).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         cmake \
+        libfuse-dev \
+        pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build

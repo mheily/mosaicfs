@@ -1,4 +1,4 @@
-DOCKER ?= $(shell which podman || which docker)
+DOCKER ?= $(shell which podman || which container || which docker)
 CONTEXT = Dockerfile web
 BUILD_FLAGS =
 
