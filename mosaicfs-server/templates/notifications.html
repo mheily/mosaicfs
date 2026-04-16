@@ -1,8 +1,11 @@
 {% extends "layout.html" %}
 {% block content %}
 <h2>Notifications</h2>
+<form method="post" action="/admin/notifications/ack-all" style="margin-bottom:1rem"
+      onsubmit="return confirm('Acknowledge all active notifications?');">
+  <button type="submit" class="secondary outline">Acknowledge all</button>
+</form>
 <section hx-get="/admin/notifications/panel" hx-trigger="load, every 10s" hx-swap="innerHTML">
   <p class="muted" aria-busy="true">Loading…</p>
 </section>
-<p class="muted">Acknowledge actions land in Phase 3.</p>
 {% endblock content %}

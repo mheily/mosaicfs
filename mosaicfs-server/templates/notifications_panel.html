@@ -1,8 +1,8 @@
 {% if items | length == 0 %}
-<p class="muted">No unacknowledged notifications.</p>
+<p class="muted">No active notifications.</p>
 {% else %}
 <table>
-  <thead><tr><th>Severity</th><th>Category</th><th>Title</th><th>Message</th><th>Created</th></tr></thead>
+  <thead><tr><th>Severity</th><th>Category</th><th>Title</th><th>Message</th><th>Created</th><th></th></tr></thead>
   <tbody>
     {% for n in items %}
     <tr>
@@ -11,6 +11,11 @@
       <td>{{ n.title }}</td>
       <td class="muted">{{ n.message }}</td>
       <td class="muted">{{ n.created_at }}</td>
+      <td>
+        <form method="post" action="/admin/notifications/{{ n.id }}/ack" style="margin:0">
+          <button type="submit" class="secondary outline" style="padding:0.15rem 0.5rem">Ack</button>
+        </form>
+      </td>
     </tr>
     {% endfor %}
   </tbody>

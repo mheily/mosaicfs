@@ -8,7 +8,7 @@
   <tbody>
     {% for n in nodes %}
     <tr>
-      <td><code>{{ n.node_id }}</code></td>
+      <td><a href="/admin/nodes/{{ n.node_id }}"><code>{{ n.node_id }}</code></a></td>
       <td>{{ n.hostname }}</td>
       <td class="muted">{{ n.last_heartbeat }}</td>
       <td>{{ n.age }}</td>

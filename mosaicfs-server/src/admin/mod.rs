@@ -23,9 +23,12 @@ use crate::credentials;
 use crate::state::AppState;
 use mosaicfs_common::couchdb::CouchError;
 
+pub mod actions;
 mod views;
 
 const SESSION_USER_KEY: &str = "access_key_id";
+pub(crate) const FLASH_KEY: &str = "_flash";
+pub(crate) const NEW_SECRET_KEY: &str = "_new_secret";
 
 static TERA: OnceLock<Tera> = OnceLock::new();
 
@@ -61,6 +64,26 @@ fn tera() -> &'static Tera {
                 "replication_panel.html",
                 include_str!("../../templates/replication_panel.html"),
             ),
+            (
+                "bootstrap.html",
+                include_str!("../../templates/bootstrap.html"),
+            ),
+            (
+                "settings_credentials.html",
+                include_str!("../../templates/settings_credentials.html"),
+            ),
+            (
+                "settings_backup.html",
+                include_str!("../../templates/settings_backup.html"),
+            ),
+            (
+                "node_detail.html",
+                include_str!("../../templates/node_detail.html"),
+            ),
+            (
+                "storage_backends.html",
+                include_str!("../../templates/storage_backends.html"),
+            ),
         ])
         .expect("templates compile");
         tera
@@ -90,6 +113,17 @@ pub(crate) fn base_ctx(session_user: Option<&str>) -> Context {
     ctx
 }
 
+/// Build a page context with user + flash (consumes flash). Preferred over
+/// `base_ctx` for authenticated views so POST-redirect-GET messages surface.
+pub(crate) async fn page_ctx(session: &Session) -> Context {
+    let user = current_user(session).await;
+    let mut ctx = base_ctx(user.as_deref());
+    if let Some(msg) = actions::take_flash(session).await {
+        ctx.insert("flash", &msg);
+    }
+    ctx
+}
+
 fn insecure_http() -> bool {
     std::env::var("MOSAICFS_INSECURE_HTTP")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -109,6 +143,10 @@ pub fn router() -> Router<Arc<AppState>> {
     let public: Router<Arc<AppState>> = Router::new()
         .route("/admin/login", get(login_form).post(login_submit))
         .route("/admin/logout", post(logout))
+        .route(
+            "/admin/bootstrap",
+            get(actions::bootstrap_page).post(actions::bootstrap_submit),
+        )
         .route("/admin/assets/{*path}", get(serve_asset));
 
     let protected: Router<Arc<AppState>> = Router::new()
@@ -117,13 +155,74 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/admin/status/panel", get(views::status_panel))
         .route("/admin/nodes", get(views::nodes_page))
         .route("/admin/nodes/panel", get(views::nodes_panel))
+        .route("/admin/nodes/{node_id}", get(views::node_detail_page))
+        .route("/admin/nodes/{node_id}/edit", post(actions::patch_node_action))
+        .route("/admin/nodes/{node_id}/mounts", post(actions::add_mount_action))
+        .route(
+            "/admin/nodes/{node_id}/mounts/{mount_id}/delete",
+            post(actions::delete_mount_action),
+        )
         .route("/admin/notifications", get(views::notifications_page))
         .route(
             "/admin/notifications/panel",
             get(views::notifications_panel),
         )
+        .route(
+            "/admin/notifications/ack-all",
+            post(actions::ack_all_notifications),
+        )
+        .route(
+            "/admin/notifications/{id}/ack",
+            post(actions::ack_notification),
+        )
         .route("/admin/replication", get(views::replication_page))
         .route("/admin/replication/panel", get(views::replication_panel))
+        .route(
+            "/admin/replication/rules/create",
+            post(actions::create_rule_action),
+        )
+        .route(
+            "/admin/replication/rules/{rule_id}/delete",
+            post(actions::delete_rule_action),
+        )
+        .route(
+            "/admin/replication/restore",
+            post(actions::initiate_restore_action),
+        )
+        .route(
+            "/admin/replication/restore/{job_id}/cancel",
+            post(actions::cancel_restore_action),
+        )
+        .route(
+            "/admin/storage-backends",
+            get(views::storage_backends_page),
+        )
+        .route(
+            "/admin/storage-backends/create",
+            post(actions::create_backend_action),
+        )
+        .route(
+            "/admin/storage-backends/{name}/delete",
+            post(actions::delete_backend_action),
+        )
+        .route(
+            "/admin/settings/credentials",
+            get(views::settings_credentials_page),
+        )
+        .route(
+            "/admin/settings/credentials/create",
+            post(actions::create_credential_action),
+        )
+        .route(
+            "/admin/settings/credentials/{key_id}/delete",
+            post(actions::delete_credential_action),
+        )
+        .route(
+            "/admin/settings/credentials/{key_id}/toggle",
+            post(actions::toggle_credential_action),
+        )
+        .route("/admin/settings/backup", get(views::settings_backup_page))
+        .route("/admin/settings/backup/download", get(actions::backup_download))
         .layer(middleware::from_fn(require_auth));
 
     Router::new().merge(public).merge(protected).layer(session_layer)
@@ -158,9 +257,12 @@ pub(crate) async fn user_for_ctx(session: &Session) -> Option<String> {
     current_user(session).await
 }
 
-async fn login_form(session: Session) -> Response {
+async fn login_form(State(state): State<Arc<AppState>>, session: Session) -> Response {
     if current_user(&session).await.is_some() {
         return Redirect::to("/admin/status").into_response();
+    }
+    if state.data_dir.join("bootstrap_token").exists() {
+        return Redirect::to("/admin/bootstrap").into_response();
     }
     let ctx = base_ctx(None);
     render("login.html", &ctx)

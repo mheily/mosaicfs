@@ -1,0 +1,22 @@
+{% extends "layout.html" %}
+{% block content %}
+<article>
+  <header><strong>Bootstrap MosaicFS</strong></header>
+  {% if created_access_key %}
+  <p class="ok">Admin credential created. Copy the secret key now — it will not be shown again.</p>
+  <table>
+    <tr><th>Access Key</th><td><code>{{ created_access_key }}</code></td></tr>
+    <tr><th>Secret Key</th><td><code>{{ created_secret_key }}</code></td></tr>
+  </table>
+  <p><a href="/admin/login" role="button">Go to login</a></p>
+  {% else %}
+  <p class="muted">Paste the bootstrap token from the server log (<code>the bootstrap token is …</code>) to create the first admin credential.</p>
+  <form method="post" action="/admin/bootstrap">
+    <label>Bootstrap token
+      <input type="text" name="token" required autofocus>
+    </label>
+    <button type="submit">Bootstrap</button>
+  </form>
+  {% endif %}
+</article>
+{% endblock content %}

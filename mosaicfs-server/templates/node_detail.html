@@ -1,0 +1,77 @@
+{% extends "layout.html" %}
+{% block content %}
+<p><a href="/admin/nodes">← Nodes</a></p>
+<h2>Node <code>{{ node_id }}</code></h2>
+
+{% if not exists %}
+<p class="err">Node not found.</p>
+{% else %}
+<article>
+  <header><strong>Settings</strong></header>
+  <form method="post" action="/admin/nodes/{{ node_id }}/edit">
+    <label>Friendly name
+      <input type="text" name="friendly_name" value="{{ friendly_name }}">
+    </label>
+    <button type="submit">Save</button>
+  </form>
+  <p class="muted">Last heartbeat: {{ last_heartbeat }}</p>
+</article>
+
+<h3>Network mounts</h3>
+{% if mounts | length == 0 %}
+<p class="muted">No network mounts.</p>
+{% else %}
+<table>
+  <thead>
+    <tr><th>Mount ID</th><th>Remote node</th><th>Remote path</th><th>Local path</th><th>Type</th><th>Priority</th><th></th></tr>
+  </thead>
+  <tbody>
+    {% for m in mounts %}
+    <tr>
+      <td><code>{{ m.mount_id }}</code></td>
+      <td>{{ m.remote_node_id }}</td>
+      <td>{{ m.remote_base_export_path }}</td>
+      <td>{{ m.local_mount_path }}</td>
+      <td>{{ m.mount_type }}</td>
+      <td>{{ m.priority }}</td>
+      <td>
+        <form method="post" action="/admin/nodes/{{ node_id }}/mounts/{{ m.mount_id }}/delete"
+              onsubmit="return confirm('Delete mount {{ m.mount_id }}?');" style="margin:0">
+          <button type="submit" class="contrast outline" style="padding:0.25rem 0.75rem">Delete</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<article>
+  <header><strong>Add network mount</strong></header>
+  <form method="post" action="/admin/nodes/{{ node_id }}/mounts">
+    <div class="grid">
+      <label>Remote node ID
+        <input type="text" name="remote_node_id" required>
+      </label>
+      <label>Mount type
+        <select name="mount_type" required>
+          <option value="nfs">nfs</option>
+          <option value="smb">smb</option>
+          <option value="sshfs">sshfs</option>
+        </select>
+      </label>
+      <label>Priority
+        <input type="number" name="priority" value="0">
+      </label>
+    </div>
+    <label>Remote base export path
+      <input type="text" name="remote_base_export_path" required>
+    </label>
+    <label>Local mount path
+      <input type="text" name="local_mount_path" required>
+    </label>
+    <button type="submit">Add mount</button>
+  </form>
+</article>
+{% endif %}
+{% endblock content %}

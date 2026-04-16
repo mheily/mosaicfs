@@ -1,6 +1,6 @@
 <h3>Storage backends</h3>
 {% if backends | length == 0 %}
-<p class="muted">No backends configured.</p>
+<p class="muted">No backends configured. <a href="/admin/storage-backends">Manage backends →</a></p>
 {% else %}
 <table>
   <thead><tr><th>Name</th><th>Type</th><th>Enabled</th></tr></thead>
@@ -17,10 +17,21 @@
 <p class="muted">No replication rules configured.</p>
 {% else %}
 <table>
-  <thead><tr><th>Rule</th><th>Source</th><th>Target</th><th>Enabled</th></tr></thead>
+  <thead><tr><th>Rule</th><th>Source</th><th>Target</th><th>Enabled</th><th></th></tr></thead>
   <tbody>
     {% for r in rules %}
-    <tr><td><code>{{ r.id }}</code></td><td>{{ r.source }}</td><td>{{ r.target }}</td><td>{{ r.enabled }}</td></tr>
+    <tr>
+      <td><code>{{ r.id }}</code></td>
+      <td>{{ r.source }}</td>
+      <td>{{ r.target }}</td>
+      <td>{{ r.enabled }}</td>
+      <td>
+        <form method="post" action="/admin/replication/rules/{{ r.id }}/delete" style="margin:0"
+              onsubmit="return confirm('Delete rule {{ r.id }}?');">
+          <button type="submit" class="contrast outline" style="padding:0.15rem 0.5rem">Delete</button>
+        </form>
+      </td>
+    </tr>
     {% endfor %}
   </tbody>
 </table>

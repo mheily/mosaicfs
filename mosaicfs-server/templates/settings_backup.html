@@ -1,0 +1,16 @@
+{% extends "layout.html" %}
+{% block content %}
+<h2>Backup</h2>
+<article>
+  <header><strong>Download control-plane backup</strong></header>
+  <p class="muted">
+    Backups dump CouchDB documents as JSON. The <em>minimal</em> backup is safe
+    to commit to a config repo; the <em>full</em> backup includes file index
+    state and is much larger.
+  </p>
+  <p>
+    <a href="/admin/settings/backup/download?type=minimal" role="button">Download minimal backup</a>
+    <a href="/admin/settings/backup/download?type=full" role="button" class="secondary outline">Download full backup</a>
+  </p>
+</article>
+{% endblock content %}

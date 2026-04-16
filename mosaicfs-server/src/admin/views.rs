@@ -1,13 +1,17 @@
-//! Read-only admin views (Phase 2).
+//! Read-only admin views (Phase 2 + 3).
 
 use std::sync::Arc;
 
-use axum::{extract::State, response::Response};
+use axum::{
+    extract::{Path, State},
+    response::Response,
+};
 use chrono::{DateTime, Utc};
 use tera::Context;
 use tower_sessions::Session;
 
-use crate::admin::{base_ctx, render, user_for_ctx};
+use crate::admin::{page_ctx, render};
+use crate::credentials;
 use crate::state::AppState;
 
 fn fmt_duration(secs: u64) -> String {
@@ -33,8 +37,7 @@ fn now_str() -> String {
 // ── status ──
 
 pub async fn status_page(session: Session) -> Response {
-    let user = user_for_ctx(&session).await;
-    let mut ctx = base_ctx(user.as_deref());
+    let mut ctx = page_ctx(&session).await;
     ctx.insert("title", "Status — MosaicFS");
     render("status.html", &ctx)
 }
@@ -91,7 +94,7 @@ pub async fn status_panel(State(state): State<Arc<AppState>>) -> Response {
             .filter_map(|r| r.doc.as_ref())
             .filter(|d| {
                 d.get("type").and_then(|v| v.as_str()) == Some("notification")
-                    && d.get("acknowledged").and_then(|v| v.as_bool()) != Some(true)
+                    && d.get("status").and_then(|v| v.as_str()).unwrap_or("active") == "active"
             })
             .count() as u64,
         Err(_) => 0,
@@ -105,8 +108,7 @@ pub async fn status_panel(State(state): State<Arc<AppState>>) -> Response {
 // ── nodes ──
 
 pub async fn nodes_page(session: Session) -> Response {
-    let user = user_for_ctx(&session).await;
-    let mut ctx = base_ctx(user.as_deref());
+    let mut ctx = page_ctx(&session).await;
     ctx.insert("title", "Nodes — MosaicFS");
     render("nodes.html", &ctx)
 }
@@ -179,8 +181,7 @@ pub async fn nodes_panel(State(state): State<Arc<AppState>>) -> Response {
 // ── notifications ──
 
 pub async fn notifications_page(session: Session) -> Response {
-    let user = user_for_ctx(&session).await;
-    let mut ctx = base_ctx(user.as_deref());
+    let mut ctx = page_ctx(&session).await;
     ctx.insert("title", "Notifications — MosaicFS");
     render("notifications.html", &ctx)
 }
@@ -194,7 +195,7 @@ pub async fn notifications_panel(State(state): State<Arc<AppState>>) -> Response
             .filter_map(|row| row.doc)
             .filter(|d| {
                 d.get("type").and_then(|v| v.as_str()) == Some("notification")
-                    && d.get("acknowledged").and_then(|v| v.as_bool()) != Some(true)
+                    && d.get("status").and_then(|v| v.as_str()).unwrap_or("active") == "active"
             })
             .map(|d| {
                 let severity = d
@@ -207,7 +208,14 @@ pub async fn notifications_panel(State(state): State<Arc<AppState>>) -> Response
                     "warning" => "warn",
                     _ => "muted",
                 };
+                let full_id = d
+                    .get("_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim_start_matches("notification::")
+                    .to_string();
                 serde_json::json!({
+                    "id": full_id,
                     "severity": severity,
                     "severity_class": severity_class,
                     "category": d.get("category").and_then(|v| v.as_str()).unwrap_or(""),
@@ -228,8 +236,7 @@ pub async fn notifications_panel(State(state): State<Arc<AppState>>) -> Response
 // ── replication ──
 
 pub async fn replication_page(session: Session) -> Response {
-    let user = user_for_ctx(&session).await;
-    let mut ctx = base_ctx(user.as_deref());
+    let mut ctx = page_ctx(&session).await;
     ctx.insert("title", "Replication — MosaicFS");
     render("replication.html", &ctx)
 }
@@ -248,7 +255,8 @@ pub async fn replication_panel(State(state): State<Arc<AppState>>) -> Response {
             .map(|d| {
                 serde_json::json!({
                     "name": d.get("name").and_then(|v| v.as_str()).unwrap_or(""),
-                    "kind": d.get("backend_type").and_then(|v| v.as_str())
+                    "kind": d.get("backend").and_then(|v| v.as_str())
+                        .or_else(|| d.get("backend_type").and_then(|v| v.as_str()))
                         .or_else(|| d.get("kind").and_then(|v| v.as_str()))
                         .unwrap_or(""),
                     "enabled": d.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false),
@@ -275,12 +283,18 @@ pub async fn replication_panel(State(state): State<Arc<AppState>>) -> Response {
                     .unwrap_or("")
                     .trim_start_matches("replication_rule::")
                     .to_string();
+                let source = d
+                    .get("source")
+                    .and_then(|v| v.get("node_id"))
+                    .and_then(|v| v.as_str())
+                    .or_else(|| d.get("source_path").and_then(|v| v.as_str()))
+                    .unwrap_or("")
+                    .to_string();
                 serde_json::json!({
                     "id": id,
-                    "source": d.get("source_path").and_then(|v| v.as_str())
-                        .or_else(|| d.get("source").and_then(|v| v.as_str()))
-                        .unwrap_or(""),
-                    "target": d.get("target_backend").and_then(|v| v.as_str())
+                    "source": source,
+                    "target": d.get("target_name").and_then(|v| v.as_str())
+                        .or_else(|| d.get("target_backend").and_then(|v| v.as_str()))
                         .or_else(|| d.get("target").and_then(|v| v.as_str()))
                         .unwrap_or(""),
                     "enabled": d.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false),
@@ -295,4 +309,123 @@ pub async fn replication_panel(State(state): State<Arc<AppState>>) -> Response {
     ctx.insert("rules", &rules);
     ctx.insert("now", &now_str());
     render("replication_panel.html", &ctx)
+}
+
+// ── Node detail ──
+
+pub async fn node_detail_page(
+    State(state): State<Arc<AppState>>,
+    session: Session,
+    Path(node_id): Path<String>,
+) -> Response {
+    let mut ctx = page_ctx(&session).await;
+    ctx.insert("title", &format!("Node {node_id} — MosaicFS"));
+    ctx.insert("node_id", &node_id);
+
+    match state.db.get_document(&format!("node::{node_id}")).await {
+        Ok(doc) => {
+            let friendly_name = doc
+                .get("friendly_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let hb = doc
+                .get("last_heartbeat")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let mounts: Vec<serde_json::Value> = doc
+                .get("network_mounts")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            ctx.insert("friendly_name", &friendly_name);
+            ctx.insert("last_heartbeat", &hb);
+            ctx.insert("mounts", &mounts);
+            ctx.insert("exists", &true);
+        }
+        Err(_) => {
+            ctx.insert("exists", &false);
+        }
+    }
+    render("node_detail.html", &ctx)
+}
+
+// ── Storage backends ──
+
+pub async fn storage_backends_page(
+    State(state): State<Arc<AppState>>,
+    session: Session,
+) -> Response {
+    let mut ctx = page_ctx(&session).await;
+    ctx.insert("title", "Storage backends — MosaicFS");
+
+    let backends: Vec<serde_json::Value> = match state
+        .db
+        .all_docs_by_prefix("storage_backend::", true)
+        .await
+    {
+        Ok(r) => r
+            .rows
+            .into_iter()
+            .filter_map(|row| row.doc)
+            .filter(|d| d.get("type").and_then(|v| v.as_str()) == Some("storage_backend"))
+            .map(|d| {
+                serde_json::json!({
+                    "name": d.get("name").and_then(|v| v.as_str()).unwrap_or(""),
+                    "backend": d.get("backend").and_then(|v| v.as_str()).unwrap_or(""),
+                    "enabled": d.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false),
+                    "created_at": d.get("created_at").and_then(|v| v.as_str()).unwrap_or(""),
+                })
+            })
+            .collect(),
+        Err(_) => vec![],
+    };
+    ctx.insert("backends", &backends);
+    render("storage_backends.html", &ctx)
+}
+
+// ── Settings: credentials ──
+
+pub async fn settings_credentials_page(
+    State(state): State<Arc<AppState>>,
+    session: Session,
+) -> Response {
+    let mut ctx = page_ctx(&session).await;
+    ctx.insert("title", "Credentials — MosaicFS");
+
+    // One-shot: newly created (ak, sk)
+    if let Ok(Some((ak, sk))) = session
+        .remove::<(String, String)>(crate::admin::NEW_SECRET_KEY)
+        .await
+    {
+        ctx.insert("created_access_key", &ak);
+        ctx.insert("created_secret_key", &sk);
+    }
+
+    let creds: Vec<serde_json::Value> = match credentials::list_credentials(&state.db).await {
+        Ok(list) => list
+            .into_iter()
+            .map(|c| {
+                serde_json::json!({
+                    "access_key_id": c.get("access_key_id").and_then(|v| v.as_str()).unwrap_or(""),
+                    "name": c.get("name").and_then(|v| v.as_str()).unwrap_or(""),
+                    "enabled": c.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false),
+                    "created_at": c.get("created_at").and_then(|v| v.as_str()).unwrap_or(""),
+                    "last_used": c.get("last_used").and_then(|v| v.as_str()).unwrap_or(""),
+                })
+            })
+            .collect(),
+        Err(_) => vec![],
+    };
+    ctx.insert("credentials", &creds);
+    render("settings_credentials.html", &ctx)
+}
+
+// ── Settings: backup ──
+
+pub async fn settings_backup_page(session: Session) -> Response {
+    let mut ctx = page_ctx(&session).await;
+    ctx.insert("title", "Backup — MosaicFS");
+    render("settings_backup.html", &ctx)
 }
