@@ -47,22 +47,44 @@ CONTAINER ?= /usr/local/bin/container
 mosaicfs-db-image:
 	$(CONTAINER) build -f Dockerfile.mosaicfs-db -t mosaicfs-db:latest .
 
-.PHONY: deploy-dev run-dev stop-dev
+.PHONY: deploy-dev run-dev-database run-dev-server stop-dev
 
 deploy-dev: mosaicfs-db-image
 
-run-dev: deploy-dev
-	$(CONTAINER) run -d --name mosaicfs-db \
-	    -p 127.0.0.1:5984:5984 \
-	    -e COUCHDB_USER=admin \
-	    -e COUCHDB_PASSWORD=changeme \
-	    -v mosaicfs-couchdb-data:/opt/couchdb/data \
-	    mosaicfs-db:latest
-	@echo
-	@echo "CouchDB up at http://127.0.0.1:5984 (admin/changeme)."
-	@echo "Now run the server on the host:"
-	@echo "  COUCHDB_URL=http://127.0.0.1:5984 COUCHDB_USER=admin COUCHDB_PASSWORD=changeme \\"
-	@echo "    cargo run -p mosaicfs-server"
+run-dev-database: deploy-dev
+	@running=$$($(CONTAINER) list        2>/dev/null | grep -w mosaicfs-db || true); \
+	existing=$$($(CONTAINER) list --all  2>/dev/null | grep -w mosaicfs-db || true); \
+	if [ -n "$$running" ]; then \
+	    echo "mosaicfs-db already running."; \
+	elif [ -n "$$existing" ]; then \
+	    echo "mosaicfs-db exists but not running; starting it."; \
+	    $(CONTAINER) start mosaicfs-db >/dev/null; \
+	else \
+	    $(CONTAINER) run -d --name mosaicfs-db \
+	        -p 127.0.0.1:5984:5984 \
+	        -e COUCHDB_USER=admin \
+	        -e COUCHDB_PASSWORD=changeme \
+	        -v mosaicfs-couchdb-data:/opt/couchdb/data \
+	        mosaicfs-db:latest; \
+	fi
+	@printf "Waiting for CouchDB on 127.0.0.1:5984"
+	@for i in $$(seq 1 60); do \
+	    if curl -fsS -o /dev/null http://127.0.0.1:5984/ 2>/dev/null; then \
+	        echo " ready."; \
+	        exit 0; \
+	    fi; \
+	    printf "."; \
+	    sleep 1; \
+	done; \
+	echo; echo "ERROR: CouchDB did not come up on 127.0.0.1:5984 within 60s." >&2; exit 1
+
+run-dev-server: run-dev-database
+	COUCHDB_URL=http://127.0.0.1:5984 \
+	COUCHDB_USER=admin \
+	COUCHDB_PASSWORD=changeme \
+	MOSAICFS_DATA_DIR=/tmp/mosaicfs-server-data \
+	MOSAICFS_INSECURE_HTTP=1 \
+	    cargo run -p mosaicfs-server
 
 stop-dev:
 	-$(CONTAINER) rm -f mosaicfs-db

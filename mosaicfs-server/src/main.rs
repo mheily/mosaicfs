@@ -166,9 +166,10 @@ async fn main() -> anyhow::Result<()> {
     // Build router
     let app = routes::build_router(state).layer(TraceLayer::new_for_http());
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    let bind_ip = if insecure_http { [127, 0, 0, 1] } else { [0, 0, 0, 0] };
+    let addr = SocketAddr::from((bind_ip, port));
     let scheme = if rustls_config.is_some() { "https" } else { "http" };
-    info!(port = port, "Listening on {}://0.0.0.0:{}", scheme, port);
+    info!(port = port, "Listening on {}://{}:{}", scheme, addr.ip(), port);
 
     match rustls_config {
         Some(cfg) => {
