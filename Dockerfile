@@ -1,7 +1,6 @@
 FROM docker.io/debian:bookworm-slim
 
-# Core build utilities + git + curl + doc-generation tools
-# TODO: 3GB for pandoc..lmodern packages -- find a different tool?
+# Core build utilities + FUSE (mosaicfs-vfs) + Rust toolchain.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         git \
@@ -10,29 +9,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         fuse3 \
         libfuse3-dev \
         bindfs \
-        wget \
-        ca-certificates \
-        gnupg \
-        lsb-release \
         pkg-config \
         procps \
         sudo \
     && rm -rf /var/lib/apt/lists/*
 
-# DISABLED: pandoc requires 3GB of stuff
-#        pandoc
-#        texlive-xetex
-#        texlive-fonts-recommended
-#        texlive-fonts-extra
-#        texlive-latex-extra
-#        lmodern
-
-# Node.js (LTS) — useful for tooling; replace/remove once the stack is decided
-RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs \
-    && rm -rf /var/lib/apt/lists/*
-
-# Rust toolchain (stable)
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:$PATH
@@ -41,9 +22,3 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
     && rustup component add clippy rustfmt
 
 WORKDIR /workspace
-
-# Web UI dependencies (requires build context = workspace root)
-COPY web/package.json web/package-lock.json web/
-RUN cd web && npm ci
-COPY web/ web/
-RUN cd web && npx vite build

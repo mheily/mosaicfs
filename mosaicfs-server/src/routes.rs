@@ -9,7 +9,6 @@ use axum::routing::{any, delete, get, patch, post, put};
 use axum::{Json, Router};
 use serde::Deserialize;
 use tower_http::cors::{AllowOrigin, CorsLayer};
-use tower_http::services::{ServeDir, ServeFile};
 
 use crate::auth::hmac_auth::{self, HmacClaims};
 use crate::auth::jwt::{self, Claims};
@@ -133,22 +132,17 @@ pub fn build_router(state: Arc<AppState>) -> Router {
 
     // Unauthenticated routes
     let public_routes = Router::new()
+        .route("/", get(|| async { axum::response::Redirect::to("/admin") }))
         .route("/api/auth/login", post(login))
         .route("/api/system/bootstrap-status", get(bootstrap_status))
         .route("/api/system/bootstrap", post(bootstrap))
         // Restore is unauthenticated: the empty-DB check acts as the security gate
         .route("/api/system/restore", post(system::restore));
 
-    // CORS: allow Tauri desktop app origins
+    // CORS: scoped to the REST API for non-browser clients (agent, scripts).
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::predicate(|origin, _| {
-            let o = origin.as_bytes();
-            // macOS/Linux Tauri origin
-            o == b"tauri://localhost"
-                // Windows Tauri origin
-                || o == b"https://tauri.localhost"
-                // Dev server
-                || o.starts_with(b"http://localhost:")
+            origin.as_bytes().starts_with(b"http://localhost:")
         }))
         .allow_methods(tower_http::cors::Any)
         .allow_headers([
@@ -162,10 +156,6 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .merge(jwt_routes)
         .merge(hmac_routes)
         .merge(crate::admin::router())
-        .fallback_service(
-            ServeDir::new("web/dist")
-                .fallback(ServeFile::new("web/dist/index.html")),
-        )
         .layer(cors)
         .layer(middleware::from_fn(asset_cache_middleware))
         .with_state(state)

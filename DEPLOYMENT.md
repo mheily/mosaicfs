@@ -139,35 +139,43 @@ Apple `container`, which is why only CouchDB runs in a container.
 - Apple `container` CLI at `/usr/local/bin/container`
 - `libfuse`/`pkg-config` via Homebrew (for building `mosaicfs-vfs`)
 
-### Start the CouchDB container
+### One-shot: start CouchDB + server
 
 ```sh
-make run-dev       # builds mosaicfs-db:latest and runs it on 127.0.0.1:5984
+make run-dev-server   # builds mosaicfs-db, starts it on 127.0.0.1:5984,
+                      # then runs `cargo run -p mosaicfs-server` with
+                      # MOSAICFS_INSECURE_HTTP=1 on 127.0.0.1:8443.
+```
+
+Or, run the pieces separately:
+
+```sh
+make run-dev-database   # just the CouchDB container
+# then in another shell, with the env shown below.
 ```
 
 Credentials are `admin` / `changeme`. To tear it down: `make stop-dev`.
 
-### Run the server on the host
+### Run the server manually
 
 The server speaks HTTPS by default with a self-signed cert, which Safari
 and Chrome dislike for local dev. Set `MOSAICFS_INSECURE_HTTP=1` to serve
-plain HTTP instead:
+plain HTTP (bound to 127.0.0.1 only):
 
 ```sh
 COUCHDB_URL=http://127.0.0.1:5984 \
 COUCHDB_USER=admin \
 COUCHDB_PASSWORD=changeme \
-MOSAICFS_PORT=18443 \
 MOSAICFS_DATA_DIR=/tmp/mosaicfs-server-data \
 MOSAICFS_INSECURE_HTTP=1 \
   cargo run -p mosaicfs-server
 ```
 
-The UI is then at `http://127.0.0.1:18443`. On first run, the bootstrap
-token is printed to stdout — use it to create the initial credential via
-the UI, then plug the resulting access key / secret into an `agent.toml`
-before running `mosaicfs-agent` (also on the host, with the same
-`COUCHDB_*` env vars).
+The admin UI is then at `http://127.0.0.1:8443/admin`. On first run the
+bootstrap token is printed to stdout — paste it into the `/admin/bootstrap`
+page to create the initial credential, then plug the resulting access key
+/ secret into an `agent.toml` before running `mosaicfs-agent` (also on the
+host, with the same `COUCHDB_*` env vars).
 
 > `MOSAICFS_INSECURE_HTTP=1` is dev-only. Never set it on a shared or
 > remote deployment.

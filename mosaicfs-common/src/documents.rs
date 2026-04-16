@@ -1,12 +1,10 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 use uuid::Uuid;
 
 /// Helper for CouchDB revision tracking
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
-pub struct CouchDoc<T: TS> {
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CouchDoc<T> {
     #[serde(rename = "_id")]
     pub id: String,
     #[serde(rename = "_rev", skip_serializing_if = "Option::is_none")]
@@ -17,16 +15,13 @@ pub struct CouchDoc<T: TS> {
 
 // ── File Document ──
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FileDocument {
     #[serde(rename = "type")]
     pub doc_type: FileType,
-    #[ts(type = "number")]
     pub inode: u64,
     pub name: String,
     pub source: FileSource,
-    #[ts(type = "number")]
     pub size: u64,
     pub mtime: DateTime<Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -38,15 +33,13 @@ pub struct FileDocument {
     pub migrated_from: Option<MigratedFrom>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum FileType {
     #[serde(rename = "file")]
     File,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum FileStatus {
     #[serde(rename = "active")]
     Active,
@@ -54,16 +47,14 @@ pub enum FileStatus {
     Deleted,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FileSource {
     pub node_id: String,
     pub export_path: String,
     pub export_parent: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MigratedFrom {
     pub node_id: String,
     pub export_path: String,
@@ -82,12 +73,10 @@ impl FileDocument {
 
 // ── Virtual Directory Document ──
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct VirtualDirectoryDocument {
     #[serde(rename = "type")]
     pub doc_type: VirtualDirectoryType,
-    #[ts(type = "number")]
     pub inode: u64,
     pub virtual_path: String,
     pub name: String,
@@ -102,15 +91,13 @@ pub struct VirtualDirectoryDocument {
     pub mounts: Vec<MountEntry>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum VirtualDirectoryType {
     #[serde(rename = "virtual_directory")]
     VirtualDirectory,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MountEntry {
     pub mount_id: String,
     pub source: MountSource,
@@ -133,8 +120,7 @@ fn default_conflict_policy() -> ConflictPolicy {
     ConflictPolicy::LastWriteWins
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum MountSource {
     Node {
@@ -149,8 +135,7 @@ pub enum MountSource {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum MountStrategy {
     #[serde(rename = "prefix_replace")]
     PrefixReplace,
@@ -158,8 +143,7 @@ pub enum MountStrategy {
     Flatten,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum StepResult {
     #[serde(rename = "include")]
     Include,
@@ -169,8 +153,7 @@ pub enum StepResult {
     Continue,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum ConflictPolicy {
     #[serde(rename = "last_write_wins")]
     LastWriteWins,
@@ -178,8 +161,7 @@ pub enum ConflictPolicy {
     SuffixNodeId,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Step {
     pub op: String,
     #[serde(default)]
@@ -187,17 +169,13 @@ pub struct Step {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub on_match: Option<StepResult>,
     // Op-specific fields stored as extra JSON.
-    // ts-rs cannot flatten Map<String, Value>, so we skip it for TS
-    // and add an index signature via `#[ts(type)]` instead.
     #[serde(flatten)]
-    #[ts(skip)]
     pub params: serde_json::Map<String, serde_json::Value>,
 }
 
 // ── Node Document ──
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct NodeDocument {
     #[serde(rename = "type")]
     pub doc_type: NodeType,
@@ -217,15 +195,13 @@ pub struct NodeDocument {
     pub network_mounts: Option<Vec<NetworkMount>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum NodeType {
     #[serde(rename = "node")]
     Node,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum NodeStatus {
     #[serde(rename = "online")]
     Online,
@@ -235,16 +211,13 @@ pub enum NodeStatus {
     Degraded,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StorageEntry {
     pub filesystem_id: String,
     pub mount_point: String,
     pub fs_type: String,
     pub device: String,
-    #[ts(type = "number")]
     pub capacity_bytes: u64,
-    #[ts(type = "number")]
     pub used_bytes: u64,
     #[serde(default)]
     pub watch_paths_on_fs: Vec<String>,
@@ -254,8 +227,7 @@ pub struct StorageEntry {
     pub disk: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct NetworkMount {
     /// See docs/architecture/07-vfs-access.md for the lazy-resolution invariant.
     pub mount_id: String,
@@ -273,8 +245,7 @@ pub struct NetworkMount {
 /// Represents a physical or cloud filesystem that can be exported and mounted.
 ///
 /// See docs/architecture/07-vfs-access.md for the lazy-resolution invariant.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FilesystemDocument {
     #[serde(rename = "type")]
     pub doc_type: FilesystemType,
@@ -287,15 +258,13 @@ pub struct FilesystemDocument {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum FilesystemType {
     #[serde(rename = "filesystem")]
     Filesystem,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct NodeAvailability {
     pub node_id: String,
     pub local_mount_path: String,
@@ -313,8 +282,7 @@ impl FilesystemDocument {
 
 // ── Credential Document ──
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CredentialDocument {
     #[serde(rename = "type")]
     pub doc_type: CredentialType,
@@ -328,23 +296,20 @@ pub struct CredentialDocument {
     pub permissions: CredentialPermissions,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum CredentialType {
     #[serde(rename = "credential")]
     Credential,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CredentialPermissions {
     pub scope: String,
 }
 
 // ── Agent Status Document ──
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AgentStatusDocument {
     #[serde(rename = "type")]
     pub doc_type: AgentStatusType,
@@ -356,15 +321,13 @@ pub struct AgentStatusDocument {
     pub recent_errors: Vec<AgentError>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum AgentStatusType {
     #[serde(rename = "agent_status")]
     AgentStatus,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AgentError {
     pub time: DateTime<Utc>,
     pub subsystem: String,
@@ -374,8 +337,7 @@ pub struct AgentError {
 
 // ── Utilization Snapshot Document ──
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UtilizationSnapshotDocument {
     #[serde(rename = "type")]
     pub doc_type: UtilizationType,
@@ -387,38 +349,30 @@ pub struct UtilizationSnapshotDocument {
     pub cloud: Option<CloudSnapshot>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum UtilizationType {
     #[serde(rename = "utilization_snapshot")]
     UtilizationSnapshot,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FilesystemSnapshot {
     pub filesystem_id: String,
     pub mount_point: String,
-    #[ts(type = "number")]
     pub used_bytes: u64,
-    #[ts(type = "number")]
     pub available_bytes: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CloudSnapshot {
-    #[ts(type = "number")]
     pub used_bytes: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(type = "number | null")]
     pub quota_bytes: Option<u64>,
 }
 
 // ── Label Assignment Document ──
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LabelAssignmentDocument {
     #[serde(rename = "type")]
     pub doc_type: LabelAssignmentType,
@@ -428,8 +382,7 @@ pub struct LabelAssignmentDocument {
     pub updated_by: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum LabelAssignmentType {
     #[serde(rename = "label_assignment")]
     LabelAssignment,
@@ -437,8 +390,7 @@ pub enum LabelAssignmentType {
 
 // ── Label Rule Document ──
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LabelRuleDocument {
     #[serde(rename = "type")]
     pub doc_type: LabelRuleType,
@@ -450,8 +402,7 @@ pub struct LabelRuleDocument {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum LabelRuleType {
     #[serde(rename = "label_rule")]
     LabelRule,
@@ -459,8 +410,7 @@ pub enum LabelRuleType {
 
 // ── Plugin Document ──
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PluginDocument {
     #[serde(rename = "type")]
     pub doc_type: PluginType,
@@ -504,15 +454,13 @@ fn default_max_attempts() -> i32 {
     3
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum PluginType {
     #[serde(rename = "plugin")]
     Plugin,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct QueryEndpoint {
     pub name: String,
     pub capability: String,
@@ -521,8 +469,7 @@ pub struct QueryEndpoint {
 
 // ── Annotation Document ──
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AnnotationDocument {
     #[serde(rename = "type")]
     pub doc_type: AnnotationType,
@@ -537,23 +484,20 @@ pub struct AnnotationDocument {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum AnnotationType {
     #[serde(rename = "annotation")]
     Annotation,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AnnotationSource {
     pub node_id: String,
 }
 
 // ── Notification Document ──
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct NotificationDocument {
     #[serde(rename = "type")]
     pub doc_type: NotificationType,
@@ -568,7 +512,6 @@ pub struct NotificationDocument {
     pub first_seen: DateTime<Utc>,
     pub last_seen: DateTime<Utc>,
     #[serde(default = "default_occurrence_count")]
-    #[ts(type = "number")]
     pub occurrence_count: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub acknowledged_at: Option<DateTime<Utc>>,
@@ -580,22 +523,19 @@ fn default_occurrence_count() -> i64 {
     1
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum NotificationType {
     #[serde(rename = "notification")]
     Notification,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct NotificationSource {
     pub node_id: String,
     pub component: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct NotificationAction {
     pub label: String,
     pub api: String,
@@ -603,8 +543,7 @@ pub struct NotificationAction {
 
 // ── Storage Backend Document ──
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StorageBackendDocument {
     #[serde(rename = "type")]
     pub doc_type: StorageBackendType,
@@ -631,23 +570,20 @@ pub struct StorageBackendDocument {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum StorageBackendType {
     #[serde(rename = "storage_backend")]
     StorageBackend,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RetentionConfig {
     pub keep_deleted_days: i32,
 }
 
 // ── Replication Rule Document ──
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ReplicationRuleDocument {
     #[serde(rename = "type")]
     pub doc_type: ReplicationRuleType,
@@ -663,15 +599,13 @@ pub struct ReplicationRuleDocument {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum ReplicationRuleType {
     #[serde(rename = "replication_rule")]
     ReplicationRule,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ReplicationRuleSource {
     pub node_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -680,8 +614,7 @@ pub struct ReplicationRuleSource {
 
 // ── Replica Document ──
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ReplicaDocument {
     #[serde(rename = "type")]
     pub doc_type: ReplicaType,
@@ -692,30 +625,26 @@ pub struct ReplicaDocument {
     pub remote_key: String,
     pub replicated_at: DateTime<Utc>,
     pub source_mtime: DateTime<Utc>,
-    #[ts(type = "number")]
     pub source_size: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub checksum: Option<String>,
     pub status: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum ReplicaType {
     #[serde(rename = "replica")]
     Replica,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ReplicaSource {
     pub node_id: String,
 }
 
 // ── Access Document ──
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AccessDocument {
     #[serde(rename = "type")]
     pub doc_type: AccessType,
@@ -723,19 +652,16 @@ pub struct AccessDocument {
     pub source: AccessSource,
     pub last_access: DateTime<Utc>,
     #[serde(default = "default_occurrence_count")]
-    #[ts(type = "number")]
     pub access_count: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum AccessType {
     #[serde(rename = "access")]
     Access,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AccessSource {
     pub node_id: String,
 }
@@ -770,7 +696,7 @@ mod tests {
     }
 
     fn round_trip_couch<
-        T: Serialize + for<'de> Deserialize<'de> + PartialEq + std::fmt::Debug + Clone + ts_rs::TS,
+        T: Serialize + for<'de> Deserialize<'de> + PartialEq + std::fmt::Debug + Clone,
     >(
         id: &str,
         doc: T,
