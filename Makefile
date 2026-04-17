@@ -2,7 +2,7 @@ DOCKER ?= $(shell which podman || which container || which docker)
 BUILD_FLAGS =
 
 
-# Production image: mosaicfs-server + mosaicfs-agent.
+# Production image: the unified `mosaicfs` binary.
 # BUILDAH_ISOLATION=chroot bypasses rootless-Podman cgroup auth issues;
 # Docker ignores it.
 mosaicfs-image:
@@ -10,7 +10,7 @@ mosaicfs-image:
 
 # ── Apple `container` dev deployment ─────────────────────────────────────────
 # CouchDB runs in a container (port-forwarded to 127.0.0.1:5984). The
-# Rust server and agent run on the host (via `cargo run`) and talk to
+# `mosaicfs` binary runs on the host (via `cargo run`) and talks to
 # CouchDB over localhost, sidestepping Apple `container`'s lack of
 # automatic inter-container DNS.
 
@@ -54,7 +54,7 @@ run-dev-server: run-dev-database dev-config/mosaicfs.toml
 	COUCHDB_URL=http://127.0.0.1:5984 \
 	COUCHDB_USER=admin \
 	COUCHDB_PASSWORD=changeme \
-	    cargo run -p mosaicfs-server -- --config dev-config/mosaicfs.toml
+	    cargo run -p mosaicfs -- --config dev-config/mosaicfs.toml
 
 dev-config/mosaicfs.toml:
 	@mkdir -p dev-config

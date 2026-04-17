@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "mosaicfs",
     "mosaicfs-common",
     "mosaicfs-agent",
     "mosaicfs-server",

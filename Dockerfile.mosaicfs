@@ -1,13 +1,12 @@
 # Multi-stage build for localhost/mosaicfs:latest
-# Contains: mosaicfs-server, mosaicfs-agent
-# The admin UI is server-rendered from mosaicfs-server — no separate build step.
+# Contains: the unified `mosaicfs` binary.
+# The admin UI is server-rendered by the web_ui feature — no separate build step.
 
-# ── Stage 1: Rust binaries ───────────────────────────────────────────────────
+# ── Stage 1: Rust binary ─────────────────────────────────────────────────────
 FROM docker.io/rust:bookworm AS rust-builder
 
 # cmake is required by aws-lc-rs (pulled in by rustls);
-# libfuse-dev + pkg-config are required by the fuser crate (mosaicfs-vfs,
-# now a dependency of mosaicfs-server as of change 004).
+# libfuse-dev + pkg-config are required by the fuser crate (mosaicfs-vfs).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         cmake \
         libfuse-dev \
@@ -19,20 +18,22 @@ WORKDIR /build
 # Copy workspace manifests first so dependency compilation is cached
 # separately from source changes.
 COPY Cargo.toml Cargo.lock ./
-COPY mosaicfs-common/Cargo.toml ./mosaicfs-common/
-COPY mosaicfs-server/Cargo.toml ./mosaicfs-server/
-COPY mosaicfs-agent/Cargo.toml  ./mosaicfs-agent/
-COPY mosaicfs-vfs/Cargo.toml   ./mosaicfs-vfs/
+COPY mosaicfs/Cargo.toml         ./mosaicfs/
+COPY mosaicfs-common/Cargo.toml  ./mosaicfs-common/
+COPY mosaicfs-server/Cargo.toml  ./mosaicfs-server/
+COPY mosaicfs-agent/Cargo.toml   ./mosaicfs-agent/
+COPY mosaicfs-vfs/Cargo.toml     ./mosaicfs-vfs/
 
 # Stub source files so cargo can resolve and compile all dependencies
-# without the real sources. The actual binaries are rebuilt below.
-RUN mkdir -p mosaicfs-common/src mosaicfs-server/src mosaicfs-agent/src mosaicfs-vfs/src \
+# without the real sources. The actual binary is rebuilt below.
+RUN mkdir -p mosaicfs/src mosaicfs-common/src mosaicfs-server/src mosaicfs-agent/src mosaicfs-vfs/src \
     && echo 'pub fn placeholder() {}' > mosaicfs-common/src/lib.rs \
+    && echo 'pub fn placeholder() {}' > mosaicfs-server/src/lib.rs \
+    && echo 'pub fn placeholder() {}' > mosaicfs-agent/src/lib.rs \
     && echo 'pub fn placeholder() {}' > mosaicfs-vfs/src/lib.rs \
-    && echo 'fn main() {}' > mosaicfs-server/src/main.rs \
-    && echo 'fn main() {}' > mosaicfs-agent/src/main.rs \
-    && cargo build --release --bin mosaicfs-server --bin mosaicfs-agent \
-    && rm -rf mosaicfs-common/src mosaicfs-server/src mosaicfs-agent/src mosaicfs-vfs/src
+    && echo 'fn main() {}' > mosaicfs/src/main.rs \
+    && cargo build --release --bin mosaicfs \
+    && rm -rf mosaicfs/src mosaicfs-common/src mosaicfs-server/src mosaicfs-agent/src mosaicfs-vfs/src
 
 # CACHEBUST invalidates the source-copy layer without re-running the slow
 # dependency pre-build above. Pass --build-arg CACHEBUST=$(date +%s) to force
@@ -40,12 +41,13 @@ RUN mkdir -p mosaicfs-common/src mosaicfs-server/src mosaicfs-agent/src mosaicfs
 ARG CACHEBUST=none
 
 # Copy real sources and rebuild (only changed crates recompile)
-COPY mosaicfs-common/ ./mosaicfs-common/
-COPY mosaicfs-server/ ./mosaicfs-server/
-COPY mosaicfs-agent/  ./mosaicfs-agent/
-COPY mosaicfs-vfs/    ./mosaicfs-vfs/
-RUN touch mosaicfs-common/src/*.rs mosaicfs-server/src/*.rs mosaicfs-agent/src/*.rs \
-    && cargo build --release --bin mosaicfs-server --bin mosaicfs-agent
+COPY mosaicfs/         ./mosaicfs/
+COPY mosaicfs-common/  ./mosaicfs-common/
+COPY mosaicfs-server/  ./mosaicfs-server/
+COPY mosaicfs-agent/   ./mosaicfs-agent/
+COPY mosaicfs-vfs/     ./mosaicfs-vfs/
+RUN touch mosaicfs/src/*.rs mosaicfs-common/src/*.rs mosaicfs-server/src/*.rs mosaicfs-agent/src/*.rs mosaicfs-vfs/src/*.rs \
+    && cargo build --release --bin mosaicfs
 
 # ── Stage 2: Runtime image ───────────────────────────────────────────────────
 FROM docker.io/debian:bookworm-slim
@@ -61,12 +63,8 @@ WORKDIR /app
 # COPY --from=rust-builder layer in this stage.
 ARG CACHEBUST=none
 
-COPY --from=rust-builder /build/target/release/mosaicfs-server /usr/local/bin/mosaicfs-server
-COPY --from=rust-builder /build/target/release/mosaicfs-agent   /usr/local/bin/mosaicfs-agent
+COPY --from=rust-builder /build/target/release/mosaicfs /usr/local/bin/mosaicfs
 
-EXPOSE 8443 8444
+EXPOSE 8443
 
-ENV MOSAICFS_PORT=8443 \
-    MOSAICFS_DATA_DIR=/var/lib/mosaicfs/server
-
-ENTRYPOINT ["/usr/local/bin/mosaicfs-server"]
+ENTRYPOINT ["/usr/local/bin/mosaicfs"]
