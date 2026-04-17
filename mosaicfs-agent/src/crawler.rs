@@ -9,7 +9,7 @@ use tracing::{debug, info, warn};
 use walkdir::WalkDir;
 
 use mosaicfs_common::couchdb::CouchClient;
-use crate::notifications;
+use mosaicfs_common::notifications;
 use crate::replication_subsystem::{FileEvent, ReplicationHandle};
 
 const BATCH_SIZE: usize = 200;

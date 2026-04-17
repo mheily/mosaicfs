@@ -271,7 +271,7 @@ pub fn start(config: ReplicationConfig) -> anyhow::Result<ReplicationHandle> {
         let db_clone = config.db.clone();
         let node_id = config.node_id.clone();
         tokio::spawn(async move {
-            crate::notifications::emit_notification(
+            mosaicfs_common::notifications::emit_notification(
                 &db_clone,
                 &node_id,
                 "replication",
@@ -705,7 +705,7 @@ async fn process_upload_queue(
 
                 let err_str = e.to_string();
                 if err_str.contains("connect") || err_str.contains("dns") || err_str.contains("timeout") {
-                    crate::notifications::emit_notification(
+                    mosaicfs_common::notifications::emit_notification(
                         db, node_id, "replication",
                         &format!("replication_target_unreachable:{}", target_name),
                         "error", "Replication target unreachable",
@@ -713,7 +713,7 @@ async fn process_upload_queue(
                         None,
                     ).await;
                 } else {
-                    crate::notifications::emit_notification(
+                    mosaicfs_common::notifications::emit_notification(
                         db, node_id, "replication", "replication_error",
                         "error", "Replication upload failed",
                         &format!("Upload to '{}' failed for {}: {}", target_name, file_id, err_str),
@@ -731,14 +731,14 @@ async fn process_upload_queue(
             .unwrap_or(0)
     };
     if queue_size > 1000 {
-        crate::notifications::emit_notification(
+        mosaicfs_common::notifications::emit_notification(
             db, node_id, "replication", "replication_backlog",
             "warning", "Replication backlog",
             &format!("{} files waiting in upload queue.", queue_size),
             None,
         ).await;
     } else {
-        crate::notifications::resolve_notification(db, node_id, "replication_backlog").await;
+        mosaicfs_common::notifications::resolve_notification(db, node_id, "replication_backlog").await;
     }
 }
 

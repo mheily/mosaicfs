@@ -83,13 +83,13 @@ impl AppState {
         db: CouchClient,
         jwt_secret: Vec<u8>,
         data_dir: PathBuf,
+        couchdb_url: String,
+        couchdb_user: String,
+        couchdb_password: String,
         label_cache: Arc<LabelCache>,
         access_cache: Arc<AccessCache>,
         developer_mode: bool,
     ) -> Self {
-        let couchdb_url = std::env::var("COUCHDB_URL").unwrap_or_else(|_| "http://localhost:5984".to_string());
-        let couchdb_user = std::env::var("COUCHDB_USER").unwrap_or_else(|_| "admin".to_string());
-        let couchdb_password = std::env::var("COUCHDB_PASSWORD").unwrap_or_default();
         Self {
             db,
             jwt_secret,

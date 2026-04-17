@@ -106,7 +106,7 @@ pub async fn register_node(
             let db = state.db.clone();
             let nid = node_id.clone();
             tokio::spawn(async move {
-                crate::notifications::emit_control_plane_notification(
+                mosaicfs_common::notifications::emit_control_plane_notification(
                     &db, "nodes",
                     &format!("new_node_registered:{}", nid),
                     "info", "New node registered",
