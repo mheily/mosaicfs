@@ -1,0 +1,60 @@
+# MosaicFS Node Configuration
+# Copy this file to /etc/mosaicfs/mosaicfs.toml (or pass a path via
+# `--config`) and edit for the role this node should play.
+#
+# A node's role is selected by the `[features]` block. Any section whose
+# feature is disabled can be omitted.
+
+[node]
+# Optional. If unset, a node_id is generated on first start and
+# persisted to [agent].state_dir/node_id (default /var/lib/mosaicfs).
+# node_id = "node-abc123"
+
+[features]
+# Enable the subsystems this node should run. A NAS typically runs
+# `agent + web_ui`; a laptop runs `agent + vfs`; a headless indexer
+# runs `agent` alone.
+agent  = true
+vfs    = false
+web_ui = true
+
+# ── [agent] — required when features.agent = true ───────────────────────────
+[agent]
+# Absolute paths the filesystem crawler will index.
+watch_paths = ["/data"]
+
+# Absolute paths underneath watch_paths that should be ignored.
+excluded_paths = []
+
+# Optional. Defaults to /var/lib/mosaicfs. Overridable via MOSAICFS_STATE_DIR.
+# state_dir = "/var/lib/mosaicfs"
+
+# ── [vfs] — required when features.vfs = true ───────────────────────────────
+# [vfs]
+# mount_point = "/mnt/mosaicfs"
+# cache_dir   = "/var/lib/mosaicfs/cache"
+
+# ── [web_ui] — required when features.web_ui = true ─────────────────────────
+[web_ui]
+# Bind address for the admin UI + REST API. In insecure_http mode the
+# binary downgrades the bind host to 127.0.0.1 regardless of what's here.
+listen = "0.0.0.0:8443"
+
+# Optional. Defaults to /var/lib/mosaicfs/server. Overridable via
+# MOSAICFS_DATA_DIR.
+# data_dir = "/var/lib/mosaicfs/server"
+
+# Dev only. Serves plain HTTP, disables the admin auth middleware, and
+# binds to loopback only. Overridable via MOSAICFS_INSECURE_HTTP=1.
+insecure_http = false
+
+# Dev only. Exposes DELETE /api/system/data.
+developer_mode = false
+
+# ── [couchdb] — always required ─────────────────────────────────────────────
+[couchdb]
+# URL/user/password fall back to the COUCHDB_URL/COUCHDB_USER/COUCHDB_PASSWORD
+# env vars when set (so container deployments can keep secrets out of the file).
+url      = "http://localhost:5984"
+user     = "admin"
+password = "changeme"

@@ -26,13 +26,8 @@ docs/*.pdf
 .DS_Store
 .idea
 
-# Web UI
-web/node_modules/
-web/dist/
-web/src-tauri/gen/schemas/
-
-# Agent config (contains credentials — copy agent.toml.example → agent.toml and fill in)
-agent.toml
+# Node config (contains credentials — copy mosaicfs.toml.example → mosaicfs.toml and fill in)
+mosaicfs.toml
 
 # Local dev stack config (credentials) used by `make run-dev`
 dev-config/

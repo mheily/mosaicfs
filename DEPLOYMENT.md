@@ -1,8 +1,21 @@
 # MosaicFS Deployment Guide
 
-This guide covers the all-in-one deployment: CouchDB, the MosaicFS control
-plane, and a local agent running together in a single pod, managed by
+This guide covers the all-in-one deployment: CouchDB and the unified
+`mosaicfs` binary running together in a single pod, managed by
 `podman kube play`. This is the recommended setup for a Linux NAS.
+
+## Node roles
+
+Each node runs the same `mosaicfs` binary. Its role is selected by the
+`[features]` block in `mosaicfs.toml`:
+
+| Role               | `[features]`                                      | Typical host           |
+|--------------------|---------------------------------------------------|------------------------|
+| NAS (admin + data) | `agent = true, web_ui = true`                     | Linux NAS serving UI   |
+| Laptop (consumer)  | `agent = true, vfs = true`                        | Workstation with FUSE  |
+| Headless indexer   | `agent = true`                                    | Secondary data host    |
+
+See the per-role example configs below.
 
 ## Prerequisites
 
@@ -14,8 +27,8 @@ podman build -f Dockerfile.mosaicfs -t localhost/mosaicfs:latest .
 
 ## Host configuration
 
-All runtime configuration lives in `/etc/mosaicfs/` on the host. Create and
-lock down the directory first:
+All runtime configuration lives in `/etc/mosaicfs/` on the host. Create
+and lock down the directory first:
 
 ```sh
 sudo install -d -m 750 -o root -g mosaicfs /etc/mosaicfs
@@ -23,39 +36,86 @@ sudo install -d -m 750 -o root -g mosaicfs /etc/mosaicfs
 
 ### 1. CouchDB credentials — `couchdb.env`
 
-Create `/etc/mosaicfs/couchdb.env` with your chosen CouchDB username and
-password. All three containers (CouchDB, server, agent) source this file on
-startup.
+Create `/etc/mosaicfs/couchdb.env` with the CouchDB username and
+password. The CouchDB container sources this on startup and the
+`mosaicfs` container inherits it as env overrides for
+`[couchdb].user` / `[couchdb].password`.
 
 ```sh
 cat <<'EOF' | sudo tee /etc/mosaicfs/couchdb.env
-COUCHDB_URL=http://localhost:5984
 COUCHDB_USER=admin
 COUCHDB_PASSWORD=changeme
 EOF
 sudo chmod 600 /etc/mosaicfs/couchdb.env
 ```
 
-### 2. Agent config — `agent.toml`
+### 2. Node config — `mosaicfs.toml`
 
-Create `/etc/mosaicfs/agent.toml`. The `access_key_id` and `secret_key` come
-from the first-time bootstrap process — see
-[First-time bootstrap](#first-time-bootstrap) below.
+Copy the example file and edit it for the role this node should play:
 
 ```sh
-cat <<'EOF' | sudo tee /etc/mosaicfs/agent.toml
-control_plane_url = "https://localhost:8443"
-watch_paths = ["/data/mosaicfs-test"]
-# excluded_paths = ["/data/mosaicfs-test/.cache"]
-
-access_key_id = "MOSAICFS_..."
-secret_key    = "..."
-EOF
-sudo chmod 600 /etc/mosaicfs/agent.toml
+sudo cp mosaicfs.toml.example /etc/mosaicfs/mosaicfs.toml
+sudo chmod 600 /etc/mosaicfs/mosaicfs.toml
 ```
 
-Update `watch_paths` and the `data` hostPath volume in `deploy/mosaicfs.yaml`
-to point at the directory you want indexed.
+#### Example: NAS (admin UI + local crawler)
+
+```toml
+[features]
+agent  = true
+vfs    = false
+web_ui = true
+
+[agent]
+watch_paths    = ["/data/mosaicfs-test"]
+excluded_paths = []
+
+[web_ui]
+listen = "0.0.0.0:8443"
+
+[couchdb]
+url      = "http://localhost:5984"
+user     = "admin"
+# password provided via COUCHDB_PASSWORD env var
+```
+
+#### Example: laptop (consumer with FUSE mount)
+
+```toml
+[features]
+agent  = true
+vfs    = true
+web_ui = false
+
+[agent]
+watch_paths = ["/Users/alice/Documents"]
+
+[vfs]
+mount_point = "/Users/alice/mnt/mosaicfs"
+
+[couchdb]
+url      = "https://nas.internal:5984"
+user     = "alice"
+# password via COUCHDB_PASSWORD
+```
+
+#### Example: headless indexer
+
+```toml
+[features]
+agent  = true
+
+[agent]
+watch_paths = ["/srv/archive"]
+
+[couchdb]
+url      = "https://nas.internal:5984"
+user     = "indexer-01"
+# password via COUCHDB_PASSWORD
+```
+
+Update `watch_paths` and the `data` hostPath volume in
+`deploy/mosaicfs.yaml` to point at the directory you want indexed.
 
 ## Deploy
 
@@ -71,113 +131,90 @@ podman kube play --replace deploy/mosaicfs.yaml
 
 ## First-time bootstrap
 
-On the first run the MosaicFS server has no credentials in the database. It
-generates a one-time bootstrap token, writes it to the server log, and waits
-for it to be redeemed:
+Before the admin UI can be used it needs an initial credential. On the
+first run the `mosaicfs` binary writes a one-time bootstrap token to
+its log; open the web UI, go through the bootstrap prompt, and the
+first credential is created for you.
 
 ```sh
-podman logs mosaicfs-mosaicfs-server | grep -i bootstrap
+podman logs mosaicfs-mosaicfs | grep -i bootstrap
 ```
 
-Open the web UI at `https://<nas-ip>:8443`. It will detect that bootstrap is
-required and prompt for the token. Enter the token — the server will
-immediately create the initial admin credential and return the `access_key_id`
-and `secret_key`. Copy both values into `agent.toml`, then restart:
+Alternatively run the `bootstrap` subcommand directly to print an
+access key / secret key pair:
 
 ```sh
-podman kube play --replace deploy/mosaicfs.yaml
+podman exec mosaicfs-mosaicfs \
+    /usr/local/bin/mosaicfs bootstrap --config /etc/mosaicfs/mosaicfs.toml
 ```
 
 ## Accessing the MosaicFS web UI
 
-The web UI is served by the MosaicFS server on port 8443:
+On a node with `features.web_ui = true`:
 
 ```
-https://<nas-ip>:8443
+https://<node-ip>:8443
 ```
 
 ## Accessing the CouchDB admin UI (Fauxton)
 
-CouchDB 3 ships **Fauxton** (the successor to the old Futon interface) at
-`/_utils`. Port 5984 is bound to `127.0.0.1` only — it is not reachable
-directly from your workstation. Use an SSH tunnel:
+CouchDB 3 ships **Fauxton** at `/_utils`. Port 5984 is bound to
+`127.0.0.1` only — it is not reachable directly from your workstation.
+Use an SSH tunnel:
 
 ```sh
 ssh -L 5984:localhost:5984 <nas-user>@<nas-ip>
 ```
 
-Leave that session open, then open a browser on your workstation and navigate
-to:
+Leave that session open, then open a browser on your workstation and
+navigate to:
 
 ```
 http://localhost:5984/_utils
 ```
 
-Log in with the `COUCHDB_USER` and `COUCHDB_PASSWORD` from `couchdb.env`.
+Log in with the `COUCHDB_USER` and `COUCHDB_PASSWORD` from
+`couchdb.env`.
 
 ## Updating credentials
 
-**CouchDB password** — edit `/etc/mosaicfs/couchdb.env` on the host, then
-redeploy:
+**CouchDB password** — edit `/etc/mosaicfs/couchdb.env` on the host,
+then redeploy:
 
 ```sh
 podman kube play --replace deploy/mosaicfs.yaml
 ```
 
-**Agent access key** — edit `/etc/mosaicfs/agent.toml`, then redeploy the
-same way.
+**Admin credentials** — use the Settings → Credentials page in the
+admin UI to create, disable, or rotate access keys.
 
 ## macOS development deployment
 
-The podman/kube workflow doesn't apply on macOS. Instead, run CouchDB in
-Apple's native `container` CLI and run the MosaicFS server/agent on the
-host via `cargo run`. Inter-container DNS isn't configured by default in
-Apple `container`, which is why only CouchDB runs in a container.
+The podman/kube workflow doesn't apply on macOS. Instead, run CouchDB
+in Apple's native `container` CLI and run `mosaicfs` on the host via
+`cargo run`.
 
 ### Prerequisites
 
 - Apple `container` CLI at `/usr/local/bin/container`
 - `libfuse`/`pkg-config` via Homebrew (for building `mosaicfs-vfs`)
 
-### One-shot: start CouchDB + server
+### One-shot
 
 ```sh
 make run-dev-server   # builds mosaicfs-db, starts it on 127.0.0.1:5984,
-                      # then runs `cargo run -p mosaicfs-server` with
-                      # MOSAICFS_INSECURE_HTTP=1 on 127.0.0.1:8443.
+                      # auto-generates dev-config/mosaicfs.toml (web_ui
+                      # only, insecure_http, loopback), and runs
+                      # `cargo run -p mosaicfs` against it.
 ```
 
-Or, run the pieces separately:
+The admin UI is then at `http://127.0.0.1:8443/admin`. On first run
+the bootstrap token is printed to stdout — paste it into the
+`/admin/bootstrap` page to create the initial credential.
 
-```sh
-make run-dev-database   # just the CouchDB container
-# then in another shell, with the env shown below.
-```
+To tear it down: `make stop-dev`.
 
-Credentials are `admin` / `changeme`. To tear it down: `make stop-dev`.
-
-### Run the server manually
-
-The server speaks HTTPS by default with a self-signed cert, which Safari
-and Chrome dislike for local dev. Set `MOSAICFS_INSECURE_HTTP=1` to serve
-plain HTTP (bound to 127.0.0.1 only):
-
-```sh
-COUCHDB_URL=http://127.0.0.1:5984 \
-COUCHDB_USER=admin \
-COUCHDB_PASSWORD=changeme \
-MOSAICFS_DATA_DIR=/tmp/mosaicfs-server-data \
-MOSAICFS_INSECURE_HTTP=1 \
-  cargo run -p mosaicfs-server
-```
-
-The admin UI is then at `http://127.0.0.1:8443/admin`. On first run the
-bootstrap token is printed to stdout — paste it into the `/admin/bootstrap`
-page to create the initial credential, then plug the resulting access key
-/ secret into an `agent.toml` before running `mosaicfs-agent` (also on the
-host, with the same `COUCHDB_*` env vars).
-
-> `MOSAICFS_INSECURE_HTTP=1` is dev-only. Never set it on a shared or
+> `insecure_http = true` is dev-only. Never set it on a shared or
 > remote deployment.
 
 ## Stopping
@@ -186,5 +223,5 @@ host, with the same `COUCHDB_*` env vars).
 podman kube play --down deploy/mosaicfs.yaml
 ```
 
-This stops and removes the pod but leaves the persistent volumes intact. Data
-is preserved across stop/start cycles.
+This stops and removes the pod but leaves the persistent volumes
+intact. Data is preserved across stop/start cycles.
