@@ -1,4 +1,5 @@
 pub mod backend;
+pub mod config;
 pub mod couchdb;
 pub mod documents;
 pub mod notifications;
