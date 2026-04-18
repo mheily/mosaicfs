@@ -188,6 +188,77 @@ podman kube play --replace deploy/mosaicfs.yaml
 **Admin credentials** — use the Settings → Credentials page in the
 admin UI to create, disable, or rotate access keys.
 
+## macOS Keychain-backed secrets
+
+On macOS, node-level secrets (CouchDB URL/user/password and the node's
+own access key + secret key) can live in the macOS Keychain instead of
+the TOML file. This is required for App Sandbox / notarization-bound
+distributions, and useful any time you'd rather not store plaintext
+credentials in `mosaicfs.toml`.
+
+### Switching an existing node to the keychain
+
+1. Set the backend in `mosaicfs.toml`:
+
+   ```toml
+   [secrets]
+   manager = "keychain"
+   ```
+
+2. Import the existing inline values into the keychain and blank the
+   file fields:
+
+   ```sh
+   mosaicfs secrets import --config /path/to/mosaicfs.toml
+   ```
+
+   The command prints every secret it migrated, then asks whether to
+   blank the source fields in the file. Answer `y` to finish the
+   migration, or `n` to leave the file alone and edit it manually.
+   Pass `--yes` to skip both prompts.
+
+3. Verify the backend is live:
+
+   ```sh
+   mosaicfs secrets list --config /path/to/mosaicfs.toml
+   ```
+
+4. Restart `mosaicfs`. The agent/web_ui reads every secret from the
+   keychain on startup.
+
+### Subcommands
+
+- `mosaicfs secrets list` — print the names of every secret currently
+  present in the active backend. Values are never shown.
+- `mosaicfs secrets get NAME [--yes]` — print one secret value to
+  stdout. Gated behind a `[y/N]` confirmation unless `--yes` is passed.
+  Intended for recovery, not routine use.
+- `mosaicfs secrets import [--yes]` — as described above.
+
+### Known secret names
+
+```
+couchdb.url
+couchdb.user
+couchdb.password
+credentials.access_key_id
+credentials.secret_key
+```
+
+### Keychain service
+
+Every entry lives under service name `mosaicfs` in the user's default
+keychain, keyed by the fully-qualified secret name. You can inspect
+them with Keychain Access (search for `mosaicfs`) or via the `security`
+CLI.
+
+### Not available on Linux/Windows
+
+`[secrets].manager = "keychain"` is rejected at startup on non-macOS
+platforms. Use env-var overrides
+(`COUCHDB_PASSWORD`, `MOSAICFS_SECRET_KEY`) to keep secrets out of the
+file on container deployments.
+
 ## macOS development deployment
 
 The podman/kube workflow doesn't apply on macOS. Instead, run CouchDB

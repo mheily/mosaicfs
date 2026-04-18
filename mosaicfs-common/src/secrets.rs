@@ -252,6 +252,58 @@ impl SecretsBackend for KeychainBackend {
     }
 }
 
+// ── Inline TOML helpers (used by the `secrets import` subcommand) ────
+
+/// Read every known secret directly from the TOML file at `path`,
+/// bypassing the active backend. Returns only the names whose fields
+/// are present and non-empty.
+pub fn read_inline_from_file(path: &Path) -> Result<Vec<(String, String)>> {
+    use toml_edit::DocumentMut;
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("read {}: {e}", path.display()))?;
+    let doc: DocumentMut = content
+        .parse()
+        .map_err(|e| anyhow::anyhow!("parse {}: {e}", path.display()))?;
+    let mut out = Vec::new();
+    for name in ALL_SECRET_NAMES {
+        let (section, key) = name.split_once('.').expect("all names are dotted");
+        if let Some(table) = doc.get(section).and_then(|i| i.as_table()) {
+            if let Some(v) = table.get(key).and_then(|i| i.as_str()) {
+                if !v.is_empty() {
+                    out.push(((*name).to_string(), v.to_string()));
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Blank (set to the empty string) the named secret fields in the TOML
+/// file at `path`. Preserves comments and unrelated keys. Used by
+/// `secrets import` after a successful migration to the keychain.
+pub fn blank_inline_in_file(path: &Path, names: &[&str]) -> Result<()> {
+    use toml_edit::{DocumentMut, value as te_value};
+    for n in names {
+        ensure_known(n)?;
+    }
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("read {}: {e}", path.display()))?;
+    let mut doc: DocumentMut = content
+        .parse()
+        .map_err(|e| anyhow::anyhow!("parse {}: {e}", path.display()))?;
+    for name in names {
+        let (section, key) = name.split_once('.').expect("all names are dotted");
+        if let Some(table) = doc.get_mut(section).and_then(|i| i.as_table_mut()) {
+            if table.contains_key(key) {
+                table[key] = te_value("");
+            }
+        }
+    }
+    std::fs::write(path, doc.to_string())
+        .map_err(|e| anyhow::anyhow!("write {}: {e}", path.display()))?;
+    Ok(())
+}
+
 // ── Factory ─────────────────────────────────────────────────────────
 
 /// Open the secrets backend appropriate for this config.
@@ -412,6 +464,63 @@ password = "old"
             .unwrap_err()
             .to_string();
         assert!(err.contains("no file path"), "got: {err}");
+    }
+
+    #[test]
+    fn read_inline_from_file_skips_empty_and_missing() {
+        let toml = r#"
+[secrets]
+manager = "inline"
+
+[couchdb]
+url = "http://localhost:5984"
+user = "admin"
+password = ""
+
+[credentials]
+access_key_id = "MOSAICFS_X"
+# secret_key omitted entirely
+"#;
+        let tmp = tempfile_path("mosaicfs-secrets-read-inline.toml");
+        std::fs::write(&tmp, toml).unwrap();
+        let got = read_inline_from_file(&tmp).unwrap();
+        let map: std::collections::HashMap<_, _> = got.into_iter().collect();
+        assert_eq!(map.get(names::COUCHDB_URL).unwrap(), "http://localhost:5984");
+        assert_eq!(map.get(names::COUCHDB_USER).unwrap(), "admin");
+        assert!(!map.contains_key(names::COUCHDB_PASSWORD));
+        assert_eq!(map.get(names::CREDENTIALS_ACCESS_KEY_ID).unwrap(), "MOSAICFS_X");
+        assert!(!map.contains_key(names::CREDENTIALS_SECRET_KEY));
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn blank_inline_in_file_sets_fields_to_empty_string() {
+        let toml = r#"# node config
+[secrets]
+manager = "keychain"
+
+[couchdb]
+url = "http://localhost:5984"
+user = "admin"
+password = "filepw"
+
+[credentials]
+access_key_id = "MOSAICFS_A"
+secret_key = "mosaicfs_s"
+"#;
+        let tmp = tempfile_path("mosaicfs-secrets-blank.toml");
+        std::fs::write(&tmp, toml).unwrap();
+        blank_inline_in_file(
+            &tmp,
+            &[names::COUCHDB_PASSWORD, names::CREDENTIALS_SECRET_KEY],
+        )
+        .unwrap();
+        let after = std::fs::read_to_string(&tmp).unwrap();
+        assert!(after.contains("password = \"\""));
+        assert!(after.contains("secret_key = \"\""));
+        assert!(after.contains("user = \"admin\"")); // untouched
+        assert!(after.contains("# node config")); // comment preserved
+        let _ = std::fs::remove_file(&tmp);
     }
 
     fn tempfile_path(name: &str) -> PathBuf {
