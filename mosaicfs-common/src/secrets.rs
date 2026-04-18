@@ -182,6 +182,76 @@ fn write_inline_value(path: &Path, name: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+// ── Keychain backend (macOS) ────────────────────────────────────────
+
+/// Service name used for every MosaicFS entry in the macOS Keychain.
+/// Every secret name becomes one entry under this service.
+#[cfg(target_os = "macos")]
+const KEYCHAIN_SERVICE: &str = "mosaicfs";
+
+#[cfg(target_os = "macos")]
+pub struct KeychainBackend {
+    service: String,
+}
+
+#[cfg(target_os = "macos")]
+impl KeychainBackend {
+    pub fn new() -> Self {
+        Self {
+            service: KEYCHAIN_SERVICE.to_string(),
+        }
+    }
+
+    fn entry(&self, name: &str) -> Result<keyring::Entry> {
+        keyring::Entry::new(&self.service, name)
+            .map_err(|e| anyhow::anyhow!("keychain open '{name}': {e}"))
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Default for KeychainBackend {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl SecretsBackend for KeychainBackend {
+    fn kind(&self) -> &'static str {
+        "keychain"
+    }
+
+    fn get(&self, name: &str) -> Result<String> {
+        ensure_known(name)?;
+        let entry = self.entry(name)?;
+        entry
+            .get_password()
+            .map_err(|e| anyhow::anyhow!("keychain read '{name}': {e}"))
+    }
+
+    fn set(&self, name: &str, value: &str) -> Result<()> {
+        ensure_known(name)?;
+        let entry = self.entry(name)?;
+        entry
+            .set_password(value)
+            .map_err(|e| anyhow::anyhow!("keychain write '{name}': {e}"))
+    }
+
+    fn list(&self) -> Result<Vec<String>> {
+        let mut out = Vec::new();
+        for name in ALL_SECRET_NAMES {
+            let entry = self.entry(name)?;
+            match entry.get_password() {
+                Ok(v) if !v.is_empty() => out.push((*name).to_string()),
+                Ok(_) => {}
+                Err(keyring::Error::NoEntry) => {}
+                Err(e) => return Err(anyhow::anyhow!("keychain list '{name}': {e}")),
+            }
+        }
+        Ok(out)
+    }
+}
+
 // ── Factory ─────────────────────────────────────────────────────────
 
 /// Open the secrets backend appropriate for this config.
@@ -202,10 +272,17 @@ pub fn open(
             config_path.map(|p| p.to_path_buf()),
         ))),
         "keychain" => {
-            bail!(
-                "secrets.manager = \"keychain\" is not yet implemented; \
-                 wired in change 007 phase 3"
-            )
+            #[cfg(target_os = "macos")]
+            {
+                Ok(Arc::new(KeychainBackend::new()))
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = config_path;
+                bail!(
+                    "secrets.manager = \"keychain\" is only available on macOS"
+                )
+            }
         }
         other => bail!("unknown secrets.manager: \"{other}\""),
     }
