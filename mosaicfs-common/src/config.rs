@@ -27,6 +27,32 @@ pub struct MosaicfsConfig {
     pub web_ui: Option<WebUiFeatureConfig>,
     #[serde(default)]
     pub credentials: Option<CredentialsConfig>,
+    #[serde(default)]
+    pub secrets: SecretsConfig,
+}
+
+/// Selects the backend used to resolve node-level secrets.
+///
+/// - `inline` (default, all platforms) — secrets live in `[couchdb]` /
+///   `[credentials]` in this file.
+/// - `keychain` (macOS only) — secrets live in the macOS Keychain;
+///   matching fields in the file may be empty.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SecretsConfig {
+    #[serde(default = "default_secrets_manager")]
+    pub manager: String,
+}
+
+impl Default for SecretsConfig {
+    fn default() -> Self {
+        Self {
+            manager: default_secrets_manager(),
+        }
+    }
+}
+
+fn default_secrets_manager() -> String {
+    "inline".to_string()
 }
 
 /// Node-level access credentials.
@@ -174,11 +200,30 @@ impl MosaicfsConfig {
     }
 
     fn validate(&self) -> anyhow::Result<()> {
-        if self.couchdb.url.is_empty() {
-            anyhow::bail!("[couchdb].url must not be empty");
+        match self.secrets.manager.as_str() {
+            "inline" => {}
+            "keychain" => {
+                if !cfg!(target_os = "macos") {
+                    anyhow::bail!(
+                        "[secrets].manager = \"keychain\" is only supported on macOS; \
+                         use \"inline\" (the default) on this platform"
+                    );
+                }
+            }
+            other => anyhow::bail!(
+                "[secrets].manager = \"{other}\" is not recognized (expected \"inline\" or \"keychain\")"
+            ),
         }
-        if self.couchdb.user.is_empty() {
-            anyhow::bail!("[couchdb].user must not be empty");
+
+        // couchdb.url / user are required in inline mode; in keychain
+        // mode the backend supplies them, so empty TOML fields are OK.
+        if self.secrets.manager == "inline" {
+            if self.couchdb.url.is_empty() {
+                anyhow::bail!("[couchdb].url must not be empty");
+            }
+            if self.couchdb.user.is_empty() {
+                anyhow::bail!("[couchdb].user must not be empty");
+            }
         }
 
         if !(self.features.agent || self.features.vfs || self.features.web_ui) {
@@ -420,6 +465,99 @@ password = "filepw"
         assert_eq!(cfg.couchdb.user, "envuser");
         assert_eq!(cfg.couchdb.password, "envpw");
         clear_env();
+    }
+
+    #[test]
+    fn secrets_manager_defaults_to_inline() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        clear_env();
+        let toml = format!(
+            r#"
+[features]
+agent = true
+
+[agent]
+watch_paths = ["/data"]
+
+{}
+"#,
+            minimal_couchdb()
+        );
+        let cfg = MosaicfsConfig::from_str(&toml).unwrap();
+        assert_eq!(cfg.secrets.manager, "inline");
+    }
+
+    #[test]
+    fn secrets_manager_rejects_unknown_value() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        clear_env();
+        let toml = format!(
+            r#"
+[features]
+agent = true
+
+[agent]
+watch_paths = ["/data"]
+
+[secrets]
+manager = "vault"
+
+{}
+"#,
+            minimal_couchdb()
+        );
+        let err = MosaicfsConfig::from_str(&toml).unwrap_err().to_string();
+        assert!(err.contains("not recognized"), "got: {err}");
+    }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn secrets_manager_keychain_rejected_off_macos() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        clear_env();
+        let toml = format!(
+            r#"
+[features]
+agent = true
+
+[agent]
+watch_paths = ["/data"]
+
+[secrets]
+manager = "keychain"
+
+{}
+"#,
+            minimal_couchdb()
+        );
+        let err = MosaicfsConfig::from_str(&toml).unwrap_err().to_string();
+        assert!(err.contains("macOS"), "got: {err}");
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn secrets_manager_keychain_allowed_on_macos() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        clear_env();
+        // On macOS the value parses; [couchdb] fields are allowed to be empty
+        // because the keychain supplies them at runtime.
+        let toml = r#"
+[features]
+agent = true
+
+[agent]
+watch_paths = ["/data"]
+
+[secrets]
+manager = "keychain"
+
+[couchdb]
+url = ""
+user = ""
+password = ""
+"#;
+        let cfg = MosaicfsConfig::from_str(toml).unwrap();
+        assert_eq!(cfg.secrets.manager, "keychain");
     }
 
     #[test]

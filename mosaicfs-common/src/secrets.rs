@@ -186,16 +186,29 @@ fn write_inline_value(path: &Path, name: &str, value: &str) -> Result<()> {
 
 /// Open the secrets backend appropriate for this config.
 ///
-/// Phase 1: always returns [`InlineBackend`]. Phase 2 introduces a
-/// `[secrets]` config block that selects the backend.
+/// The backend is picked by `[secrets].manager`:
+///
+/// - `"inline"` — always available. Reads from the parsed config, writes
+///   back to the TOML file.
+/// - `"keychain"` — macOS-only. Reads/writes the macOS Keychain; the
+///   actual implementation is wired in change 007 phase 3.
 pub fn open(
     cfg: &MosaicfsConfig,
     config_path: Option<&Path>,
 ) -> Result<Arc<dyn SecretsBackend>> {
-    Ok(Arc::new(InlineBackend::from_config(
-        cfg,
-        config_path.map(|p| p.to_path_buf()),
-    )))
+    match cfg.secrets.manager.as_str() {
+        "inline" => Ok(Arc::new(InlineBackend::from_config(
+            cfg,
+            config_path.map(|p| p.to_path_buf()),
+        ))),
+        "keychain" => {
+            bail!(
+                "secrets.manager = \"keychain\" is not yet implemented; \
+                 wired in change 007 phase 3"
+            )
+        }
+        other => bail!("unknown secrets.manager: \"{other}\""),
+    }
 }
 
 #[cfg(test)]

@@ -51,6 +51,14 @@ insecure_http = false
 # Dev only. Exposes DELETE /api/system/data.
 developer_mode = false
 
+# ── [secrets] — where node-level secrets live ───────────────────────────────
+# `inline` (default, all platforms): secrets live in this file
+#   (and in COUCHDB_PASSWORD / MOSAICFS_SECRET_KEY env vars when set).
+# `keychain` (macOS only): secrets live in the macOS Keychain; matching
+#   fields below may be left empty.
+[secrets]
+manager = "inline"
+
 # ── [couchdb] — always required ─────────────────────────────────────────────
 [couchdb]
 # URL/user/password fall back to the COUCHDB_URL/COUCHDB_USER/COUCHDB_PASSWORD
