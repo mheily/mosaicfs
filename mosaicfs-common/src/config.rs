@@ -25,6 +25,22 @@ pub struct MosaicfsConfig {
     pub vfs: Option<VfsFeatureConfig>,
     #[serde(default)]
     pub web_ui: Option<WebUiFeatureConfig>,
+    #[serde(default)]
+    pub credentials: Option<CredentialsConfig>,
+}
+
+/// Node-level access credentials.
+///
+/// `access_key_id` + `secret_key` authenticate this node to remote
+/// `web_ui` peers. When the active secrets backend is `keychain`, both
+/// fields may be left empty (or absent) in the TOML file — the values
+/// live in the Keychain instead.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct CredentialsConfig {
+    #[serde(default)]
+    pub access_key_id: String,
+    #[serde(default)]
+    pub secret_key: String,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -108,6 +124,7 @@ impl MosaicfsConfig {
     /// out of the TOML file.
     ///
     /// - `COUCHDB_URL`, `COUCHDB_USER`, `COUCHDB_PASSWORD` → `[couchdb]`
+    /// - `MOSAICFS_ACCESS_KEY_ID`, `MOSAICFS_SECRET_KEY` → `[credentials]`
     /// - `MOSAICFS_PORT` → appends to `[web_ui].listen`'s host when set
     /// - `MOSAICFS_DATA_DIR` → `[web_ui].data_dir`
     /// - `MOSAICFS_STATE_DIR` → `[agent].state_dir`
@@ -121,6 +138,18 @@ impl MosaicfsConfig {
         }
         if let Ok(v) = std::env::var("COUCHDB_PASSWORD") {
             self.couchdb.password = v;
+        }
+
+        let access_key = std::env::var("MOSAICFS_ACCESS_KEY_ID").ok();
+        let secret_key = std::env::var("MOSAICFS_SECRET_KEY").ok();
+        if access_key.is_some() || secret_key.is_some() {
+            let creds = self.credentials.get_or_insert_with(CredentialsConfig::default);
+            if let Some(v) = access_key {
+                creds.access_key_id = v;
+            }
+            if let Some(v) = secret_key {
+                creds.secret_key = v;
+            }
         }
 
         if let Some(web) = self.web_ui.as_mut() {
@@ -410,6 +439,8 @@ password = "filepw"
                 "MOSAICFS_DATA_DIR",
                 "MOSAICFS_STATE_DIR",
                 "MOSAICFS_INSECURE_HTTP",
+                "MOSAICFS_ACCESS_KEY_ID",
+                "MOSAICFS_SECRET_KEY",
             ] {
                 std::env::remove_var(k);
             }

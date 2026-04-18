@@ -4,4 +4,5 @@ pub mod couchdb;
 pub mod documents;
 pub mod notifications;
 pub mod replication;
+pub mod secrets;
 pub mod steps;

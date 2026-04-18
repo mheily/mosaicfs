@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use mosaicfs_agent::start_agent;
 use mosaicfs_common::config::MosaicfsConfig;
+use mosaicfs_common::secrets;
 use mosaicfs_server::{run_bootstrap, start_web_ui};
 use mosaicfs_vfs::start_vfs;
 use tracing::{error, info};
@@ -30,20 +31,24 @@ async fn main() -> anyhow::Result<()> {
         tracing_subscriber::fmt()
             .with_env_filter(EnvFilter::new("warn"))
             .init();
-        let cfg = load_config(&args)?;
+        let (cfg, config_path) = load_config(&args)?;
+        let secrets = secrets::open(&cfg, Some(&config_path))?;
         let json_output = args.iter().any(|a| a == "--json");
-        return run_bootstrap(&cfg, json_output).await;
+        return run_bootstrap(&cfg, secrets, json_output).await;
     }
 
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse().unwrap()))
         .init();
 
-    let cfg = Arc::new(load_config(&args)?);
+    let (cfg, config_path) = load_config(&args)?;
+    let cfg = Arc::new(cfg);
+    let secrets = secrets::open(&cfg, Some(&config_path))?;
     info!(
         agent = cfg.features.agent,
         vfs = cfg.features.vfs,
         web_ui = cfg.features.web_ui,
+        secrets_backend = secrets.kind(),
         "mosaicfs starting"
     );
 
@@ -51,11 +56,13 @@ async fn main() -> anyhow::Result<()> {
 
     if cfg.features.web_ui {
         let cfg = Arc::clone(&cfg);
-        set.spawn(async move { ("web_ui", start_web_ui(cfg).await) });
+        let secrets = Arc::clone(&secrets);
+        set.spawn(async move { ("web_ui", start_web_ui(cfg, secrets).await) });
     }
     if cfg.features.agent {
         let cfg = Arc::clone(&cfg);
-        set.spawn(async move { ("agent", start_agent(cfg).await) });
+        let secrets = Arc::clone(&secrets);
+        set.spawn(async move { ("agent", start_agent(cfg, secrets).await) });
     }
     if cfg.features.vfs {
         let cfg = Arc::clone(&cfg);
@@ -80,9 +87,12 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn load_config(args: &[String]) -> anyhow::Result<MosaicfsConfig> {
-    let path = arg_value(args, "--config").unwrap_or_else(|| DEFAULT_CONFIG_PATH.to_string());
-    MosaicfsConfig::load(&PathBuf::from(path))
+fn load_config(args: &[String]) -> anyhow::Result<(MosaicfsConfig, PathBuf)> {
+    let path = PathBuf::from(
+        arg_value(args, "--config").unwrap_or_else(|| DEFAULT_CONFIG_PATH.to_string()),
+    );
+    let cfg = MosaicfsConfig::load(&path)?;
+    Ok((cfg, path))
 }
 
 fn arg_value(args: &[String], name: &str) -> Option<String> {

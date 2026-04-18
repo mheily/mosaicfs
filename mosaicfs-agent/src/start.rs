@@ -7,6 +7,7 @@ use std::time::Duration;
 use mosaicfs_common::config::MosaicfsConfig;
 use mosaicfs_common::couchdb::CouchClient;
 use mosaicfs_common::notifications;
+use mosaicfs_common::secrets::{self, SecretsBackend};
 use tokio::signal;
 use tokio::time;
 use tracing::{error, info};
@@ -26,7 +27,10 @@ const REPLICATION_FULL_SCAN_INTERVAL_S: u64 = 86400; // daily
 /// Start the agent subsystem. Runs until a shutdown signal is received.
 ///
 /// Expects `features.agent = true` and a populated `[agent]` section.
-pub async fn start_agent(cfg: Arc<MosaicfsConfig>) -> anyhow::Result<()> {
+pub async fn start_agent(
+    cfg: Arc<MosaicfsConfig>,
+    secrets: Arc<dyn SecretsBackend>,
+) -> anyhow::Result<()> {
     let agent_cfg = cfg
         .agent
         .as_ref()
@@ -42,12 +46,11 @@ pub async fn start_agent(cfg: Arc<MosaicfsConfig>) -> anyhow::Result<()> {
     let node_id = resolve_node_id(cfg.node.node_id.as_deref(), &state_dir)?;
     info!(node_id = %node_id, "Agent identity resolved");
 
-    let db = CouchClient::new(
-        &cfg.couchdb.url,
-        DB_NAME,
-        &cfg.couchdb.user,
-        &cfg.couchdb.password,
-    );
+    let couchdb_url = secrets.get(secrets::names::COUCHDB_URL)?;
+    let couchdb_user = secrets.get(secrets::names::COUCHDB_USER)?;
+    let couchdb_password = secrets.get(secrets::names::COUCHDB_PASSWORD)?;
+
+    let db = CouchClient::new(&couchdb_url, DB_NAME, &couchdb_user, &couchdb_password);
     db.ensure_db().await?;
     info!("CouchDB connection established");
 

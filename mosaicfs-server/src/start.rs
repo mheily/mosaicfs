@@ -7,6 +7,7 @@ use std::sync::Arc;
 use mosaicfs_common::config::MosaicfsConfig;
 use mosaicfs_common::couchdb::CouchClient;
 use mosaicfs_common::notifications;
+use mosaicfs_common::secrets::{self, SecretsBackend};
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
@@ -27,7 +28,10 @@ const DB_NAME: &str = "mosaicfs";
 /// Expects `features.web_ui = true` and a populated `[web_ui]` section.
 /// The caller is responsible for installing the rustls crypto provider
 /// exactly once before calling this function.
-pub async fn start_web_ui(cfg: Arc<MosaicfsConfig>) -> anyhow::Result<()> {
+pub async fn start_web_ui(
+    cfg: Arc<MosaicfsConfig>,
+    secrets: Arc<dyn SecretsBackend>,
+) -> anyhow::Result<()> {
     let web = cfg
         .web_ui
         .as_ref()
@@ -62,12 +66,11 @@ pub async fn start_web_ui(cfg: Arc<MosaicfsConfig>) -> anyhow::Result<()> {
 
     info!("mosaicfs web_ui starting");
 
-    let db = CouchClient::new(
-        &cfg.couchdb.url,
-        DB_NAME,
-        &cfg.couchdb.user,
-        &cfg.couchdb.password,
-    );
+    let couchdb_url = secrets.get(secrets::names::COUCHDB_URL)?;
+    let couchdb_user = secrets.get(secrets::names::COUCHDB_USER)?;
+    let couchdb_password = secrets.get(secrets::names::COUCHDB_PASSWORD)?;
+
+    let db = CouchClient::new(&couchdb_url, DB_NAME, &couchdb_user, &couchdb_password);
     db.ensure_db().await?;
     info!("CouchDB connection established");
 
@@ -104,9 +107,9 @@ pub async fn start_web_ui(cfg: Arc<MosaicfsConfig>) -> anyhow::Result<()> {
         db,
         jwt_secret,
         data_dir.clone(),
-        cfg.couchdb.url.clone(),
-        cfg.couchdb.user.clone(),
-        cfg.couchdb.password.clone(),
+        couchdb_url.clone(),
+        couchdb_user.clone(),
+        couchdb_password.clone(),
         Arc::clone(&label_cache),
         Arc::clone(&access_cache),
         developer_mode,
@@ -175,13 +178,16 @@ pub async fn start_web_ui(cfg: Arc<MosaicfsConfig>) -> anyhow::Result<()> {
 
 /// Run the `bootstrap` subcommand: create the first credential if none exist.
 /// Prints access/secret keys to stdout.
-pub async fn run_bootstrap(cfg: &MosaicfsConfig, json_output: bool) -> anyhow::Result<()> {
-    let db = CouchClient::new(
-        &cfg.couchdb.url,
-        DB_NAME,
-        &cfg.couchdb.user,
-        &cfg.couchdb.password,
-    );
+pub async fn run_bootstrap(
+    _cfg: &MosaicfsConfig,
+    secrets: Arc<dyn SecretsBackend>,
+    json_output: bool,
+) -> anyhow::Result<()> {
+    let couchdb_url = secrets.get(secrets::names::COUCHDB_URL)?;
+    let couchdb_user = secrets.get(secrets::names::COUCHDB_USER)?;
+    let couchdb_password = secrets.get(secrets::names::COUCHDB_PASSWORD)?;
+
+    let db = CouchClient::new(&couchdb_url, DB_NAME, &couchdb_user, &couchdb_password);
     db.ensure_db().await?;
     mosaicfs_common::couchdb::create_indexes(&db).await?;
     let existing = credentials::list_credentials(&db).await?;
