@@ -89,17 +89,23 @@ if [[ "$RUNTIME" == "apple" ]]; then
     fi
 fi
 
-if "$CONTAINER" inspect "$DB_CONTAINER" >/dev/null 2>&1; then
-    log "CouchDB container exists; ensuring it's started"
-    "$CONTAINER" start "$DB_CONTAINER" >/dev/null 2>&1 || true
+# Apple's `container inspect <missing>` exits 0 with output `[]`, so we
+# can't rely on inspect to test existence portably. Instead, try to run a
+# fresh container; on failure (name already in use), fall back to start.
+run_out=$("$CONTAINER" run -d --name "$DB_CONTAINER" \
+    -p "127.0.0.1:${DB_PORT}:5984" \
+    -e "COUCHDB_USER=${DB_USER}" \
+    -e "COUCHDB_PASSWORD=${DB_PASSWORD}" \
+    -v mosaicfs-couchdb-data:/opt/couchdb/data \
+    "$DB_IMAGE" 2>&1) && run_rc=0 || run_rc=$?
+if [[ "$run_rc" -eq 0 ]]; then
+    log "Started fresh CouchDB container"
+elif echo "$run_out" | grep -qiE 'already (in use|exists)|exists'; then
+    log "CouchDB container exists; starting it"
+    "$CONTAINER" start "$DB_CONTAINER" >/dev/null 2>&1 \
+        || die "failed to start existing $DB_CONTAINER: $("$CONTAINER" logs "$DB_CONTAINER" 2>&1 | tail -5)"
 else
-    log "Starting CouchDB container on 127.0.0.1:${DB_PORT}"
-    "$CONTAINER" run -d --name "$DB_CONTAINER" \
-        -p "127.0.0.1:${DB_PORT}:5984" \
-        -e "COUCHDB_USER=${DB_USER}" \
-        -e "COUCHDB_PASSWORD=${DB_PASSWORD}" \
-        -v mosaicfs-couchdb-data:/opt/couchdb/data \
-        "$DB_IMAGE" >/dev/null
+    die "failed to create CouchDB container: $run_out"
 fi
 
 printf '    waiting for CouchDB on 127.0.0.1:%s' "$DB_PORT"
@@ -163,6 +169,24 @@ else
         die "mosaicfs exited immediately — check $LOG_FILE"
     fi
 fi
+
+# Wait for the HTTP listener to bind — the PID being alive only means the
+# binary didn't crash on startup, not that it's accepting connections.
+# /api/system/bootstrap-status is the only unauthenticated JSON endpoint;
+# /api/health requires a JWT so it can't be used as a readiness probe.
+READY_URL="http://127.0.0.1:${WEB_UI_PORT}/api/system/bootstrap-status"
+printf '    waiting for web_ui on 127.0.0.1:%s' "$WEB_UI_PORT"
+for _ in $(seq 1 60); do
+    if curl -fsS -o /dev/null "$READY_URL" 2>/dev/null; then
+        printf ' ready.\n'; break
+    fi
+    if ! kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+        printf '\n'; die "mosaicfs exited during startup — check $LOG_FILE"
+    fi
+    printf '.'; sleep 1
+done
+curl -fsS -o /dev/null "$READY_URL" 2>/dev/null \
+    || die "web_ui did not become ready on 127.0.0.1:${WEB_UI_PORT} within 60s — check $LOG_FILE"
 
 # ── 5. Confirm dev-data is registered as an agent filesystem ────────────────
 # The agent reads watch_paths from the config on startup and crawls them;

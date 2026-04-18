@@ -54,11 +54,15 @@ else
 fi
 
 # ── Remove the CouchDB container ────────────────────────────────────────────
-if [[ -n "$CONTAINER" ]] && "$CONTAINER" inspect "$DB_CONTAINER" >/dev/null 2>&1; then
-    log "Removing CouchDB container $DB_CONTAINER"
-    "$CONTAINER" rm -f "$DB_CONTAINER" >/dev/null 2>&1 || true
-else
-    log "No $DB_CONTAINER container to remove"
+# Apple's `container inspect` exits 0 with `[]` for a missing container,
+# so we can't use it as an existence check. Just try rm -f and report
+# based on the exit code.
+if [[ -n "$CONTAINER" ]]; then
+    if "$CONTAINER" rm -f "$DB_CONTAINER" >/dev/null 2>&1; then
+        log "Removed CouchDB container $DB_CONTAINER"
+    else
+        log "No $DB_CONTAINER container to remove"
+    fi
 fi
 
 log "Dev environment stopped."

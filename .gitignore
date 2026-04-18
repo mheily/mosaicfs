@@ -31,3 +31,9 @@ mosaicfs.toml
 
 # Local dev stack config (credentials) used by `make run-dev`
 dev-config/
+
+# Local dev stack state (log, pid, server-data, agent-state, cached creds)
+# and the agent's watch-paths target, populated by
+# scripts/start-dev-environment.
+dev-run/
+dev-data/

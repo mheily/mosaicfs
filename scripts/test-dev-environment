@@ -1,0 +1,237 @@
+#!/usr/bin/env bash
+# Smoke tests for a running dev environment (scripts/start-dev-environment).
+# Verifies the end-to-end flow from dev-data on disk through the crawler
+# into CouchDB and back out through the HTTP API.
+#
+# Idempotent: safe to re-run. Bootstrap credentials are cached in
+# dev-run/credentials.json after the first successful run.
+#
+# Usage: scripts/test-dev-environment
+
+set -uo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
+
+DEV_DATA="$REPO_ROOT/dev-data"
+DEV_RUN="$REPO_ROOT/dev-run"
+CONFIG_FILE="$REPO_ROOT/dev-config/mosaicfs.toml"
+PID_FILE="$DEV_RUN/mosaicfs.pid"
+CREDS_FILE="$DEV_RUN/credentials.json"
+BINARY="$REPO_ROOT/target/debug/mosaicfs"
+
+COUCHDB_URL="http://127.0.0.1:5984"
+SERVER_URL="http://127.0.0.1:8443"
+
+# ── Mini harness ────────────────────────────────────────────────────────────
+RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[0;33m'; NC=$'\033[0m'
+PASS=0; FAIL=0; FAIL_NAMES=()
+
+# Run the function in the current shell (not a subshell) so assignments
+# like TOKEN=… persist across tests. Output goes through a tempfile; we
+# only print it on failure.
+run_test() {
+    local name="$1"; shift
+    printf '  %-48s ' "$name"
+    local tmp; tmp=$(mktemp)
+    if "$@" >"$tmp" 2>&1; then
+        printf '%sPASS%s\n' "$GREEN" "$NC"
+        PASS=$((PASS + 1))
+    else
+        printf '%sFAIL%s\n' "$RED" "$NC"
+        [[ -s "$tmp" ]] && sed 's/^/    /' "$tmp"
+        FAIL=$((FAIL + 1))
+        FAIL_NAMES+=("$name")
+    fi
+    rm -f "$tmp"
+}
+
+require() { command -v "$1" >/dev/null 2>&1 || { echo "missing $1" >&2; exit 2; }; }
+require curl
+require jq
+
+# ── Preflight ───────────────────────────────────────────────────────────────
+[[ -f "$PID_FILE" ]] || { echo "${RED}dev env not running${NC}: $PID_FILE missing — run scripts/start-dev-environment" >&2; exit 2; }
+kill -0 "$(cat "$PID_FILE")" 2>/dev/null \
+    || { echo "${RED}dev env not running${NC}: pid $(cat "$PID_FILE") is dead — run scripts/start-dev-environment" >&2; exit 2; }
+
+# Wait for the HTTP listener. The binary can be alive (PID valid) but not
+# yet bound — start-dev-environment writes the PID before the server
+# finishes initialising. Probe bootstrap-status because it's the only
+# unauthenticated JSON endpoint; /api/health is JWT-gated.
+READY_URL="$SERVER_URL/api/system/bootstrap-status"
+printf 'Waiting for %s' "$READY_URL"
+for _ in $(seq 1 30); do
+    if curl -fsS -o /dev/null "$READY_URL" 2>/dev/null; then
+        printf ' ready.\n'; break
+    fi
+    printf '.'; sleep 1
+done
+curl -fsS -o /dev/null "$READY_URL" 2>/dev/null \
+    || { printf '\n%sweb_ui not reachable%s on %s after 30s\n' "$RED" "$NC" "$SERVER_URL" >&2; exit 2; }
+
+echo "Running dev-env smoke tests against $SERVER_URL"
+echo
+
+# ── Tests ───────────────────────────────────────────────────────────────────
+
+t_couchdb_reachable() {
+    local body
+    body=$(curl -fsS "$COUCHDB_URL/" 2>&1) || { echo "GET / failed: $body"; return 1; }
+    echo "$body" | jq -e '.couchdb == "Welcome"' >/dev/null \
+        || { echo "unexpected body: $body"; return 1; }
+}
+
+t_mosaicfs_process_alive() {
+    local pid
+    pid=$(cat "$PID_FILE")
+    kill -0 "$pid" 2>/dev/null || { echo "pid $pid not running"; return 1; }
+}
+
+t_bootstrap_status_reachable() {
+    local body
+    body=$(curl -fsS "$SERVER_URL/api/system/bootstrap-status" 2>&1) \
+        || { echo "GET /api/system/bootstrap-status failed: $body"; return 1; }
+    echo "$body" | jq -e 'has("needs_bootstrap")' >/dev/null \
+        || { echo "unexpected body: $body"; return 1; }
+}
+
+# /api/health is JWT-gated, so this runs after login with $TOKEN set.
+t_health_endpoint_authenticated() {
+    local body
+    body=$(curl -fsS -H "Authorization: Bearer $TOKEN" "$SERVER_URL/api/health" 2>&1) \
+        || { echo "GET /api/health failed: $body"; return 1; }
+    echo "$body" | jq -e '.status == "ok" and .couchdb == "ok"' >/dev/null \
+        || { echo "health not ok: $body"; return 1; }
+}
+
+# /admin redirects (303) to /admin/status; follow with -L and verify the
+# final response is text/html.
+t_admin_ui_serves_html() {
+    local headers
+    headers=$(curl -fsSIL "$SERVER_URL/admin" 2>&1) \
+        || { echo "GET /admin failed: $headers"; return 1; }
+    echo "$headers" | grep -qi '^content-type:.*text/html' \
+        || { echo "/admin did not return text/html:"; echo "$headers"; return 1; }
+}
+
+# Bootstrap a credential on first run and cache it. On subsequent runs we
+# already have the JSON and skip straight to login.
+ensure_credentials() {
+    if [[ -f "$CREDS_FILE" ]] && jq -e '.access_key_id' "$CREDS_FILE" >/dev/null 2>&1; then
+        return 0
+    fi
+    local out
+    out=$("$BINARY" bootstrap --config "$CONFIG_FILE" --json 2>&1) \
+        || { echo "bootstrap failed: $out"; return 1; }
+    echo "$out" | jq -e '.access_key_id' >/dev/null \
+        || { echo "bootstrap returned no access_key_id: $out"; return 1; }
+    echo "$out" > "$CREDS_FILE"
+}
+
+# Single test entry that gates the rest: if we can't get creds, everything
+# below is unreachable.
+t_bootstrap_credentials() {
+    ensure_credentials
+}
+
+api_login() {
+    local key secret
+    key=$(jq -r '.access_key_id' "$CREDS_FILE")
+    secret=$(jq -r '.secret_key' "$CREDS_FILE")
+    curl -fsS -X POST "$SERVER_URL/api/auth/login" \
+        -H 'Content-Type: application/json' \
+        -d "{\"access_key_id\":\"$key\",\"secret_key\":\"$secret\"}" \
+        | jq -r '.token'
+}
+
+TOKEN=""
+t_jwt_login() {
+    TOKEN=$(api_login 2>&1) || { echo "login failed: $TOKEN"; return 1; }
+    [[ -n "$TOKEN" && "$TOKEN" != "null" ]] || { echo "empty token"; return 1; }
+}
+
+t_jwt_login_wrong_secret() {
+    local key status
+    key=$(jq -r '.access_key_id' "$CREDS_FILE")
+    status=$(curl -sk -o /dev/null -w '%{http_code}' \
+        -X POST "$SERVER_URL/api/auth/login" \
+        -H 'Content-Type: application/json' \
+        -d "{\"access_key_id\":\"$key\",\"secret_key\":\"definitely_wrong\"}")
+    [[ "$status" == "401" ]] || { echo "expected 401, got $status"; return 1; }
+}
+
+t_agent_registered() {
+    local body count
+    body=$(curl -fsS -H "Authorization: Bearer $TOKEN" "$SERVER_URL/api/nodes" 2>&1) \
+        || { echo "GET /api/nodes failed: $body"; return 1; }
+    count=$(echo "$body" | jq '.items | length // 0')
+    [[ "$count" -ge 1 ]] || { echo "expected ≥1 node, got $count: $body"; return 1; }
+}
+
+# The agent does an initial crawl on startup and re-crawls every 15s. Give
+# it up to 30s for dev-data/README.md to appear via /api/files/by-path.
+t_readme_indexed() {
+    local target="$DEV_DATA/README.md"
+    local url="$SERVER_URL/api/files/by-path?path=$target"
+    for _ in $(seq 1 30); do
+        local status
+        status=$(curl -sk -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer $TOKEN" "$url")
+        if [[ "$status" == "200" ]]; then
+            return 0
+        fi
+        sleep 1
+    done
+    echo "README.md not indexed at $target after 30s (last status $status)"
+    return 1
+}
+
+t_readme_content() {
+    local target="$DEV_DATA/README.md"
+    local body file_id
+    body=$(curl -fsS -H "Authorization: Bearer $TOKEN" \
+        "$SERVER_URL/api/files/by-path?path=$target" 2>&1) \
+        || { echo "file lookup failed: $body"; return 1; }
+    file_id=$(echo "$body" | jq -r '.id // ._id // empty' | sed 's/^file:://')
+    [[ -n "$file_id" ]] || { echo "no file id in response: $body"; return 1; }
+
+    local content
+    content=$(curl -fsS -H "Authorization: Bearer $TOKEN" \
+        "$SERVER_URL/api/files/$file_id/content" 2>&1) \
+        || { echo "content fetch failed: $content"; return 1; }
+    [[ "$content" == "Hello world" ]] \
+        || { printf 'content mismatch: got %q\n' "$content"; return 1; }
+}
+
+# ── Run ─────────────────────────────────────────────────────────────────────
+run_test "CouchDB reachable"                 t_couchdb_reachable
+run_test "mosaicfs process alive"            t_mosaicfs_process_alive
+run_test "GET /api/system/bootstrap-status"  t_bootstrap_status_reachable
+run_test "GET /admin serves HTML"            t_admin_ui_serves_html
+run_test "bootstrap yields credentials"      t_bootstrap_credentials
+
+if [[ -f "$CREDS_FILE" ]]; then
+    run_test "JWT login with valid secret"   t_jwt_login
+    run_test "JWT login rejects wrong secret" t_jwt_login_wrong_secret
+    if [[ -n "$TOKEN" ]]; then
+        run_test "GET /api/health (authenticated)" t_health_endpoint_authenticated
+        run_test "agent registered (/api/nodes)"   t_agent_registered
+        run_test "crawler indexed dev-data/README.md" t_readme_indexed
+        run_test "README.md content round-trips"      t_readme_content
+    fi
+fi
+
+# ── Summary ─────────────────────────────────────────────────────────────────
+echo
+TOTAL=$((PASS + FAIL))
+echo "── Results ─────────────────────────────────────"
+printf "  Run:    %d\n" "$TOTAL"
+printf "  Passed: %s%d%s\n" "$GREEN" "$PASS" "$NC"
+printf "  Failed: %s%d%s\n" "$RED" "$FAIL" "$NC"
+if (( FAIL > 0 )); then
+    echo
+    echo "${YELLOW}Failed:${NC}"
+    for n in "${FAIL_NAMES[@]}"; do echo "  - $n"; done
+    exit 1
+fi
