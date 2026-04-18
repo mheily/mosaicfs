@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Tear down a dev environment previously started by
+# scripts/start-dev-environment: stop the mosaicfs binary and remove the
+# CouchDB container. Persistent data (dev-data, dev-config, dev-run logs,
+# the couchdb volume) is left in place so a subsequent start-dev-environment
+# picks up where you left off. To wipe the CouchDB volume, run:
+#   <runtime> volume rm mosaicfs-couchdb-data
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
+
+DEV_RUN="$REPO_ROOT/dev-run"
+PID_FILE="$DEV_RUN/mosaicfs.pid"
+DB_CONTAINER="mosaicfs-db"
+
+log() { printf '==> %s\n' "$*"; }
+
+# ── Detect container runtime (same rules as start-dev-environment) ──────────
+CONTAINER=""
+case "$(uname)" in
+    Darwin)
+        if   [[ -x /usr/local/bin/container ]]; then CONTAINER=/usr/local/bin/container
+        elif command -v podman >/dev/null 2>&1; then CONTAINER=$(command -v podman)
+        elif command -v docker >/dev/null 2>&1; then CONTAINER=$(command -v docker)
+        fi ;;
+    Linux)
+        if   command -v podman >/dev/null 2>&1; then CONTAINER=$(command -v podman)
+        elif command -v docker >/dev/null 2>&1; then CONTAINER=$(command -v docker)
+        fi ;;
+esac
+
+# ── Stop the mosaicfs binary ────────────────────────────────────────────────
+if [[ -f "$PID_FILE" ]]; then
+    pid=$(cat "$PID_FILE")
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+        log "Stopping mosaicfs (pid $pid)"
+        kill "$pid" 2>/dev/null || true
+        for _ in $(seq 1 30); do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.5
+        done
+        if kill -0 "$pid" 2>/dev/null; then
+            log "Forcing kill of pid $pid"
+            kill -9 "$pid" 2>/dev/null || true
+        fi
+    else
+        log "PID file present but pid $pid not running; cleaning up"
+    fi
+    rm -f "$PID_FILE"
+else
+    log "No PID file at $PID_FILE; skipping binary stop"
+fi
+
+# ── Remove the CouchDB container ────────────────────────────────────────────
+if [[ -n "$CONTAINER" ]] && "$CONTAINER" inspect "$DB_CONTAINER" >/dev/null 2>&1; then
+    log "Removing CouchDB container $DB_CONTAINER"
+    "$CONTAINER" rm -f "$DB_CONTAINER" >/dev/null 2>&1 || true
+else
+    log "No $DB_CONTAINER container to remove"
+fi
+
+log "Dev environment stopped."
