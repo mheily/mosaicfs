@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# Poll target/debug/mosaicfs for new builds and restart only the server process.
+# Run this in a separate terminal alongside `cargo watch -x build` or repeated
+# `cargo build` invocations. CouchDB is left untouched.
+#
+# Requires a dev environment already started with scripts/start-dev-environment.
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
+
+DEV_CONFIG="$REPO_ROOT/dev-config"
+DEV_RUN="$REPO_ROOT/dev-run"
+CONFIG_FILE="$DEV_CONFIG/mosaicfs.toml"
+LOG_FILE="$DEV_RUN/mosaicfs.log"
+PID_FILE="$DEV_RUN/mosaicfs.pid"
+BINARY="$REPO_ROOT/target/debug/mosaicfs"
+WEB_UI_PORT=8443
+
+POLL_INTERVAL=1   # seconds between mtime checks
+
+log() { printf '==> %s\n' "$*"; }
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+# ── Preflight checks ─────────────────────────────────────────────────────────
+[[ -f "$CONFIG_FILE" ]] || die "no config at $CONFIG_FILE; run scripts/start-dev-environment first"
+[[ -x "$BINARY" ]]      || die "$BINARY not found; run cargo build first"
+
+if [[ ! -f "$PID_FILE" ]] || ! kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+    die "mosaicfs is not running; start with scripts/start-dev-environment"
+fi
+
+# ── mtime helper ─────────────────────────────────────────────────────────────
+get_mtime() {
+    case "$(uname)" in
+        Darwin) stat -f '%m' "$1" ;;
+        *)      stat -c '%Y' "$1" ;;
+    esac
+}
+
+# ── Restart helper ───────────────────────────────────────────────────────────
+restart_server() {
+    if [[ -f "$PID_FILE" ]]; then
+        local old_pid
+        old_pid=$(cat "$PID_FILE")
+        if [[ -n "$old_pid" ]] && kill -0 "$old_pid" 2>/dev/null; then
+            log "Stopping mosaicfs (pid $old_pid)"
+            kill "$old_pid" 2>/dev/null || true
+            for _ in $(seq 1 30); do
+                kill -0 "$old_pid" 2>/dev/null || break
+                sleep 0.5
+            done
+            if kill -0 "$old_pid" 2>/dev/null; then
+                kill -9 "$old_pid" 2>/dev/null || true
+            fi
+        fi
+        rm -f "$PID_FILE"
+    fi
+
+    log "Starting mosaicfs (logs appended to $LOG_FILE)"
+    nohup "$BINARY" --config "$CONFIG_FILE" >>"$LOG_FILE" 2>&1 &
+    echo $! > "$PID_FILE"
+    disown || true
+
+    sleep 1
+    if ! kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+        log "ERROR: mosaicfs exited immediately — check $LOG_FILE"
+        return
+    fi
+
+    local ready_url="http://127.0.0.1:${WEB_UI_PORT}/api/system/bootstrap-status"
+    printf '    waiting for web_ui'
+    for _ in $(seq 1 30); do
+        if curl -fsS -o /dev/null "$ready_url" 2>/dev/null; then
+            printf ' ready.\n'
+            log "Restarted (pid $(cat "$PID_FILE"))  http://127.0.0.1:${WEB_UI_PORT}/admin"
+            return
+        fi
+        if ! kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+            printf '\n'
+            log "ERROR: mosaicfs exited during startup — check $LOG_FILE"
+            return
+        fi
+        printf '.'; sleep 1
+    done
+    printf '\n'
+    log "WARNING: web_ui did not become ready within 30s — check $LOG_FILE"
+}
+
+# ── Main watch loop ───────────────────────────────────────────────────────────
+last_mtime=$(get_mtime "$BINARY")
+log "Watching $BINARY (poll every ${POLL_INTERVAL}s). Ctrl-C to stop."
+
+while true; do
+    sleep "$POLL_INTERVAL"
+
+    [[ -x "$BINARY" ]] || continue   # binary absent mid-build, wait
+
+    current_mtime=$(get_mtime "$BINARY")
+    if [[ "$current_mtime" != "$last_mtime" ]]; then
+        log "New build detected (mtime $last_mtime → $current_mtime)"
+        last_mtime="$current_mtime"
+        restart_server
+    fi
+done
