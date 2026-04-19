@@ -89,6 +89,9 @@ restart_server() {
 }
 
 # ── Main watch loop ───────────────────────────────────────────────────────────
+
+restart_server
+
 last_mtime=$(get_mtime "$BINARY")
 log "Watching $BINARY (poll every ${POLL_INTERVAL}s). Ctrl-C to stop."
 

@@ -27,6 +27,7 @@ PID_FILE="$DEV_RUN/mosaicfs.pid"
 
 DB_CONTAINER="mosaicfs-db"
 DB_PORT=5984
+DB_HOST="127.0.0.1"   # overridden to container IP for apple runtime (no localhost port-forward)
 DB_USER=admin
 DB_PASSWORD=changeme
 WEB_UI_PORT=8443
@@ -81,42 +82,87 @@ BINARY="$REPO_ROOT/target/debug/mosaicfs"
 [[ -x "$BINARY" ]] || die "$BINARY not found after build"
 
 # ── 2. Start CouchDB container ──────────────────────────────────────────────
+# Fastest-first strategy:
+#   1. DB already responding  → nothing to do.
+#   2. Container stopped      → start it (no rebuild).
+#   3. Image exists           → run a new container (no rebuild).
+#   4. Image absent           → build it, then run.
+#
+# Apple's container CLI does not forward ports to 127.0.0.1 — each container
+# gets its own IP on a bridged VM network. We resolve that IP from inspect and
+# store it in DB_HOST; podman/docker use the default 127.0.0.1.
+
 if [[ "$RUNTIME" == "apple" ]]; then
-    if ! "$CONTAINER" images 2>/dev/null | awk 'NR>1 {print $1":"$2}' \
-            | grep -qx "$DB_IMAGE"; then
-        log "Building $DB_IMAGE from Dockerfile.mosaicfs-db"
-        "$CONTAINER" build -f Dockerfile.mosaicfs-db -t "$DB_IMAGE" .
+    # inspect returns [] (exit 0) when container is absent.
+    _inspect=$("$CONTAINER" inspect "$DB_CONTAINER" 2>/dev/null)
+    _state=$(echo "$_inspect" | python3 -c \
+        "import json,sys; c=json.load(sys.stdin); print(c[0]['status'] if c else 'absent')" \
+        2>/dev/null || echo absent)
+
+    if [[ "$_state" == "running" ]]; then
+        DB_HOST=$(echo "$_inspect" | python3 -c \
+            "import json,sys; c=json.load(sys.stdin); \
+             print(c[0]['networks'][0]['ipv4Address'].split('/')[0])" 2>/dev/null) || true
+        log "CouchDB container already running at ${DB_HOST}:${DB_PORT}"
+    else
+        # Build image only if it doesn't already exist.
+        if ! "$CONTAINER" image list 2>/dev/null \
+                | awk 'NR>1 {print $1":"$2}' | grep -qx "$DB_IMAGE"; then
+            log "Building $DB_IMAGE from Dockerfile.mosaicfs-db"
+            "$CONTAINER" build -f Dockerfile.mosaicfs-db -t "$DB_IMAGE" .
+        fi
+        if [[ "$_state" == "absent" ]]; then
+            log "Creating CouchDB container"
+            "$CONTAINER" run -d --name "$DB_CONTAINER" \
+                -e "COUCHDB_USER=${DB_USER}" \
+                -e "COUCHDB_PASSWORD=${DB_PASSWORD}" \
+                -v mosaicfs-couchdb-data:/opt/couchdb/data \
+                "$DB_IMAGE" >/dev/null
+        else
+            log "CouchDB container stopped; starting it"
+            "$CONTAINER" start "$DB_CONTAINER" >/dev/null \
+                || die "failed to start $DB_CONTAINER"
+        fi
+        DB_HOST=$("$CONTAINER" inspect "$DB_CONTAINER" 2>/dev/null \
+            | python3 -c \
+                "import json,sys; c=json.load(sys.stdin); \
+                 print(c[0]['networks'][0]['ipv4Address'].split('/')[0])" \
+            2>/dev/null) || true
+        [[ -n "$DB_HOST" ]] || die "could not determine IP for $DB_CONTAINER"
+        log "CouchDB container IP: $DB_HOST"
+    fi
+else
+    # podman / docker: ports forwarded to 127.0.0.1.
+    if curl -fsS -o /dev/null "http://127.0.0.1:${DB_PORT}/" 2>/dev/null; then
+        log "CouchDB already running — skipping"
+    else
+        run_out=$("$CONTAINER" run -d --name "$DB_CONTAINER" \
+            -p "127.0.0.1:${DB_PORT}:5984" \
+            -e "COUCHDB_USER=${DB_USER}" \
+            -e "COUCHDB_PASSWORD=${DB_PASSWORD}" \
+            -v mosaicfs-couchdb-data:/opt/couchdb/data \
+            "$DB_IMAGE" 2>&1) && run_rc=0 || run_rc=$?
+        if [[ "$run_rc" -eq 0 ]]; then
+            log "Started fresh CouchDB container"
+        elif echo "$run_out" | grep -qiE 'already (in use|exists)|exists'; then
+            log "CouchDB container exists; starting it"
+            "$CONTAINER" start "$DB_CONTAINER" >/dev/null 2>&1 \
+                || die "failed to start existing $DB_CONTAINER"
+        else
+            die "failed to create CouchDB container: $run_out"
+        fi
     fi
 fi
 
-# Apple's `container inspect <missing>` exits 0 with output `[]`, so we
-# can't rely on inspect to test existence portably. Instead, try to run a
-# fresh container; on failure (name already in use), fall back to start.
-run_out=$("$CONTAINER" run -d --name "$DB_CONTAINER" \
-    -p "127.0.0.1:${DB_PORT}:5984" \
-    -e "COUCHDB_USER=${DB_USER}" \
-    -e "COUCHDB_PASSWORD=${DB_PASSWORD}" \
-    -v mosaicfs-couchdb-data:/opt/couchdb/data \
-    "$DB_IMAGE" 2>&1) && run_rc=0 || run_rc=$?
-if [[ "$run_rc" -eq 0 ]]; then
-    log "Started fresh CouchDB container"
-elif echo "$run_out" | grep -qiE 'already (in use|exists)|exists'; then
-    log "CouchDB container exists; starting it"
-    "$CONTAINER" start "$DB_CONTAINER" >/dev/null 2>&1 \
-        || die "failed to start existing $DB_CONTAINER: $("$CONTAINER" logs "$DB_CONTAINER" 2>&1 | tail -5)"
-else
-    die "failed to create CouchDB container: $run_out"
-fi
-
-printf '    waiting for CouchDB on 127.0.0.1:%s' "$DB_PORT"
+printf '    waiting for CouchDB on %s:%s' "$DB_HOST" "$DB_PORT"
 for _ in $(seq 1 60); do
-    if curl -fsS -o /dev/null "http://127.0.0.1:${DB_PORT}/" 2>/dev/null; then
+    if curl -fsS -o /dev/null "http://${DB_HOST}:${DB_PORT}/" 2>/dev/null; then
         printf ' ready.\n'; break
     fi
     printf '.'; sleep 1
 done
-curl -fsS -o /dev/null "http://127.0.0.1:${DB_PORT}/" 2>/dev/null \
-    || die "CouchDB did not become ready on 127.0.0.1:${DB_PORT} within 60s"
+curl -fsS -o /dev/null "http://${DB_HOST}:${DB_PORT}/" 2>/dev/null \
+    || die "CouchDB did not become ready on ${DB_HOST}:${DB_PORT} within 60s"
 
 # ── 2.5 / 3. Create dev-data and generate the config ────────────────────────
 mkdir -p "$DEV_CONFIG" "$DEV_DATA" "$DEV_RUN" \
@@ -145,7 +191,7 @@ excluded_paths = []
 state_dir      = "$DEV_RUN/agent-state"
 
 [couchdb]
-url      = "http://127.0.0.1:${DB_PORT}"
+url      = "http://${DB_HOST}:${DB_PORT}"
 user     = "${DB_USER}"
 password = "${DB_PASSWORD}"
 
@@ -199,7 +245,7 @@ cat <<EOF
 Dev environment up.
 
   Admin UI     http://127.0.0.1:${WEB_UI_PORT}/admin
-  CouchDB      http://127.0.0.1:${DB_PORT}/_utils  (${DB_USER} / ${DB_PASSWORD})
+  CouchDB      http://${DB_HOST}:${DB_PORT}/_utils  (${DB_USER} / ${DB_PASSWORD})
   Config       $CONFIG_FILE
   Log file     $LOG_FILE
   PID file     $PID_FILE
