@@ -13,6 +13,14 @@
   .ok { color: var(--pico-color-green-550); }
   .warn { color: var(--pico-color-amber-550); }
   .err { color: var(--pico-color-red-550); }
+  .flash {
+    background: #dbeafe;
+    border-left: 4px solid #2563eb;
+    color: #1e3a8a;
+    padding: 0.75rem 1rem;
+    border-radius: 4px;
+    margin-bottom: 1rem;
+  }
 </style>
 </head>
 <body>
@@ -35,7 +43,7 @@
 </nav>
 <hr>
 {% endif %}
-{% if flash %}<article>{{ flash }}</article>{% endif %}
+{% if flash %}<div class="flash">{{ flash }}</div>{% endif %}
 {% block content %}{% endblock content %}
 </main>
 </body>

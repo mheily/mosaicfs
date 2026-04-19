@@ -434,52 +434,61 @@ pub async fn settings_backup_page(session: Session) -> Response {
 
 // ── VFS ──
 
-/// Loads node list and per-node export roots from CouchDB.
+/// Loads node list and per-node watched paths from CouchDB.
+/// Paths come from `node.storage[].watch_paths_on_fs`, which are the actual
+/// directories the agent indexes — the right thing to offer as mount source paths.
 /// Returns (nodes_json, node_exports_json) as pre-serialized strings for embedding in templates.
 async fn load_node_data(state: &AppState) -> (String, String) {
-    let nodes: Vec<serde_json::Value> = match state.db.all_docs_by_prefix("node::", true).await {
-        Ok(r) => r
+    let mut nodes: Vec<serde_json::Value> = Vec::new();
+    let mut node_exports: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+
+    if let Ok(r) = state.db.all_docs_by_prefix("node::", true).await {
+        for doc in r
             .rows
             .into_iter()
             .filter_map(|row| row.doc)
             .filter(|d| d.get("type").and_then(|v| v.as_str()) == Some("node"))
-            .map(|d| {
-                let node_id = d
-                    .get("_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .trim_start_matches("node::")
-                    .to_string();
-                let friendly_name = d
-                    .get("friendly_name")
-                    .and_then(|v| v.as_str())
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string)
-                    .unwrap_or_else(|| node_id.clone());
-                serde_json::json!({"node_id": node_id, "friendly_name": friendly_name})
-            })
-            .collect(),
-        Err(_) => vec![],
-    };
-    let mut node_exports: std::collections::HashMap<String, Vec<String>> =
-        std::collections::HashMap::new();
-    if let Ok(r) = state.db.all_docs_by_prefix("filesystem::", true).await {
-        for row in r.rows {
-            if let Some(doc) = row.doc {
-                if doc.get("type").and_then(|v| v.as_str()) == Some("filesystem") {
-                    if let (Some(owner), Some(root)) = (
-                        doc.get("owning_node_id").and_then(|v| v.as_str()),
-                        doc.get("export_root").and_then(|v| v.as_str()),
-                    ) {
-                        node_exports
-                            .entry(owner.to_string())
-                            .or_default()
-                            .push(root.to_string());
-                    }
-                }
-            }
+        {
+            let node_id = doc
+                .get("_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim_start_matches("node::")
+                .to_string();
+            let friendly_name = doc
+                .get("friendly_name")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| node_id.clone());
+
+            // Collect every watch_path across all storage entries for this node.
+            let mut paths: Vec<String> = doc
+                .get("storage")
+                .and_then(|v| v.as_array())
+                .map(|entries| {
+                    entries
+                        .iter()
+                        .flat_map(|e| {
+                            e.get("watch_paths_on_fs")
+                                .and_then(|v| v.as_array())
+                                .cloned()
+                                .unwrap_or_default()
+                        })
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            paths.sort();
+            paths.dedup();
+
+            nodes.push(serde_json::json!({"node_id": node_id, "friendly_name": friendly_name}));
+            node_exports.insert(node_id, paths);
         }
     }
+
     (
         serde_json::to_string(&nodes).unwrap_or_else(|_| "[]".to_string()),
         serde_json::to_string(&node_exports).unwrap_or_else(|_| "{}".to_string()),

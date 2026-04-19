@@ -623,15 +623,21 @@ pub async fn create_vfs_dir_action(
     session: Session,
     Form(form): Form<CreateVfsDirForm>,
 ) -> Response {
-    let path = form.path.trim().to_string();
-    if !path.starts_with('/') || path.starts_with("/federation/") || path.contains("//") {
+    // Normalize: ensure leading slash, strip trailing slash (except root).
+    let raw = form.path.trim().to_string();
+    let path = if raw.starts_with('/') {
+        raw.trim_end_matches('/').to_string().max("/".to_string())
+    } else {
+        format!("/{}", raw.trim_end_matches('/'))
+    };
+    if path.starts_with("/federation/") || path.contains("//") {
         set_flash(&session, "Invalid virtual path.").await;
-        return redirect("/admin/vfs");
+        return redirect("/admin/vfs/new");
     }
     let doc_id = dir_id_for(&path);
     if state.db.get_document(&doc_id).await.is_ok() {
         set_flash(&session, format!("Directory '{}' already exists.", path)).await;
-        return redirect("/admin/vfs");
+        return redirect("/admin/vfs/new");
     }
     let name = path
         .trim_end_matches('/')
@@ -673,11 +679,11 @@ pub async fn create_vfs_dir_action(
     match state.db.put_document(&doc_id, &doc).await {
         Ok(_) => {
             set_flash(&session, format!("Directory '{}' created.", path)).await;
-            redirect(&format!("/admin/vfs/dir?path={}", urlencoding::encode(&path)))
+            redirect("/admin/vfs")
         }
         Err(e) => {
             set_flash(&session, format!("Create failed: {e}")).await;
-            redirect("/admin/vfs")
+            redirect("/admin/vfs/new")
         }
     }
 }
