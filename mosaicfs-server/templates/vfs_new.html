@@ -8,7 +8,9 @@
 
     <label>
       Folder path
-      <input type="text" name="path" placeholder="/photos" required autofocus>
+      <input type="text" name="path"
+             value="{% if parent_path %}{{ parent_path }}/{% endif %}"
+             placeholder="/photos" required autofocus>
       <small>Where this directory appears in your filesystem — e.g. <code>/photos</code> or <code>/work/documents</code>.</small>
     </label>
 

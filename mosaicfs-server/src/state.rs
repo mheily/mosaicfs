@@ -76,6 +76,8 @@ pub struct AppState {
     pub developer_mode: bool,
     /// Server startup time for uptime calculation
     pub started_at: Instant,
+    /// This node's ID, if known — used to resolve local file paths for the open-file feature.
+    pub node_id: Option<String>,
 }
 
 impl AppState {
@@ -89,6 +91,7 @@ impl AppState {
         label_cache: Arc<LabelCache>,
         access_cache: Arc<AccessCache>,
         developer_mode: bool,
+        node_id: Option<String>,
     ) -> Self {
         Self {
             db,
@@ -106,6 +109,7 @@ impl AppState {
             restore_jobs: Arc::new(Mutex::new(HashMap::new())),
             developer_mode,
             started_at: Instant::now(),
+            node_id,
         }
     }
 

@@ -84,6 +84,7 @@ fn tera() -> &'static Tera {
                 "storage_backends.html",
                 include_str!("../../templates/storage_backends.html"),
             ),
+            ("browse.html", include_str!("../../templates/browse.html")),
             ("vfs.html", include_str!("../../templates/vfs.html")),
             ("vfs_new.html", include_str!("../../templates/vfs_new.html")),
             (
@@ -156,7 +157,8 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/admin/assets/{*path}", get(serve_asset));
 
     let protected: Router<Arc<AppState>> = Router::new()
-        .route("/admin", get(|| async { Redirect::to("/admin/status") }))
+        .route("/admin", get(|| async { Redirect::to("/admin/browse") }))
+        .route("/admin/browse", get(views::browse_page))
         .route("/admin/status", get(views::status_page))
         .route("/admin/status/panel", get(views::status_panel))
         .route("/admin/nodes", get(views::nodes_page))
@@ -240,6 +242,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/admin/vfs/dir/mounts/steps/add", post(actions::add_vfs_step_action))
         .route("/admin/vfs/dir/mounts/steps/delete", post(actions::delete_vfs_step_action))
         .route("/admin/vfs/dir/mounts/steps/move", post(actions::move_vfs_step_action))
+        .route("/admin/vfs/open-file", post(actions::open_file_action))
         .layer(middleware::from_fn(require_auth));
 
     Router::new().merge(public).merge(protected).layer(session_layer)

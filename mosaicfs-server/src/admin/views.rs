@@ -533,13 +533,182 @@ pub async fn vfs_page(State(state): State<Arc<AppState>>, session: Session) -> R
     render("vfs.html", &ctx)
 }
 
-pub async fn vfs_new_page(State(state): State<Arc<AppState>>, session: Session) -> Response {
+pub async fn vfs_new_page(
+    State(state): State<Arc<AppState>>,
+    session: Session,
+    Query(query): Query<VfsNewQuery>,
+) -> Response {
     let mut ctx = page_ctx(&session).await;
     ctx.insert("title", "Create Directory — MosaicFS VFS");
+    let parent = query.parent.as_deref().unwrap_or("").to_string();
+    ctx.insert("parent_path", &parent);
     let (nodes_json, node_exports_json) = load_node_data(&state).await;
     ctx.insert("nodes_json", &nodes_json);
     ctx.insert("node_exports_json", &node_exports_json);
     render("vfs_new.html", &ctx)
+}
+
+#[derive(Deserialize)]
+pub struct VfsNewQuery {
+    pub parent: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct BrowseQuery {
+    pub path: Option<String>,
+}
+
+pub async fn browse_page(
+    State(state): State<Arc<AppState>>,
+    session: Session,
+    Query(query): Query<BrowseQuery>,
+) -> Response {
+    let path = query.path.as_deref().unwrap_or("/").to_string();
+    let mut ctx = page_ctx(&session).await;
+    ctx.insert("title", "Browse — MosaicFS");
+    ctx.insert("current_path", &path);
+    ctx.insert("crumbs", &build_breadcrumbs(&path));
+
+    let doc_id = dir_id_for(&path);
+    match state.db.get_document(&doc_id).await {
+        Ok(doc) => {
+            let mount_count = doc
+                .get("mounts")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
+            ctx.insert("dir_exists", &true);
+            ctx.insert("is_system", &doc.get("system").and_then(|v| v.as_bool()).unwrap_or(false));
+            ctx.insert("mount_count", &mount_count);
+        }
+        Err(_) => {
+            ctx.insert("dir_exists", &false);
+            ctx.insert("is_system", &false);
+            ctx.insert("mount_count", &0usize);
+        }
+    }
+
+    let all_dirs = match state.db.all_docs_by_prefix("dir::", true).await {
+        Ok(r) => r,
+        Err(_) => {
+            ctx.insert("subdirs", &Vec::<serde_json::Value>::new());
+            ctx.insert("files", &Vec::<serde_json::Value>::new());
+            return render("browse.html", &ctx);
+        }
+    };
+
+    let mut subdirs: Vec<serde_json::Value> = all_dirs
+        .rows
+        .iter()
+        .filter_map(|row| row.doc.as_ref())
+        .filter(|d| {
+            d.get("type").and_then(|v| v.as_str()) == Some("virtual_directory")
+                && d.get("parent_path").and_then(|v| v.as_str()) == Some(path.as_str())
+        })
+        .map(|d| {
+            serde_json::json!({
+                "virtual_path": d.get("virtual_path").and_then(|v| v.as_str()).unwrap_or(""),
+                "name": d.get("name").and_then(|v| v.as_str()).unwrap_or(""),
+                "mount_count": d.get("mounts").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0),
+            })
+        })
+        .collect();
+    subdirs.sort_by(|a, b| {
+        a.get("name").and_then(|v| v.as_str()).unwrap_or("")
+            .cmp(b.get("name").and_then(|v| v.as_str()).unwrap_or(""))
+    });
+    ctx.insert("subdirs", &subdirs);
+
+    // Evaluate the mount pipeline to get the file list for this directory,
+    // the same way the FUSE readdir does.
+    let child_dir_names: Vec<String> = subdirs
+        .iter()
+        .filter_map(|d| d.get("name").and_then(|v| v.as_str()).map(str::to_string))
+        .collect();
+
+    let files: Vec<serde_json::Value> = if let Ok(dir_doc) =
+        state.db.get_document(&dir_id_for(&path)).await
+    {
+        use crate::handlers::vfs::parse_step_based_mounts_pub;
+        use crate::readdir as rd;
+
+        let mounts_json = dir_doc
+            .get("mounts")
+            .cloned()
+            .unwrap_or(serde_json::json!([]));
+        let mount_entries = parse_step_based_mounts_pub(&mounts_json);
+
+        let mut inherited_steps =
+            rd::collect_inherited_steps(&state.db, &path)
+                .await
+                .unwrap_or_default();
+        if let Some(dir_steps) = dir_doc.get("steps").and_then(|v| v.as_array()) {
+            for s in dir_steps {
+                if let Ok(step) =
+                    serde_json::from_value::<mosaicfs_common::documents::Step>(s.clone())
+                {
+                    inherited_steps.push(step);
+                }
+            }
+        }
+
+        match rd::evaluate_readdir(
+            &state.db,
+            &state.label_cache,
+            &state.access_cache,
+            &mount_entries,
+            &inherited_steps,
+            &child_dir_names,
+        )
+        .await
+        {
+            Ok(entries) => entries
+                .iter()
+                .map(|e| {
+                    let uuid = e.file_id.strip_prefix("file::").unwrap_or(&e.file_id);
+                    let mut labels: Vec<String> =
+                        state.label_cache.get_labels(uuid).into_iter().collect();
+                    labels.sort();
+                    serde_json::json!({
+                        "file_id": e.file_id,
+                        "name": e.name,
+                        "source_node": e.source_node_id,
+                        "mime_type": e.mime_type.as_deref().unwrap_or(""),
+                        "labels": labels,
+                    })
+                })
+                .collect(),
+            Err(_) => vec![],
+        }
+    } else {
+        vec![]
+    };
+    ctx.insert("files", &files);
+
+    render("browse.html", &ctx)
+}
+
+fn build_breadcrumbs(path: &str) -> Vec<serde_json::Value> {
+    let mut crumbs =
+        vec![serde_json::json!({"label": "root", "path": "/", "is_current": path == "/"})];
+    if path == "/" {
+        return crumbs;
+    }
+    let parts: Vec<&str> = path
+        .trim_start_matches('/')
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .collect();
+    let mut accumulated = String::new();
+    for (i, part) in parts.iter().enumerate() {
+        accumulated = format!("{}/{}", accumulated, part);
+        crumbs.push(serde_json::json!({
+            "label": part,
+            "path": accumulated.clone(),
+            "is_current": i == parts.len() - 1,
+        }));
+    }
+    crumbs
 }
 
 #[derive(Deserialize)]

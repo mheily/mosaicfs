@@ -103,6 +103,22 @@ pub async fn start_web_ui(
     access_cache.build(&db).await?;
     info!("Materialized caches built");
 
+    // Resolve this node's ID so the open-file feature can translate remote
+    // paths via network mounts. Prefer the explicit config value; fall back
+    // to the persisted file written by the agent subsystem.
+    let node_id = cfg.node.node_id.clone().or_else(|| {
+        cfg.agent
+            .as_ref()
+            .and_then(|a| a.state_dir.as_ref())
+            .map(|d| d.join("node_id"))
+            .and_then(|p| std::fs::read_to_string(&p).ok())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    });
+    if let Some(ref id) = node_id {
+        info!(node_id = %id, "Server node identity resolved");
+    }
+
     let state = Arc::new(AppState::new(
         db,
         jwt_secret,
@@ -113,6 +129,7 @@ pub async fn start_web_ui(
         Arc::clone(&label_cache),
         Arc::clone(&access_cache),
         developer_mode,
+        node_id,
     ));
 
     handlers::vfs::ensure_root_directory(&state).await?;

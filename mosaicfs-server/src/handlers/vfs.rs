@@ -225,6 +225,10 @@ pub async fn get_tree(
 }
 
 /// Convert a JSON mounts array (possibly in step-based format) into `MountEntry` objects.
+pub fn parse_step_based_mounts_pub(mounts_json: &serde_json::Value) -> Vec<MountEntry> {
+    parse_step_based_mounts(mounts_json)
+}
+
 fn parse_step_based_mounts(mounts_json: &serde_json::Value) -> Vec<MountEntry> {
     let arr = match mounts_json.as_array() {
         Some(a) => a,
