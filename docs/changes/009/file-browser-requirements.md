@@ -69,7 +69,8 @@ Behavior:
         - When the value is larger than 999, move up to the next unit.
 	
 	Examples of how to convert from SI units to Mosaicfs display file sizes:
-		- 885 bytes -> 8B
+		- 0 bytes -> 0
+		- 885 bytes -> 1K
 		- 1024 KiB -> 1M
 		- 1524 KiB -> 2M
 		- 999 MiB -> 999M
