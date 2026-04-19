@@ -1,0 +1,351 @@
+{% extends "layout.html" %}
+{% block content %}
+<p><a href="/admin/vfs">← Virtual Filesystem</a></p>
+
+{% if not exists %}
+<p class="err">Directory not found.</p>
+{% else %}
+
+<h2><code>{{ dir.virtual_path }}</code></h2>
+
+<article>
+  <header><strong>Settings</strong></header>
+  <form method="post" action="/admin/vfs/dir/settings">
+    <input type="hidden" name="virtual_path" value="{{ dir.virtual_path }}">
+    <label>
+      Display name
+      <input type="text" name="name" value="{{ dir.name }}">
+      <small>Optional label shown in the admin UI. Does not affect the filesystem path.</small>
+    </label>
+    <label>
+      <input type="checkbox" name="enforce_steps_on_children" value="1"
+             {% if dir.enforce_steps_on_children %}checked{% endif %}>
+      Apply this directory's filters to all subdirectories
+      <small>When enabled, subdirectories inherit the filter rules defined in the sources below.</small>
+    </label>
+    <button type="submit">Save</button>
+  </form>
+  {% if not dir.is_system %}
+  <hr>
+  <form method="post" action="/admin/vfs/dir/delete"
+        onsubmit="return confirm('Delete {{ dir.virtual_path }} and all its sources?');" style="margin:0">
+    <input type="hidden" name="virtual_path" value="{{ dir.virtual_path }}">
+    <button type="submit" class="secondary outline">Delete this directory</button>
+  </form>
+  {% endif %}
+</article>
+
+<h3>Sources</h3>
+<p class="muted" style="margin-top:-0.5rem">
+  Each source tells MosaicFS where to look for files to show in this directory.
+</p>
+
+{% if mounts | length == 0 %}
+<p>No sources configured yet — use the form below to add one.</p>
+{% else %}
+{% for m in mounts %}
+<article>
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:1rem">
+    <div>
+      <p style="margin:0 0 0.25rem 0">
+        {% if m.source_type == "node" %}
+          Files from <strong>{{ m.source_display }}</strong>
+        {% elif m.source_type == "label" %}
+          Files labeled <strong>{{ m.source_display }}</strong>
+        {% elif m.source_type == "federated" %}
+          Files from federated import <strong>{{ m.source_display }}</strong>
+        {% else %}
+          Unknown source
+        {% endif %}
+      </p>
+      <small class="muted">
+        {% if m.strategy == "flatten" %}merged into one list{% else %}folder structure preserved{% endif %}
+        &nbsp;·&nbsp;
+        {% if m.default_result == "include" %}include by default{% elif m.default_result == "exclude" %}exclude by default{% else %}{{ m.default_result }} by default{% endif %}
+        &nbsp;·&nbsp;
+        {% if m.conflict_policy == "last_write_wins" %}last-write-wins{% else %}keep both copies{% endif %}
+        {% if m.steps | length > 0 %}
+        &nbsp;·&nbsp; <strong>{{ m.steps | length }} filter(s) active</strong>
+        {% endif %}
+      </small>
+    </div>
+    <form method="post" action="/admin/vfs/dir/mounts/delete"
+          onsubmit="return confirm('Remove this source?');" style="margin:0;flex-shrink:0">
+      <input type="hidden" name="virtual_path" value="{{ dir.virtual_path }}">
+      <input type="hidden" name="mount_id" value="{{ m.mount_id }}">
+      <button type="submit" class="secondary outline" style="padding:0.25rem 0.75rem">Remove</button>
+    </form>
+  </div>
+
+  <details {% if m.steps | length > 0 %}open{% endif %} style="margin-top:0.75rem">
+    <summary>
+      {% if m.steps | length == 0 %}
+        Filters <span class="muted">(none — all files included by default)</span>
+      {% else %}
+        Filters ({{ m.steps | length }} active)
+      {% endif %}
+    </summary>
+    <p class="muted" style="margin:0.5rem 0">
+      Filters are evaluated in order. Each filter can include, exclude, or pass a file to the next filter.
+      Files that reach the end without a decision use the default result above.
+    </p>
+
+    {% if m.steps | length > 0 %}
+    <table>
+      <thead>
+        <tr><th>#</th><th>Filter</th><th>Parameters</th><th>On match</th><th>Invert</th><th></th></tr>
+      </thead>
+      <tbody>
+      {% for s in m.steps %}
+      <tr>
+        <td class="muted">{{ loop.index }}</td>
+        <td><code>{{ s.op }}</code></td>
+        <td class="muted">{{ s.params_summary }}</td>
+        <td>{% if s.on_match %}{{ s.on_match }}{% else %}<span class="muted">default</span>{% endif %}</td>
+        <td>{% if s.invert %}<span class="warn">yes</span>{% else %}<span class="muted">no</span>{% endif %}</td>
+        <td style="white-space:nowrap">
+          {% if not loop.first %}
+          <form method="post" action="/admin/vfs/dir/mounts/steps/move" style="display:inline;margin:0">
+            <input type="hidden" name="virtual_path" value="{{ dir.virtual_path }}">
+            <input type="hidden" name="mount_id" value="{{ m.mount_id }}">
+            <input type="hidden" name="step_idx" value="{{ loop.index0 }}">
+            <input type="hidden" name="direction" value="up">
+            <button type="submit" style="padding:0.1rem 0.4rem" title="Move up">↑</button>
+          </form>
+          {% endif %}
+          {% if not loop.last %}
+          <form method="post" action="/admin/vfs/dir/mounts/steps/move" style="display:inline;margin:0">
+            <input type="hidden" name="virtual_path" value="{{ dir.virtual_path }}">
+            <input type="hidden" name="mount_id" value="{{ m.mount_id }}">
+            <input type="hidden" name="step_idx" value="{{ loop.index0 }}">
+            <input type="hidden" name="direction" value="down">
+            <button type="submit" style="padding:0.1rem 0.4rem" title="Move down">↓</button>
+          </form>
+          {% endif %}
+          <form method="post" action="/admin/vfs/dir/mounts/steps/delete"
+                onsubmit="return confirm('Delete this filter?');" style="display:inline;margin:0">
+            <input type="hidden" name="virtual_path" value="{{ dir.virtual_path }}">
+            <input type="hidden" name="mount_id" value="{{ m.mount_id }}">
+            <input type="hidden" name="step_idx" value="{{ loop.index0 }}">
+            <button type="submit" class="contrast outline" style="padding:0.1rem 0.4rem" title="Delete">×</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+
+    <details style="margin-top:0.75rem">
+      <summary>Add a filter</summary>
+      <form method="post" action="/admin/vfs/dir/mounts/steps/add" style="margin-top:0.5rem">
+        <input type="hidden" name="virtual_path" value="{{ dir.virtual_path }}">
+        <input type="hidden" name="mount_id" value="{{ m.mount_id }}">
+        <div class="grid">
+          <label>
+            Filter type
+            <select name="op" required>
+              <option value="glob">Filename pattern (glob)</option>
+              <option value="regex">Filename regex</option>
+              <option value="mime">MIME type</option>
+              <option value="age">File age (days)</option>
+              <option value="size">File size (bytes)</option>
+              <option value="node">Source machine</option>
+              <option value="label">File label</option>
+              <option value="access_age">Days since last access</option>
+              <option value="replicated">Has replica</option>
+              <option value="annotation">Has plugin annotation</option>
+            </select>
+          </label>
+          <label>
+            When this filter matches
+            <select name="on_match">
+              <option value="">Use the source default</option>
+              <option value="include">Include the file</option>
+              <option value="exclude">Exclude the file</option>
+              <option value="continue">Continue to next filter</option>
+            </select>
+          </label>
+        </div>
+        <label>
+          <input type="checkbox" name="invert" value="1">
+          Invert — match files that do <em>not</em> satisfy this condition
+        </label>
+        <div class="grid">
+          <label>Pattern <small class="muted">(glob / regex / MIME)</small>
+            <input type="text" name="pattern" placeholder="*.pdf">
+          </label>
+          <label>Node ID <small class="muted">(source machine filter)</small>
+            <input type="text" name="step_node_id" placeholder="my-laptop">
+          </label>
+          <label>Label <small class="muted">(label filter)</small>
+            <input type="text" name="step_label" placeholder="work">
+          </label>
+        </div>
+        <div class="grid">
+          <label>Days <small class="muted">(age / access_age)</small>
+            <input type="number" name="days" placeholder="30">
+          </label>
+          <label>Comparison <small class="muted">(age / size / access_age)</small>
+            <select name="comparison">
+              <option value="lt">Less than</option>
+              <option value="gt">Greater than</option>
+              <option value="eq">Equal to</option>
+            </select>
+          </label>
+          <label>Bytes <small class="muted">(size filter)</small>
+            <input type="number" name="bytes" placeholder="1000000">
+          </label>
+        </div>
+        <div class="grid">
+          <label>Missing access data <small class="muted">(access_age)</small>
+            <select name="missing">
+              <option value="include">Include the file</option>
+              <option value="exclude">Exclude the file</option>
+            </select>
+          </label>
+          <label>Replica target <small class="muted">(replicated)</small>
+            <input type="text" name="target" placeholder="backup">
+          </label>
+          <label>Replica status <small class="muted">(replicated)</small>
+            <input type="text" name="status" placeholder="current">
+          </label>
+          <label>Plugin name <small class="muted">(annotation)</small>
+            <input type="text" name="plugin_name" placeholder="ai-summarizer">
+          </label>
+        </div>
+        <button type="submit">Add filter</button>
+      </form>
+    </details>
+  </details>
+</article>
+{% endfor %}
+{% endif %}
+
+<details {% if mounts | length == 0 %}open{% endif %} style="margin-top:1.5rem">
+  <summary><strong>Add a source</strong></summary>
+  <article style="margin-top:0.5rem">
+    <form method="post" action="/admin/vfs/dir/mounts/add">
+      <input type="hidden" name="virtual_path" value="{{ dir.virtual_path }}">
+
+      <fieldset>
+        <legend>What files should this source provide?</legend>
+        <label>
+          <input type="radio" name="source_type" value="node" checked onchange="updateMountFields('node')">
+          <span>
+            <strong>Files from a specific machine</strong><br>
+            <small>Choose a node and folder path.</small>
+          </span>
+        </label>
+        <label>
+          <input type="radio" name="source_type" value="label" onchange="updateMountFields('label')">
+          <span>
+            <strong>Files with a label</strong><br>
+            <small>Include any file tagged with a given label across all nodes.</small>
+          </span>
+        </label>
+        <label>
+          <input type="radio" name="source_type" value="federated" onchange="updateMountFields('federated')">
+          <span>
+            <strong>Federated import</strong><br>
+            <small>Files from a configured federation import source.</small>
+          </span>
+        </label>
+      </fieldset>
+
+      <div id="mount-node-fields">
+        <div class="grid">
+          <label>
+            Node
+            <select name="node_id" id="mount-node-id" onchange="updateExportPaths(this.value)">
+              <option value="">(no nodes registered yet)</option>
+            </select>
+          </label>
+          <label>
+            Folder on that node
+            <select name="export_path" id="mount-export-path">
+              <option value="/">/</option>
+            </select>
+          </label>
+        </div>
+      </div>
+
+      <div id="mount-label-fields" style="display:none">
+        <label>
+          Label name
+          <input type="text" name="label" placeholder="work">
+        </label>
+      </div>
+
+      <div id="mount-federated-fields" style="display:none">
+        <label>
+          Federated import ID
+          <input type="text" name="federated_import_id" placeholder="import-id">
+        </label>
+      </div>
+
+      <details>
+        <summary>Advanced options</summary>
+        <div class="grid">
+          <label>
+            How to arrange files
+            <select name="strategy">
+              <option value="flatten">Flatten — merge everything into one list</option>
+              <option value="prefix_replace">Prefix replace — preserve the source folder structure</option>
+            </select>
+          </label>
+          <label>
+            When no filter matches a file
+            <select name="default_result">
+              <option value="include">Include the file</option>
+              <option value="exclude">Exclude the file</option>
+            </select>
+          </label>
+          <label>
+            When two sources have the same filename
+            <select name="conflict_policy">
+              <option value="last_write_wins">Use the most recently modified copy</option>
+              <option value="suffix_node_id">Keep both, add the source machine name</option>
+            </select>
+          </label>
+        </div>
+      </details>
+
+      <button type="submit">Add source</button>
+    </form>
+  </article>
+</details>
+
+<script>
+var _nodes = {{ nodes_json | safe }};
+var _nodeExports = {{ node_exports_json | safe }};
+
+function updateMountFields(type) {
+  document.getElementById('mount-node-fields').style.display = type === 'node' ? '' : 'none';
+  document.getElementById('mount-label-fields').style.display = type === 'label' ? '' : 'none';
+  document.getElementById('mount-federated-fields').style.display = type === 'federated' ? '' : 'none';
+}
+
+function updateExportPaths(nodeId) {
+  var sel = document.getElementById('mount-export-path');
+  var paths = (_nodeExports[nodeId] && _nodeExports[nodeId].length) ? _nodeExports[nodeId] : ['/'];
+  sel.innerHTML = paths.map(function(p) {
+    return '<option value="' + p + '">' + p + '</option>';
+  }).join('');
+}
+
+(function init() {
+  if (_nodes.length === 0) return;
+  var nodeSel = document.getElementById('mount-node-id');
+  nodeSel.innerHTML = _nodes.map(function(n) {
+    var label = (n.friendly_name && n.friendly_name !== n.node_id)
+      ? n.friendly_name + ' (' + n.node_id + ')'
+      : n.node_id;
+    return '<option value="' + n.node_id + '">' + label + '</option>';
+  }).join('');
+  if (nodeSel.options.length > 0) updateExportPaths(nodeSel.value);
+})();
+</script>
+
+{% endif %}
+{% endblock content %}

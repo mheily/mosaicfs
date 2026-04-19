@@ -84,6 +84,12 @@ fn tera() -> &'static Tera {
                 "storage_backends.html",
                 include_str!("../../templates/storage_backends.html"),
             ),
+            ("vfs.html", include_str!("../../templates/vfs.html")),
+            ("vfs_new.html", include_str!("../../templates/vfs_new.html")),
+            (
+                "vfs_dir.html",
+                include_str!("../../templates/vfs_dir.html"),
+            ),
         ])
         .expect("templates compile");
         tera
@@ -223,6 +229,17 @@ pub fn router() -> Router<Arc<AppState>> {
         )
         .route("/admin/settings/backup", get(views::settings_backup_page))
         .route("/admin/settings/backup/download", get(actions::backup_download))
+        .route("/admin/vfs", get(views::vfs_page))
+        .route("/admin/vfs/new", get(views::vfs_new_page))
+        .route("/admin/vfs/dir", get(views::vfs_dir_page))
+        .route("/admin/vfs/dir/create", post(actions::create_vfs_dir_action))
+        .route("/admin/vfs/dir/delete", post(actions::delete_vfs_dir_action))
+        .route("/admin/vfs/dir/settings", post(actions::patch_vfs_dir_action))
+        .route("/admin/vfs/dir/mounts/add", post(actions::add_vfs_mount_action))
+        .route("/admin/vfs/dir/mounts/delete", post(actions::delete_vfs_mount_action))
+        .route("/admin/vfs/dir/mounts/steps/add", post(actions::add_vfs_step_action))
+        .route("/admin/vfs/dir/mounts/steps/delete", post(actions::delete_vfs_step_action))
+        .route("/admin/vfs/dir/mounts/steps/move", post(actions::move_vfs_step_action))
         .layer(middleware::from_fn(require_auth));
 
     Router::new().merge(public).merge(protected).layer(session_layer)

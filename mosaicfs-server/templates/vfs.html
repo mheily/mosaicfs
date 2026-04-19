@@ -1,0 +1,35 @@
+{% extends "layout.html" %}
+{% block content %}
+<div style="display:flex;align-items:center;justify-content:space-between;gap:1rem;margin-bottom:1rem">
+  <h2 style="margin:0">Virtual Filesystem</h2>
+  <a href="/admin/vfs/new" role="button">Create a directory</a>
+</div>
+
+{% if dirs | length == 0 %}
+<p class="muted">No virtual directories yet.</p>
+{% else %}
+<table>
+  <thead>
+    <tr><th>Path</th><th>Name</th><th>Sources</th><th></th></tr>
+  </thead>
+  <tbody>
+    {% for d in dirs %}
+    <tr>
+      <td><a href="/admin/vfs/dir?path={{ d.virtual_path }}"><code>{{ d.virtual_path }}</code></a></td>
+      <td>{{ d.name }}</td>
+      <td>{{ d.mount_count }}</td>
+      <td>
+        {% if not d.is_system %}
+        <form method="post" action="/admin/vfs/dir/delete"
+              onsubmit="return confirm('Delete {{ d.virtual_path }}?');" style="margin:0">
+          <input type="hidden" name="virtual_path" value="{{ d.virtual_path }}">
+          <button type="submit" class="contrast outline" style="padding:0.25rem 0.75rem">Delete</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock content %}

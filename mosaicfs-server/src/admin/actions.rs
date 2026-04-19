@@ -22,7 +22,7 @@ use uuid::Uuid;
 
 use crate::admin::{base_ctx, render, user_for_ctx, FLASH_KEY, NEW_SECRET_KEY};
 use crate::credentials;
-use crate::handlers::{replication as rephandlers, system as syshandlers};
+use crate::handlers::{replication as rephandlers, system as syshandlers, vfs::dir_id_for};
 use crate::state::AppState;
 use mosaicfs_common::couchdb::CouchError;
 
@@ -593,4 +593,577 @@ pub async fn backup_download(
     Query(query): Query<syshandlers::BackupQuery>,
 ) -> Response {
     syshandlers::backup(State(state), Query(query)).await.into_response()
+}
+
+// ── VFS Directories ──
+
+fn vfs_dir_url(path: &str) -> String {
+    format!("/admin/vfs/dir?path={}", urlencoding::encode(path))
+}
+
+#[derive(Deserialize)]
+pub struct CreateVfsDirForm {
+    pub path: String,
+    pub source_type: String,
+    // node source
+    pub node_id: Option<String>,
+    pub export_path: Option<String>,
+    // label source
+    pub label: Option<String>,
+    // federated source
+    pub federated_import_id: Option<String>,
+    // advanced (optional — defaults applied server-side)
+    pub strategy: Option<String>,
+    pub default_result: Option<String>,
+    pub conflict_policy: Option<String>,
+}
+
+pub async fn create_vfs_dir_action(
+    State(state): State<Arc<AppState>>,
+    session: Session,
+    Form(form): Form<CreateVfsDirForm>,
+) -> Response {
+    let path = form.path.trim().to_string();
+    if !path.starts_with('/') || path.starts_with("/federation/") || path.contains("//") {
+        set_flash(&session, "Invalid virtual path.").await;
+        return redirect("/admin/vfs");
+    }
+    let doc_id = dir_id_for(&path);
+    if state.db.get_document(&doc_id).await.is_ok() {
+        set_flash(&session, format!("Directory '{}' already exists.", path)).await;
+        return redirect("/admin/vfs");
+    }
+    let name = path
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or("")
+        .to_string();
+    let parent_path: Option<String> = if path == "/" {
+        None
+    } else {
+        let parts: Vec<&str> = path.trim_end_matches('/').rsplitn(2, '/').collect();
+        if parts.len() > 1 && !parts[1].is_empty() {
+            Some(parts[1].to_string())
+        } else {
+            Some("/".to_string())
+        }
+    };
+    let inode: u64 = loop {
+        let v: u64 = rand::random();
+        if v >= 1000 {
+            break v;
+        }
+    };
+
+    // Build initial mount from the source fields, if valid.
+    let initial_mount = build_initial_mount(&form);
+
+    let doc = serde_json::json!({
+        "_id": doc_id,
+        "type": "virtual_directory",
+        "inode": inode,
+        "virtual_path": path,
+        "name": name,
+        "parent_path": parent_path,
+        "created_at": Utc::now().to_rfc3339(),
+        "enforce_steps_on_children": false,
+        "mounts": if let Some(m) = initial_mount { serde_json::json!([m]) } else { serde_json::json!([]) },
+    });
+    match state.db.put_document(&doc_id, &doc).await {
+        Ok(_) => {
+            set_flash(&session, format!("Directory '{}' created.", path)).await;
+            redirect(&format!("/admin/vfs/dir?path={}", urlencoding::encode(&path)))
+        }
+        Err(e) => {
+            set_flash(&session, format!("Create failed: {e}")).await;
+            redirect("/admin/vfs")
+        }
+    }
+}
+
+fn build_initial_mount(form: &CreateVfsDirForm) -> Option<serde_json::Value> {
+    let source = match form.source_type.as_str() {
+        "node" => {
+            let nid = form.node_id.as_deref()?.trim();
+            if nid.is_empty() {
+                return None;
+            }
+            let ep = form
+                .export_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("/");
+            serde_json::json!({"node_id": nid, "export_path": ep})
+        }
+        "label" => {
+            let lbl = form.label.as_deref()?.trim();
+            if lbl.is_empty() {
+                return None;
+            }
+            serde_json::json!({"label": lbl})
+        }
+        "federated" => {
+            let fid = form.federated_import_id.as_deref()?.trim();
+            if fid.is_empty() {
+                return None;
+            }
+            serde_json::json!({"federated_import_id": fid})
+        }
+        _ => return None,
+    };
+    let mount_id: String = Uuid::new_v4().to_string().chars().take(8).collect();
+    Some(serde_json::json!({
+        "mount_id": mount_id,
+        "source": source,
+        "strategy": form.strategy.as_deref().unwrap_or("flatten"),
+        "source_prefix": null,
+        "steps": [],
+        "default_result": form.default_result.as_deref().unwrap_or("include"),
+        "conflict_policy": form.conflict_policy.as_deref().unwrap_or("last_write_wins"),
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct DeleteVfsDirForm {
+    pub virtual_path: String,
+}
+
+pub async fn delete_vfs_dir_action(
+    State(state): State<Arc<AppState>>,
+    session: Session,
+    Form(form): Form<DeleteVfsDirForm>,
+) -> Response {
+    let path = form.virtual_path.trim().to_string();
+    let doc_id = dir_id_for(&path);
+    let doc = match state.db.get_document(&doc_id).await {
+        Ok(d) => d,
+        Err(_) => {
+            set_flash(&session, "Directory not found.").await;
+            return redirect("/admin/vfs");
+        }
+    };
+    if doc.get("system").and_then(|v| v.as_bool()) == Some(true) {
+        set_flash(&session, "Cannot delete system directory.").await;
+        return redirect("/admin/vfs");
+    }
+    let rev = doc.get("_rev").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    match state.db.delete_document(&doc_id, &rev).await {
+        Ok(_) => set_flash(&session, format!("Directory '{}' deleted.", path)).await,
+        Err(e) => set_flash(&session, format!("Delete failed: {e}")).await,
+    }
+    redirect("/admin/vfs")
+}
+
+#[derive(Deserialize)]
+pub struct PatchVfsDirForm {
+    pub virtual_path: String,
+    pub name: Option<String>,
+    pub enforce_steps_on_children: Option<String>,
+}
+
+pub async fn patch_vfs_dir_action(
+    State(state): State<Arc<AppState>>,
+    session: Session,
+    Form(form): Form<PatchVfsDirForm>,
+) -> Response {
+    let path = form.virtual_path.trim().to_string();
+    let doc_id = dir_id_for(&path);
+    let mut doc = match state.db.get_document(&doc_id).await {
+        Ok(d) => d,
+        Err(_) => {
+            set_flash(&session, "Directory not found.").await;
+            return redirect("/admin/vfs");
+        }
+    };
+    if let Some(name) = form.name.as_deref().map(|s| s.trim()) {
+        doc["name"] = serde_json::json!(name);
+    }
+    doc["enforce_steps_on_children"] =
+        serde_json::json!(form.enforce_steps_on_children.as_deref() == Some("1"));
+    match state.db.put_document(&doc_id, &doc).await {
+        Ok(_) => set_flash(&session, "Settings saved.").await,
+        Err(e) => set_flash(&session, format!("Save failed: {e}")).await,
+    }
+    redirect(&vfs_dir_url(&path))
+}
+
+// ── VFS Mounts ──
+
+#[derive(Deserialize)]
+pub struct AddVfsMountForm {
+    pub virtual_path: String,
+    pub source_type: String,
+    pub node_id: Option<String>,
+    pub export_path: Option<String>,
+    pub label: Option<String>,
+    pub federated_import_id: Option<String>,
+    pub strategy: String,
+    pub source_prefix: Option<String>,
+    pub conflict_policy: String,
+    pub default_result: String,
+}
+
+pub async fn add_vfs_mount_action(
+    State(state): State<Arc<AppState>>,
+    session: Session,
+    Form(form): Form<AddVfsMountForm>,
+) -> Response {
+    let path = form.virtual_path.trim().to_string();
+    let doc_id = dir_id_for(&path);
+    let mut doc = match state.db.get_document(&doc_id).await {
+        Ok(d) => d,
+        Err(_) => {
+            set_flash(&session, "Directory not found.").await;
+            return redirect("/admin/vfs");
+        }
+    };
+
+    let source = match form.source_type.as_str() {
+        "node" => {
+            let nid = form.node_id.as_deref().unwrap_or("").trim().to_string();
+            let ep = form
+                .export_path
+                .as_deref()
+                .unwrap_or("/")
+                .trim()
+                .to_string();
+            if nid.is_empty() {
+                set_flash(&session, "Node ID is required for node source.").await;
+                return redirect(&vfs_dir_url(&path));
+            }
+            serde_json::json!({"node_id": nid, "export_path": ep})
+        }
+        "label" => {
+            let lbl = form.label.as_deref().unwrap_or("").trim().to_string();
+            if lbl.is_empty() {
+                set_flash(&session, "Label is required for label source.").await;
+                return redirect(&vfs_dir_url(&path));
+            }
+            serde_json::json!({"label": lbl})
+        }
+        "federated" => {
+            let fid = form
+                .federated_import_id
+                .as_deref()
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if fid.is_empty() {
+                set_flash(&session, "Federated import ID is required.").await;
+                return redirect(&vfs_dir_url(&path));
+            }
+            serde_json::json!({"federated_import_id": fid})
+        }
+        _ => {
+            set_flash(&session, "Invalid source type.").await;
+            return redirect(&vfs_dir_url(&path));
+        }
+    };
+
+    let mount_id: String = Uuid::new_v4().to_string().chars().take(8).collect();
+    let source_prefix = form
+        .source_prefix
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| serde_json::json!(s.trim()))
+        .unwrap_or(serde_json::Value::Null);
+
+    let mount = serde_json::json!({
+        "mount_id": mount_id,
+        "source": source,
+        "strategy": form.strategy,
+        "source_prefix": source_prefix,
+        "steps": [],
+        "default_result": form.default_result,
+        "conflict_policy": form.conflict_policy,
+    });
+
+    if let Some(arr) = doc
+        .get_mut("mounts")
+        .and_then(|v| v.as_array_mut())
+    {
+        arr.push(mount);
+    } else {
+        doc["mounts"] = serde_json::json!([mount]);
+    }
+
+    match state.db.put_document(&doc_id, &doc).await {
+        Ok(_) => set_flash(&session, "Mount added.").await,
+        Err(e) => set_flash(&session, format!("Write failed: {e}")).await,
+    }
+    redirect(&vfs_dir_url(&path))
+}
+
+#[derive(Deserialize)]
+pub struct DeleteVfsMountForm {
+    pub virtual_path: String,
+    pub mount_id: String,
+}
+
+pub async fn delete_vfs_mount_action(
+    State(state): State<Arc<AppState>>,
+    session: Session,
+    Form(form): Form<DeleteVfsMountForm>,
+) -> Response {
+    let path = form.virtual_path.trim().to_string();
+    let doc_id = dir_id_for(&path);
+    let mut doc = match state.db.get_document(&doc_id).await {
+        Ok(d) => d,
+        Err(_) => {
+            set_flash(&session, "Directory not found.").await;
+            return redirect("/admin/vfs");
+        }
+    };
+    if let Some(arr) = doc.get_mut("mounts").and_then(|v| v.as_array_mut()) {
+        arr.retain(|m| m.get("mount_id").and_then(|v| v.as_str()) != Some(form.mount_id.as_str()));
+    }
+    match state.db.put_document(&doc_id, &doc).await {
+        Ok(_) => set_flash(&session, "Mount deleted.").await,
+        Err(e) => set_flash(&session, format!("Write failed: {e}")).await,
+    }
+    redirect(&vfs_dir_url(&path))
+}
+
+// ── VFS Steps ──
+
+#[derive(Deserialize)]
+pub struct AddVfsStepForm {
+    pub virtual_path: String,
+    pub mount_id: String,
+    pub op: String,
+    pub invert: Option<String>,
+    pub on_match: Option<String>,
+    pub pattern: Option<String>,
+    pub days: Option<String>,
+    pub comparison: Option<String>,
+    pub bytes: Option<String>,
+    pub step_node_id: Option<String>,
+    pub step_label: Option<String>,
+    pub missing: Option<String>,
+    pub target: Option<String>,
+    pub status: Option<String>,
+    pub plugin_name: Option<String>,
+}
+
+fn build_step_json(form: &AddVfsStepForm) -> serde_json::Value {
+    let mut step = serde_json::json!({
+        "op": form.op,
+        "invert": form.invert.as_deref() == Some("1"),
+    });
+    if let Some(om) = form.on_match.as_deref().filter(|s| !s.is_empty()) {
+        step["on_match"] = serde_json::json!(om);
+    }
+    match form.op.as_str() {
+        "glob" | "regex" | "mime" => {
+            if let Some(p) = form.pattern.as_deref().filter(|s| !s.is_empty()) {
+                step["pattern"] = serde_json::json!(p);
+            }
+        }
+        "age" => {
+            if let Some(d) = form.days.as_deref().and_then(|s| s.parse::<i64>().ok()) {
+                step["days"] = serde_json::json!(d);
+            }
+            step["comparison"] =
+                serde_json::json!(form.comparison.as_deref().unwrap_or("lt"));
+        }
+        "size" => {
+            if let Some(b) = form.bytes.as_deref().and_then(|s| s.parse::<i64>().ok()) {
+                step["bytes"] = serde_json::json!(b);
+            }
+            step["comparison"] =
+                serde_json::json!(form.comparison.as_deref().unwrap_or("lt"));
+        }
+        "node" => {
+            if let Some(n) = form.step_node_id.as_deref().filter(|s| !s.is_empty()) {
+                step["node_id"] = serde_json::json!(n);
+            }
+        }
+        "label" => {
+            if let Some(l) = form.step_label.as_deref().filter(|s| !s.is_empty()) {
+                step["label"] = serde_json::json!(l);
+            }
+        }
+        "access_age" => {
+            if let Some(d) = form.days.as_deref().and_then(|s| s.parse::<i64>().ok()) {
+                step["days"] = serde_json::json!(d);
+            }
+            step["comparison"] =
+                serde_json::json!(form.comparison.as_deref().unwrap_or("lt"));
+            step["missing"] =
+                serde_json::json!(form.missing.as_deref().unwrap_or("include"));
+        }
+        "replicated" => {
+            if let Some(t) = form.target.as_deref().filter(|s| !s.is_empty()) {
+                step["target"] = serde_json::json!(t);
+            }
+            if let Some(s) = form.status.as_deref().filter(|s| !s.is_empty()) {
+                step["status"] = serde_json::json!(s);
+            }
+        }
+        "annotation" => {
+            if let Some(p) = form.plugin_name.as_deref().filter(|s| !s.is_empty()) {
+                step["plugin_name"] = serde_json::json!(p);
+            }
+        }
+        _ => {}
+    }
+    step
+}
+
+pub async fn add_vfs_step_action(
+    State(state): State<Arc<AppState>>,
+    session: Session,
+    Form(form): Form<AddVfsStepForm>,
+) -> Response {
+    let path = form.virtual_path.trim().to_string();
+    let doc_id = dir_id_for(&path);
+    let mut doc = match state.db.get_document(&doc_id).await {
+        Ok(d) => d,
+        Err(_) => {
+            set_flash(&session, "Directory not found.").await;
+            return redirect(&vfs_dir_url(&path));
+        }
+    };
+    let step = build_step_json(&form);
+    let mount_id = form.mount_id.clone();
+    let mut found = false;
+    if let Some(mounts) = doc.get_mut("mounts").and_then(|v| v.as_array_mut()) {
+        for mount in mounts.iter_mut() {
+            if mount.get("mount_id").and_then(|v| v.as_str()) == Some(mount_id.as_str()) {
+                found = true;
+                if mount.get("steps").is_none() {
+                    mount["steps"] = serde_json::json!([]);
+                }
+                if let Some(steps) = mount.get_mut("steps").and_then(|v| v.as_array_mut()) {
+                    steps.push(step);
+                }
+                break;
+            }
+        }
+    }
+    if !found {
+        set_flash(&session, format!("Mount '{}' not found.", mount_id)).await;
+        return redirect(&vfs_dir_url(&path));
+    }
+    match state.db.put_document(&doc_id, &doc).await {
+        Ok(_) => set_flash(&session, "Step added.").await,
+        Err(e) => set_flash(&session, format!("Write failed: {e}")).await,
+    }
+    redirect(&vfs_dir_url(&path))
+}
+
+#[derive(Deserialize)]
+pub struct DeleteVfsStepForm {
+    pub virtual_path: String,
+    pub mount_id: String,
+    pub step_idx: String,
+}
+
+pub async fn delete_vfs_step_action(
+    State(state): State<Arc<AppState>>,
+    session: Session,
+    Form(form): Form<DeleteVfsStepForm>,
+) -> Response {
+    let path = form.virtual_path.trim().to_string();
+    let idx: usize = match form.step_idx.parse() {
+        Ok(i) => i,
+        Err(_) => {
+            set_flash(&session, "Invalid step index.").await;
+            return redirect(&vfs_dir_url(&path));
+        }
+    };
+    let doc_id = dir_id_for(&path);
+    let mut doc = match state.db.get_document(&doc_id).await {
+        Ok(d) => d,
+        Err(_) => {
+            set_flash(&session, "Directory not found.").await;
+            return redirect(&vfs_dir_url(&path));
+        }
+    };
+    let mount_id = form.mount_id.clone();
+    let mut found = false;
+    if let Some(mounts) = doc.get_mut("mounts").and_then(|v| v.as_array_mut()) {
+        for mount in mounts.iter_mut() {
+            if mount.get("mount_id").and_then(|v| v.as_str()) == Some(mount_id.as_str()) {
+                found = true;
+                if let Some(steps) = mount.get_mut("steps").and_then(|v| v.as_array_mut()) {
+                    if idx < steps.len() {
+                        steps.remove(idx);
+                    }
+                }
+                break;
+            }
+        }
+    }
+    if !found {
+        set_flash(&session, format!("Mount '{}' not found.", mount_id)).await;
+        return redirect(&vfs_dir_url(&path));
+    }
+    match state.db.put_document(&doc_id, &doc).await {
+        Ok(_) => set_flash(&session, "Step deleted.").await,
+        Err(e) => set_flash(&session, format!("Write failed: {e}")).await,
+    }
+    redirect(&vfs_dir_url(&path))
+}
+
+#[derive(Deserialize)]
+pub struct MoveVfsStepForm {
+    pub virtual_path: String,
+    pub mount_id: String,
+    pub step_idx: String,
+    pub direction: String,
+}
+
+pub async fn move_vfs_step_action(
+    State(state): State<Arc<AppState>>,
+    session: Session,
+    Form(form): Form<MoveVfsStepForm>,
+) -> Response {
+    let path = form.virtual_path.trim().to_string();
+    let idx: usize = match form.step_idx.parse() {
+        Ok(i) => i,
+        Err(_) => {
+            set_flash(&session, "Invalid step index.").await;
+            return redirect(&vfs_dir_url(&path));
+        }
+    };
+    let doc_id = dir_id_for(&path);
+    let mut doc = match state.db.get_document(&doc_id).await {
+        Ok(d) => d,
+        Err(_) => {
+            set_flash(&session, "Directory not found.").await;
+            return redirect(&vfs_dir_url(&path));
+        }
+    };
+    let mount_id = form.mount_id.clone();
+    let mut found = false;
+    if let Some(mounts) = doc.get_mut("mounts").and_then(|v| v.as_array_mut()) {
+        for mount in mounts.iter_mut() {
+            if mount.get("mount_id").and_then(|v| v.as_str()) == Some(mount_id.as_str()) {
+                found = true;
+                if let Some(steps) = mount.get_mut("steps").and_then(|v| v.as_array_mut()) {
+                    let swap_with = match form.direction.as_str() {
+                        "up" if idx > 0 => Some(idx - 1),
+                        "down" if idx + 1 < steps.len() => Some(idx + 1),
+                        _ => None,
+                    };
+                    if let Some(other) = swap_with {
+                        steps.swap(idx, other);
+                    }
+                }
+                break;
+            }
+        }
+    }
+    if !found {
+        set_flash(&session, format!("Mount '{}' not found.", mount_id)).await;
+        return redirect(&vfs_dir_url(&path));
+    }
+    match state.db.put_document(&doc_id, &doc).await {
+        Ok(_) => (),
+        Err(e) => set_flash(&session, format!("Write failed: {e}")).await,
+    }
+    redirect(&vfs_dir_url(&path))
 }

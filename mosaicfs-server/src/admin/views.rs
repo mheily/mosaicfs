@@ -3,15 +3,17 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     response::Response,
 };
 use chrono::{DateTime, Utc};
+use serde::Deserialize;
 use tera::Context;
 use tower_sessions::Session;
 
 use crate::admin::{page_ctx, render};
 use crate::credentials;
+use crate::handlers::vfs::dir_id_for;
 use crate::state::AppState;
 
 fn fmt_duration(secs: u64) -> String {
@@ -428,4 +430,252 @@ pub async fn settings_backup_page(session: Session) -> Response {
     let mut ctx = page_ctx(&session).await;
     ctx.insert("title", "Backup — MosaicFS");
     render("settings_backup.html", &ctx)
+}
+
+// ── VFS ──
+
+/// Loads node list and per-node export roots from CouchDB.
+/// Returns (nodes_json, node_exports_json) as pre-serialized strings for embedding in templates.
+async fn load_node_data(state: &AppState) -> (String, String) {
+    let nodes: Vec<serde_json::Value> = match state.db.all_docs_by_prefix("node::", true).await {
+        Ok(r) => r
+            .rows
+            .into_iter()
+            .filter_map(|row| row.doc)
+            .filter(|d| d.get("type").and_then(|v| v.as_str()) == Some("node"))
+            .map(|d| {
+                let node_id = d
+                    .get("_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim_start_matches("node::")
+                    .to_string();
+                let friendly_name = d
+                    .get("friendly_name")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| node_id.clone());
+                serde_json::json!({"node_id": node_id, "friendly_name": friendly_name})
+            })
+            .collect(),
+        Err(_) => vec![],
+    };
+    let mut node_exports: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    if let Ok(r) = state.db.all_docs_by_prefix("filesystem::", true).await {
+        for row in r.rows {
+            if let Some(doc) = row.doc {
+                if doc.get("type").and_then(|v| v.as_str()) == Some("filesystem") {
+                    if let (Some(owner), Some(root)) = (
+                        doc.get("owning_node_id").and_then(|v| v.as_str()),
+                        doc.get("export_root").and_then(|v| v.as_str()),
+                    ) {
+                        node_exports
+                            .entry(owner.to_string())
+                            .or_default()
+                            .push(root.to_string());
+                    }
+                }
+            }
+        }
+    }
+    (
+        serde_json::to_string(&nodes).unwrap_or_else(|_| "[]".to_string()),
+        serde_json::to_string(&node_exports).unwrap_or_else(|_| "{}".to_string()),
+    )
+}
+
+pub async fn vfs_page(State(state): State<Arc<AppState>>, session: Session) -> Response {
+    let mut ctx = page_ctx(&session).await;
+    ctx.insert("title", "Virtual Filesystem — MosaicFS");
+
+    let dirs: Vec<serde_json::Value> = match state.db.all_docs_by_prefix("dir::", true).await {
+        Ok(r) => {
+            let mut dirs: Vec<_> = r
+                .rows
+                .into_iter()
+                .filter_map(|row| row.doc)
+                .filter(|d| d.get("type").and_then(|v| v.as_str()) == Some("virtual_directory"))
+                .map(|d| {
+                    let mount_count = d
+                        .get("mounts")
+                        .and_then(|v| v.as_array())
+                        .map(|a| a.len())
+                        .unwrap_or(0);
+                    serde_json::json!({
+                        "virtual_path": d.get("virtual_path").and_then(|v| v.as_str()).unwrap_or(""),
+                        "name": d.get("name").and_then(|v| v.as_str()).unwrap_or(""),
+                        "mount_count": mount_count,
+                        "is_system": d.get("system").and_then(|v| v.as_bool()).unwrap_or(false),
+                    })
+                })
+                .collect();
+            dirs.sort_by(|a, b| {
+                let pa = a.get("virtual_path").and_then(|v| v.as_str()).unwrap_or("");
+                let pb = b.get("virtual_path").and_then(|v| v.as_str()).unwrap_or("");
+                pa.cmp(pb)
+            });
+            dirs
+        }
+        Err(_) => vec![],
+    };
+    ctx.insert("dirs", &dirs);
+    render("vfs.html", &ctx)
+}
+
+pub async fn vfs_new_page(State(state): State<Arc<AppState>>, session: Session) -> Response {
+    let mut ctx = page_ctx(&session).await;
+    ctx.insert("title", "Create Directory — MosaicFS VFS");
+    let (nodes_json, node_exports_json) = load_node_data(&state).await;
+    ctx.insert("nodes_json", &nodes_json);
+    ctx.insert("node_exports_json", &node_exports_json);
+    render("vfs_new.html", &ctx)
+}
+
+#[derive(Deserialize)]
+pub struct VfsDirQuery {
+    pub path: Option<String>,
+    pub source_type: Option<String>,
+}
+
+pub async fn vfs_dir_page(
+    State(state): State<Arc<AppState>>,
+    session: Session,
+    Query(query): Query<VfsDirQuery>,
+) -> Response {
+    let path = query.path.as_deref().unwrap_or("/").to_string();
+    let default_source_type = query.source_type.as_deref().unwrap_or("node").to_string();
+    let mut ctx = page_ctx(&session).await;
+    ctx.insert("title", &format!("{} — MosaicFS VFS", path));
+    let (nodes_json, node_exports_json) = load_node_data(&state).await;
+    ctx.insert("nodes_json", &nodes_json);
+    ctx.insert("node_exports_json", &node_exports_json);
+
+    let doc_id = dir_id_for(&path);
+    match state.db.get_document(&doc_id).await {
+        Ok(doc) => {
+            let dir = serde_json::json!({
+                "virtual_path": doc.get("virtual_path").and_then(|v| v.as_str()).unwrap_or(&path),
+                "name": doc.get("name").and_then(|v| v.as_str()).unwrap_or(""),
+                "enforce_steps_on_children": doc.get("enforce_steps_on_children").and_then(|v| v.as_bool()).unwrap_or(false),
+                "is_system": doc.get("system").and_then(|v| v.as_bool()).unwrap_or(false),
+            });
+            let mounts: Vec<serde_json::Value> = doc
+                .get("mounts")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .map(build_mount_ctx)
+                .collect();
+            ctx.insert("dir", &dir);
+            ctx.insert("mounts", &mounts);
+            ctx.insert("exists", &true);
+        }
+        Err(_) => {
+            ctx.insert("exists", &false);
+        }
+    }
+    render("vfs_dir.html", &ctx)
+}
+
+fn build_mount_ctx(m: &serde_json::Value) -> serde_json::Value {
+    let mount_id = m
+        .get("mount_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let (source_type, source_display) = if let Some(src) = m.get("source") {
+        if let Some(nid) = src.get("node_id").and_then(|v| v.as_str()) {
+            let ep = src.get("export_path").and_then(|v| v.as_str()).unwrap_or("/");
+            ("node", format!("{} @ {}", nid, ep))
+        } else if let Some(lbl) = src.get("label").and_then(|v| v.as_str()) {
+            ("label", lbl.to_string())
+        } else if let Some(fid) = src.get("federated_import_id").and_then(|v| v.as_str()) {
+            ("federated", fid.to_string())
+        } else {
+            ("unknown", "unknown source".to_string())
+        }
+    } else if let Some(nid) = m.get("node_id").and_then(|v| v.as_str()) {
+        let ep = m.get("export_path").and_then(|v| v.as_str()).unwrap_or("/");
+        ("node", format!("{} @ {}", nid, ep))
+    } else {
+        ("unknown", "unknown source".to_string())
+    };
+
+    let steps: Vec<serde_json::Value> = m
+        .get("steps")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "op": s.get("op").and_then(|v| v.as_str()).unwrap_or(""),
+                "invert": s.get("invert").and_then(|v| v.as_bool()).unwrap_or(false),
+                "on_match": s.get("on_match").and_then(|v| v.as_str()).unwrap_or(""),
+                "params_summary": step_params_summary(s),
+            })
+        })
+        .collect();
+
+    serde_json::json!({
+        "mount_id": mount_id,
+        "source_type": source_type,
+        "source_display": source_display,
+        "strategy": m.get("strategy").and_then(|v| v.as_str()).unwrap_or("flatten"),
+        "source_prefix": m.get("source_prefix").and_then(|v| v.as_str()).unwrap_or(""),
+        "conflict_policy": m.get("conflict_policy").and_then(|v| v.as_str()).unwrap_or("last_write_wins"),
+        "default_result": m.get("default_result").and_then(|v| v.as_str()).unwrap_or("include"),
+        "steps": steps,
+    })
+}
+
+fn step_params_summary(s: &serde_json::Value) -> String {
+    match s.get("op").and_then(|v| v.as_str()).unwrap_or("") {
+        "glob" | "regex" | "mime" => s
+            .get("pattern")
+            .and_then(|v| v.as_str())
+            .map(|p| format!("pattern={}", p))
+            .unwrap_or_default(),
+        "age" => {
+            let days = s.get("days").and_then(|v| v.as_i64()).unwrap_or(0);
+            let cmp = s.get("comparison").and_then(|v| v.as_str()).unwrap_or("lt");
+            format!("days {} {}", cmp, days)
+        }
+        "size" => {
+            let bytes = s.get("bytes").and_then(|v| v.as_i64()).unwrap_or(0);
+            let cmp = s.get("comparison").and_then(|v| v.as_str()).unwrap_or("lt");
+            format!("bytes {} {}", cmp, bytes)
+        }
+        "node" => s
+            .get("node_id")
+            .and_then(|v| v.as_str())
+            .map(|n| format!("node_id={}", n))
+            .unwrap_or_default(),
+        "label" => s
+            .get("label")
+            .and_then(|v| v.as_str())
+            .map(|l| format!("label={}", l))
+            .unwrap_or_default(),
+        "access_age" => {
+            let days = s.get("days").and_then(|v| v.as_i64()).unwrap_or(0);
+            let cmp = s.get("comparison").and_then(|v| v.as_str()).unwrap_or("lt");
+            let missing = s.get("missing").and_then(|v| v.as_str()).unwrap_or("include");
+            format!("days {} {} missing={}", cmp, days, missing)
+        }
+        "replicated" => {
+            let target = s.get("target").and_then(|v| v.as_str()).unwrap_or("*");
+            let status = s.get("status").and_then(|v| v.as_str()).unwrap_or("*");
+            format!("target={} status={}", target, status)
+        }
+        "annotation" => s
+            .get("plugin_name")
+            .and_then(|v| v.as_str())
+            .map(|p| format!("plugin={}", p))
+            .unwrap_or_default(),
+        _ => String::new(),
+    }
 }

@@ -1,0 +1,136 @@
+{% extends "layout.html" %}
+{% block content %}
+<p><a href="/admin/vfs">← Virtual Filesystem</a></p>
+<h2>Create a virtual directory</h2>
+
+<article>
+  <form method="post" action="/admin/vfs/dir/create">
+
+    <label>
+      Folder path
+      <input type="text" name="path" placeholder="/photos" required autofocus>
+      <small>Where this directory appears in your filesystem — e.g. <code>/photos</code> or <code>/work/documents</code>.</small>
+    </label>
+
+    <fieldset>
+      <legend>What should this folder contain?</legend>
+      <label>
+        <input type="radio" name="source_type" value="node" checked onchange="showSrc('node')">
+        <span>
+          <strong>Files from a specific machine</strong><br>
+          <small>Choose a node and the folder on that machine to include.</small>
+        </span>
+      </label>
+      <label>
+        <input type="radio" name="source_type" value="label" onchange="showSrc('label')">
+        <span>
+          <strong>Files with a label</strong><br>
+          <small>Include any file across all nodes that has been assigned a particular label.</small>
+        </span>
+      </label>
+      <label>
+        <input type="radio" name="source_type" value="federated" onchange="showSrc('federated')">
+        <span>
+          <strong>Files from a federated import</strong><br>
+          <small>Include files from a configured federation import source.</small>
+        </span>
+      </label>
+    </fieldset>
+
+    <div id="src-node">
+      <div class="grid">
+        <label>
+          Node
+          <select name="node_id" id="create-node-id" onchange="updateCreatePaths(this.value)">
+            <option value="">(no nodes registered yet)</option>
+          </select>
+        </label>
+        <label>
+          Folder on that node
+          <select name="export_path" id="create-export-path">
+            <option value="/">/</option>
+          </select>
+        </label>
+      </div>
+    </div>
+
+    <div id="src-label" style="display:none">
+      <label>
+        Label name
+        <input type="text" name="label" placeholder="work">
+        <small>Any file tagged with this label will appear in this directory.</small>
+      </label>
+    </div>
+
+    <div id="src-federated" style="display:none">
+      <label>
+        Federated import ID
+        <input type="text" name="federated_import_id" placeholder="import-id">
+      </label>
+    </div>
+
+    <details>
+      <summary>Advanced options</summary>
+      <div class="grid">
+        <label>
+          How to arrange files
+          <select name="strategy">
+            <option value="flatten">Flatten — merge everything into one list</option>
+            <option value="prefix_replace">Prefix replace — preserve the source folder structure</option>
+          </select>
+        </label>
+        <label>
+          When no filter matches a file
+          <select name="default_result">
+            <option value="include">Include the file</option>
+            <option value="exclude">Exclude the file</option>
+          </select>
+        </label>
+        <label>
+          When two sources have the same filename
+          <select name="conflict_policy">
+            <option value="last_write_wins">Use the most recently modified copy</option>
+            <option value="suffix_node_id">Keep both, add the source machine name to distinguish them</option>
+          </select>
+        </label>
+      </div>
+    </details>
+
+    <div style="display:flex;gap:1rem;align-items:center">
+      <button type="submit">Create directory</button>
+      <a href="/admin/vfs" class="secondary">Cancel</a>
+    </div>
+  </form>
+</article>
+
+<script>
+var _nodes = {{ nodes_json | safe }};
+var _nodeExports = {{ node_exports_json | safe }};
+
+function showSrc(type) {
+  ['node', 'label', 'federated'].forEach(function(t) {
+    document.getElementById('src-' + t).style.display = t === type ? '' : 'none';
+  });
+}
+
+function updateCreatePaths(nodeId) {
+  var sel = document.getElementById('create-export-path');
+  var paths = (_nodeExports[nodeId] && _nodeExports[nodeId].length) ? _nodeExports[nodeId] : ['/'];
+  sel.innerHTML = paths.map(function(p) {
+    return '<option value="' + p + '">' + p + '</option>';
+  }).join('');
+}
+
+(function init() {
+  if (_nodes.length === 0) return;
+  var nodeSel = document.getElementById('create-node-id');
+  nodeSel.innerHTML = _nodes.map(function(n) {
+    var label = (n.friendly_name && n.friendly_name !== n.node_id)
+      ? n.friendly_name + ' (' + n.node_id + ')'
+      : n.node_id;
+    return '<option value="' + n.node_id + '">' + label + '</option>';
+  }).join('');
+  updateCreatePaths(nodeSel.value);
+})();
+</script>
+{% endblock content %}
