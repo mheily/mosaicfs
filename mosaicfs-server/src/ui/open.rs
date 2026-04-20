@@ -109,10 +109,18 @@ pub async fn open_file_by_id(
         "xdg-open"
     };
 
-    std::process::Command::new(open_cmd)
+    let output = std::process::Command::new(open_cmd)
         .arg(&local_path)
-        .spawn()
+        .output()
         .map_err(|e| OpenError::SpawnFailed(local_path.clone(), e.to_string()))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(OpenError::SpawnFailed(
+            local_path.clone(),
+            stderr.trim().to_string(),
+        ));
+    }
 
     Ok(local_path)
 }

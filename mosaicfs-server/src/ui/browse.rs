@@ -221,9 +221,7 @@ pub async fn open(
 
     let file_id = &entry.file_id;
     match open_file_by_id(&state, file_id).await {
-        Ok(_local_path) => {
-            (StatusCode::OK, "").into_response()
-        }
+        Ok(local_path) => flash_response(&session, &format!("Opened {}", local_path)),
         Err(e) => flash_response(&session, &e.to_string()),
     }
 }
@@ -366,7 +364,7 @@ async fn lookup_entry_by_virtual_path(
     }
 
     let filename = path.rsplit('/').next()?;
-    let parent = if path == filename {
+    let parent = if path == format!("/{}", filename) {
         "/"
     } else {
         &path[..path.len() - filename.len() - 1]
