@@ -279,9 +279,9 @@ make run-dev-server   # builds mosaicfs-db, starts it on 127.0.0.1:5984,
                       # `cargo run -p mosaicfs` against it.
 ```
 
-The admin UI is then at `http://127.0.0.1:8443/admin`. On first run
+The UI is then at `http://127.0.0.1:8443/ui`. On first run
 the bootstrap token is printed to stdout — paste it into the
-`/admin/bootstrap` page to create the initial credential.
+`/ui/bootstrap` page to create the initial credential.
 
 To tear it down: `make stop-dev`.
 

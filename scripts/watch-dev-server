@@ -74,7 +74,7 @@ restart_server() {
     for _ in $(seq 1 30); do
         if curl -fsS -o /dev/null "$ready_url" 2>/dev/null; then
             printf ' ready.\n'
-            log "Restarted (pid $(cat "$PID_FILE"))  http://127.0.0.1:${WEB_UI_PORT}/admin"
+            log "Restarted (pid $(cat "$PID_FILE"))  http://127.0.0.1:${WEB_UI_PORT}/ui"
             return
         fi
         if ! kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then

@@ -12,7 +12,7 @@
       <td class="muted">{{ n.message }}</td>
       <td class="muted">{{ n.created_at }}</td>
       <td>
-        <form method="post" action="/admin/notifications/{{ n.id }}/ack" style="margin:0">
+        <form method="post" action="/ui/notifications/{{ n.id }}/ack" style="margin:0">
           <button type="submit" class="secondary outline" style="padding:0.15rem 0.5rem">Ack</button>
         </form>
       </td>

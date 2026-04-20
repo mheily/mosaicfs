@@ -11,7 +11,7 @@ use serde::Deserialize;
 use tera::Context;
 use tower_sessions::Session;
 
-use crate::admin::{page_ctx, render};
+use crate::ui::{page_ctx, render};
 use crate::credentials;
 use crate::handlers::vfs::dir_id_for;
 use crate::state::AppState;
@@ -398,7 +398,7 @@ pub async fn settings_credentials_page(
 
     // One-shot: newly created (ak, sk)
     if let Ok(Some((ak, sk))) = session
-        .remove::<(String, String)>(crate::admin::NEW_SECRET_KEY)
+        .remove::<(String, String)>(crate::ui::NEW_SECRET_KEY)
         .await
     {
         ctx.insert("created_access_key", &ak);

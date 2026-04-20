@@ -1,10 +1,10 @@
 {% extends "layout.html" %}
 {% block content %}
-<p><a href="/admin/vfs">← Virtual Filesystem</a></p>
+<p><a href="/ui/vfs">← Virtual Filesystem</a></p>
 <h2>Create a virtual directory</h2>
 
 <article>
-  <form method="post" action="/admin/vfs/dir/create">
+  <form method="post" action="/ui/vfs/dir/create">
 
     <label>
       Folder path
@@ -100,7 +100,7 @@
 
     <div style="display:flex;gap:1rem;align-items:center">
       <button type="submit">Create directory</button>
-      <a href="/admin/vfs" class="secondary">Cancel</a>
+      <a href="/ui/vfs" class="secondary">Cancel</a>
     </div>
   </form>
 </article>

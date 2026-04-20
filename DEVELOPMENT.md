@@ -8,7 +8,7 @@ via `[features]` in `mosaicfs.toml`).
 
 Run `podman kube play --replace deploy/mosaicfs.yaml` to start the pod on Linux.
 
-On first start, either click through the `/admin/bootstrap` page or run
+On first start, either click through the `/ui/bootstrap` page or run
 `mosaicfs bootstrap --config /etc/mosaicfs/mosaicfs.toml` inside the
 container to generate an initial admin credential.
 
@@ -63,14 +63,14 @@ Check compilation without producing binaries:
 cargo check
 ```
 
-# Admin UI
+# UI
 
-The admin UI is server-rendered by the `mosaicfs-server` crate at `/admin`,
+The UI is server-rendered by the `mosaicfs-server` crate at `/ui`,
 loaded into the unified binary when `features.web_ui = true`. Templates
 live in `mosaicfs-server/templates/` (Tera), static assets (Pico CSS + HTMX)
 are in `mosaicfs-server/assets/` and embedded at compile time via
 `include_bytes!`. There is no separate build step — rebuild the `mosaicfs`
-binary and the admin UI is up-to-date.
+binary and the UI is up-to-date.
 
 Pages use HTMX for polling (every 10s) and regular HTML form POSTs for
 writes (POST-redirect-GET with session flash). When `insecure_http = true`

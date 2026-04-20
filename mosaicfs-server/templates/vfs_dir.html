@@ -1,6 +1,6 @@
 {% extends "layout.html" %}
 {% block content %}
-<p><a href="/admin/vfs">← Virtual Filesystem</a></p>
+<p><a href="/ui/vfs">← Virtual Filesystem</a></p>
 
 {% if not exists %}
 <p class="err">Directory not found.</p>
@@ -10,7 +10,7 @@
 
 <article>
   <header><strong>Settings</strong></header>
-  <form method="post" action="/admin/vfs/dir/settings">
+  <form method="post" action="/ui/vfs/dir/settings">
     <input type="hidden" name="virtual_path" value="{{ dir.virtual_path }}">
     <label>
       Display name
@@ -27,7 +27,7 @@
   </form>
   {% if not dir.is_system %}
   <hr>
-  <form method="post" action="/admin/vfs/dir/delete"
+  <form method="post" action="/ui/vfs/dir/delete"
         onsubmit="return confirm('Delete {{ dir.virtual_path }} and all its sources?');" style="margin:0">
     <input type="hidden" name="virtual_path" value="{{ dir.virtual_path }}">
     <button type="submit" class="secondary outline">Delete this directory</button>
@@ -69,7 +69,7 @@
         {% endif %}
       </small>
     </div>
-    <form method="post" action="/admin/vfs/dir/mounts/delete"
+    <form method="post" action="/ui/vfs/dir/mounts/delete"
           onsubmit="return confirm('Remove this source?');" style="margin:0;flex-shrink:0">
       <input type="hidden" name="virtual_path" value="{{ dir.virtual_path }}">
       <input type="hidden" name="mount_id" value="{{ m.mount_id }}">
@@ -105,7 +105,7 @@
         <td>{% if s.invert %}<span class="warn">yes</span>{% else %}<span class="muted">no</span>{% endif %}</td>
         <td style="white-space:nowrap">
           {% if not loop.first %}
-          <form method="post" action="/admin/vfs/dir/mounts/steps/move" style="display:inline;margin:0">
+          <form method="post" action="/ui/vfs/dir/mounts/steps/move" style="display:inline;margin:0">
             <input type="hidden" name="virtual_path" value="{{ dir.virtual_path }}">
             <input type="hidden" name="mount_id" value="{{ m.mount_id }}">
             <input type="hidden" name="step_idx" value="{{ loop.index0 }}">
@@ -114,7 +114,7 @@
           </form>
           {% endif %}
           {% if not loop.last %}
-          <form method="post" action="/admin/vfs/dir/mounts/steps/move" style="display:inline;margin:0">
+          <form method="post" action="/ui/vfs/dir/mounts/steps/move" style="display:inline;margin:0">
             <input type="hidden" name="virtual_path" value="{{ dir.virtual_path }}">
             <input type="hidden" name="mount_id" value="{{ m.mount_id }}">
             <input type="hidden" name="step_idx" value="{{ loop.index0 }}">
@@ -122,7 +122,7 @@
             <button type="submit" style="padding:0.1rem 0.4rem" title="Move down">↓</button>
           </form>
           {% endif %}
-          <form method="post" action="/admin/vfs/dir/mounts/steps/delete"
+          <form method="post" action="/ui/vfs/dir/mounts/steps/delete"
                 onsubmit="return confirm('Delete this filter?');" style="display:inline;margin:0">
             <input type="hidden" name="virtual_path" value="{{ dir.virtual_path }}">
             <input type="hidden" name="mount_id" value="{{ m.mount_id }}">
@@ -138,7 +138,7 @@
 
     <details style="margin-top:0.75rem">
       <summary>Add a filter</summary>
-      <form method="post" action="/admin/vfs/dir/mounts/steps/add" style="margin-top:0.5rem">
+      <form method="post" action="/ui/vfs/dir/mounts/steps/add" style="margin-top:0.5rem">
         <input type="hidden" name="virtual_path" value="{{ dir.virtual_path }}">
         <input type="hidden" name="mount_id" value="{{ m.mount_id }}">
         <div class="grid">
@@ -225,7 +225,7 @@
 <details {% if mounts | length == 0 %}open{% endif %} style="margin-top:1.5rem">
   <summary><strong>Add a source</strong></summary>
   <article style="margin-top:0.5rem">
-    <form method="post" action="/admin/vfs/dir/mounts/add">
+    <form method="post" action="/ui/vfs/dir/mounts/add">
       <input type="hidden" name="virtual_path" value="{{ dir.virtual_path }}">
 
       <fieldset>
