@@ -1,0 +1,26 @@
+diff --git a/docs/architecture/01-high-level.md b/docs/architecture/01-high-level.md
+index a478612..9c3404a 100644
+--- a/docs/architecture/01-high-level.md
++++ b/docs/architecture/01-high-level.md
+@@ -52,18 +52,11 @@ The control plane is designed to run continuously on an always-on device — typ
+ 
+ A presentation layer that makes every file in the MosaicFS network accessible to any application through standard OS file APIs — open, read, stat — without the application having any awareness of where files physically reside. The layer is read-only in v1.
+ 
+-The virtual filesystem layer is split into two distinct parts:
++To minimize platform-specific complexity and avoid the overhead of maintaining multiple native system extensions, MosaicFS adopts a "gateway" architecture for cross-platform access.
+ 
+-**Common code** handles everything that is the same regardless of operating system: evaluating virtual directory mount sources to produce directory listings, the tiered file access strategy, the file content cache (both full-file and block modes), download deduplication via shared futures, and cache eviction. This code lives in `mosaicfs-vfs`, a shared library crate used by all OS-specific backends.
++**FUSE (Linux)** — implemented in v1 using the `fuser` crate. This serves as the primary engine for the virtual filesystem. By mounting the VFS on a Linux-based node (such as a NAS) and exporting the mount point via **CIFS/Samba**, MosaicFS provides a universal, zero-install mounting mechanism for macOS and Windows clients. This approach bypasses the need for proprietary kernel extensions or complex system APIs on the client side.
+ 
+-**OS-specific backends** implement the interface between the common code and the OS kernel or desktop environment. Each backend registers itself with the OS and translates filesystem calls or URI lookups into calls to the common layer. Four backends are planned:
+-
+-- **FUSE** (Linux, and macOS fallback) — implemented in v1 using the `fuser` crate. Mounts as a standard filesystem path. The most portable option and the lowest implementation cost.
+-- **macOS File Provider** — planned for a future version. Apple's modern system extension API for virtual filesystems, replacing kernel extensions. Provides native Finder integration including sync-state badges, on-demand hydration with progress UI, and deep macOS shell integration. Requires a separate app extension written in Swift that communicates with the agent via XPC.
+-- **Windows Cloud Files API (CFAPI)** — planned for a future version. Microsoft's native sync engine API introduced in Windows 10 1709, the same mechanism used by OneDrive. A minifilter kernel driver (`cldflt.sys`) acts as a proxy between user applications and the sync engine. Creates placeholder files that hydrate on demand. Provides native File Explorer integration including sync-state icons, hydration progress UI, and "Always keep on this device" / "Free up space" context menu options. Implemented as a desktop app component alongside the agent.
+-- **GIO / KIO** (Linux desktop) — planned for a future version. Rather than a kernel-level filesystem mount, GIO (GNOME) and KIO (KDE) are desktop-level virtual filesystem layers that expose a URI scheme to desktop-aware applications. A MosaicFS GIO backend would register `mosaicfs://` as a scheme, allowing applications like Nautilus, gedit, or any GIO-aware app to open `mosaicfs:///documents/work/report.pdf` directly without a FUSE mount. The KIO equivalent serves the same purpose for KDE applications via Dolphin and KIO-aware apps. This backend is complementary to FUSE rather than a replacement — FUSE provides kernel-level access for all applications, while GIO/KIO provides richer desktop integration (thumbnails, metadata, search provider registration) for desktop-aware applications specifically. Implemented as a GVfs backend (for GIO) and a KIO worker (for KIO), both calling into the MosaicFS REST API or communicating with the local agent via a Unix socket.
+-
+-The FUSE backend is the only implementation in v1. macOS File Provider, Windows CFAPI, and GIO/KIO are architecturally accommodated — the common VFS code is deliberately decoupled from any OS-specific API — but their implementation is deferred to a future version. On macOS in v1, the FUSE backend is used via macFUSE.
++While the common VFS code remains decoupled to allow for future native backends (such as macOS File Provider or Windows CFAPI) if highly specific OS integrations are required, the FUSE-to-CIFS gateway is the recommended path for universal compatibility.
+ 
+ ### Storage Backends
+ 
