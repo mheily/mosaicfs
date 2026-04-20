@@ -116,11 +116,23 @@ pub async fn open_file_by_id(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(OpenError::SpawnFailed(
-            local_path.clone(),
-            stderr.trim().to_string(),
-        ));
+        let msg = summarize_open_error(&stderr);
+        return Err(OpenError::SpawnFailed(local_path.clone(), msg));
     }
 
     Ok(local_path)
+}
+
+fn summarize_open_error(stderr: &str) -> String {
+    let s = stderr.trim();
+    if s.contains("No application knows how to open")
+        || s.contains("kLSApplicationNotFoundErr")
+        || s.contains("-10814")
+    {
+        "No application is associated with this file type.".to_string()
+    } else if s.contains("does not exist") || s.contains("No such file") {
+        "File not found on disk.".to_string()
+    } else {
+        s.lines().next().unwrap_or(s).to_string()
+    }
 }
