@@ -24,6 +24,8 @@ use crate::state::AppState;
 use mosaicfs_common::couchdb::CouchError;
 
 pub mod actions;
+pub(crate) mod open;
+mod browse;
 mod views;
 
 const SESSION_USER_KEY: &str = "access_key_id";
@@ -84,7 +86,8 @@ fn tera() -> &'static Tera {
                 "storage_backends.html",
                 include_str!("../../templates/storage_backends.html"),
             ),
-            ("browse.html", include_str!("../../templates/browse.html")),
+            ("browse_app.html", include_str!("../../templates/browse_app.html")),
+            ("browse_list.html", include_str!("../../templates/browse_list.html")),
             ("vfs.html", include_str!("../../templates/vfs.html")),
             ("vfs_new.html", include_str!("../../templates/vfs_new.html")),
             (
@@ -93,6 +96,9 @@ fn tera() -> &'static Tera {
             ),
         ])
         .expect("templates compile");
+
+        tera.register_filter("fmt_size", tera_fmt_size);
+
         tera
     })
 }
@@ -158,7 +164,10 @@ pub fn router() -> Router<Arc<AppState>> {
 
     let protected: Router<Arc<AppState>> = Router::new()
         .route("/ui", get(|| async { Redirect::to("/ui/browse") }))
-        .route("/ui/browse", get(views::browse_page))
+        .route("/ui/browse", get(browse::page))
+        .route("/ui/browse/list", get(browse::list))
+        .route("/ui/browse/navigate", get(browse::navigate))
+        .route("/ui/browse/open", post(browse::open))
         .route("/ui/status", get(views::status_page))
         .route("/ui/status/panel", get(views::status_panel))
         .route("/ui/nodes", get(views::nodes_page))
@@ -242,7 +251,6 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/ui/vfs/dir/mounts/steps/add", post(actions::add_vfs_step_action))
         .route("/ui/vfs/dir/mounts/steps/delete", post(actions::delete_vfs_step_action))
         .route("/ui/vfs/dir/mounts/steps/move", post(actions::move_vfs_step_action))
-        .route("/ui/vfs/open-file", post(actions::open_file_action))
         .layer(middleware::from_fn(require_auth));
 
     Router::new().merge(public).merge(protected).layer(session_layer)
@@ -365,4 +373,15 @@ async fn serve_asset(uri: Uri) -> Response {
         bytes,
     )
         .into_response()
+}
+
+fn tera_fmt_size(
+    value: &tera::Value,
+    _args: &std::collections::HashMap<String, tera::Value>,
+) -> Result<tera::Value, tera::Error> {
+    let bytes = value
+        .as_u64()
+        .or_else(|| value.as_i64().map(|v| v as u64))
+        .ok_or_else(|| tera::Error::msg("fmt_size filter requires a numeric value"))?;
+    Ok(tera::Value::String(crate::ui::browse::fmt_size(bytes)))
 }

@@ -1,0 +1,89 @@
+<input type="hidden" id="browse-root" value="{{ path }}">
+
+{% if rows | length == 0 %}
+<p class="empty-msg">This directory is empty</p>
+{% else %}
+<table>
+  <thead>
+    <tr>
+      <th class="sort-header"
+          hx-get="/ui/browse/list"
+          hx-trigger="click"
+          hx-target="#file-list"
+          hx-swap="innerHTML"
+          hx-include="#location-bar,#search-bar,#sort-hidden,#order-hidden"
+          onclick="toggleSort('name')">Name</th>
+      <th class="sort-header"
+          hx-get="/ui/browse/list"
+          hx-trigger="click"
+          hx-target="#file-list"
+          hx-swap="innerHTML"
+          hx-include="#location-bar,#search-bar,#sort-hidden,#order-hidden"
+          onclick="toggleSort('size')">Size</th>
+      <th class="sort-header"
+          hx-get="/ui/browse/list"
+          hx-trigger="click"
+          hx-target="#file-list"
+          hx-swap="innerHTML"
+          hx-include="#location-bar,#search-bar,#sort-hidden,#order-hidden"
+          onclick="toggleSort('mtime')">Date</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in rows %}
+    <tr class="file-row">
+      {% if row.type == "dir" %}
+      <td>
+        <span class="dir-name"
+              hx-get="/ui/browse/navigate"
+              hx-trigger="click"
+              hx-target="#main-content"
+              hx-swap="innerHTML"
+              hx-push-url="true"
+              hx-vals='{"path":"{{ row.virtual_path }}"}'>
+          <strong>{{ row.name }}</strong>
+        </span>
+      </td>
+      <td class="muted">—</td>
+      <td class="muted"></td>
+      {% else %}
+      <td>
+        <span class="file-name"
+              hx-post="/ui/browse/open"
+              hx-trigger="click"
+              hx-target="#flash"
+              hx-swap="innerHTML"
+              hx-vals='{"path":"{{ row.virtual_path }}"}'>
+          {{ row.name }}
+        </span>
+      </td>
+      <td>{{ row.size_display }}</td>
+      <td>{{ row.date_display }}</td>
+      {% endif %}
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% if has_more %}
+<div hx-get="/ui/browse/list"
+     hx-trigger="revealed"
+     hx-target="#file-list"
+     hx-swap="beforeend"
+     hx-include="#location-bar,#search-bar,#sort-hidden,#order-hidden"
+     hx-vals='{"path":"{{ path }}","offset":{{ next_offset }}}'>
+</div>
+{% endif %}
+{% endif %}
+
+<script>
+function toggleSort(col) {
+  var sortEl = document.getElementById('sort-hidden');
+  var orderEl = document.getElementById('order-hidden');
+  if (sortEl.value === col) {
+    orderEl.value = orderEl.value === 'asc' ? 'desc' : 'asc';
+  } else {
+    sortEl.value = col;
+    orderEl.value = 'asc';
+  }
+}
+</script>

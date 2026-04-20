@@ -16,11 +16,10 @@ use axum::{
 };
 use chrono::Utc;
 use serde::Deserialize;
-use tera::Context;
 use tower_sessions::Session;
 use uuid::Uuid;
 
-use crate::ui::{base_ctx, render, user_for_ctx, FLASH_KEY, NEW_SECRET_KEY};
+use crate::ui::{base_ctx, open::open_file_by_id, render, FLASH_KEY, NEW_SECRET_KEY};
 use crate::credentials;
 use crate::handlers::{replication as rephandlers, system as syshandlers, vfs::dir_id_for};
 use crate::state::AppState;
@@ -1175,126 +1174,3 @@ pub async fn move_vfs_step_action(
 }
 
 // ── Open file ──
-
-#[derive(Deserialize)]
-pub struct OpenFileForm {
-    pub file_id: String,
-    pub return_path: String,
-}
-
-pub async fn open_file_action(
-    State(state): State<Arc<AppState>>,
-    session: Session,
-    Form(form): Form<OpenFileForm>,
-) -> Response {
-    let return_url = format!(
-        "/ui/browse?path={}",
-        urlencoding::encode(&form.return_path)
-    );
-
-    // 1. Fetch the file document.
-    let file_doc = match state.db.get_document(&form.file_id).await {
-        Ok(d) => d,
-        Err(_) => {
-            set_flash(&session, format!("File '{}' not found.", form.file_id)).await;
-            return redirect(&return_url);
-        }
-    };
-    let source_node_id = file_doc
-        .get("source")
-        .and_then(|s| s.get("node_id"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let export_path = file_doc
-        .get("source")
-        .and_then(|s| s.get("export_path"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-
-    // 2. Resolve to a local path.
-    let local_path = if state.node_id.as_deref() == Some(&source_node_id) {
-        // File is on this machine; its export_path IS the absolute local path.
-        export_path.clone()
-    } else {
-        // Translate via network mounts: find a mount on this node that maps
-        // remote_node_id + remote_base_export_path prefix to a local mountpoint.
-        let this_node_id = match &state.node_id {
-            Some(id) => id.clone(),
-            None => {
-                set_flash(
-                    &session,
-                    "Cannot open remote file: this server's node ID is not configured.",
-                )
-                .await;
-                return redirect(&return_url);
-            }
-        };
-        let node_doc = match state.db.get_document(&format!("node::{}", this_node_id)).await {
-            Ok(d) => d,
-            Err(_) => {
-                set_flash(&session, "Cannot open remote file: this node is not registered in the database.").await;
-                return redirect(&return_url);
-            }
-        };
-        let mounts = node_doc
-            .get("network_mounts")
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default();
-
-        // Pick the mount with the longest matching prefix (most specific); break
-        // ties by highest priority.
-        let best = mounts
-            .iter()
-            .filter(|m| {
-                m.get("remote_node_id").and_then(|v| v.as_str()) == Some(source_node_id.as_str())
-            })
-            .filter_map(|m| {
-                let remote_base = m.get("remote_base_export_path").and_then(|v| v.as_str())?;
-                let local_mount = m.get("local_mount_path").and_then(|v| v.as_str())?;
-                let rel = export_path.strip_prefix(remote_base)?;
-                let local =
-                    format!("{}{}", local_mount.trim_end_matches('/'), rel);
-                let priority = m.get("priority").and_then(|v| v.as_i64()).unwrap_or(0);
-                Some((remote_base.len(), priority, local))
-            })
-            .max_by_key(|(prefix_len, priority, _)| (*prefix_len, *priority));
-
-        match best {
-            Some((_, _, path)) => path,
-            None => {
-                set_flash(
-                    &session,
-                    format!(
-                        "Cannot open: no local mount found for node '{}'. Configure a network mount on this node first.",
-                        source_node_id
-                    ),
-                )
-                .await;
-                return redirect(&return_url);
-            }
-        }
-    };
-
-    // 3. Check accessibility before handing to the OS.
-    if !std::path::Path::new(&local_path).exists() {
-        set_flash(
-            &session,
-            format!("Cannot open: path not accessible: {}", local_path),
-        )
-        .await;
-        return redirect(&return_url);
-    }
-
-    // 4. Hand off to the OS.
-    let open_cmd = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-    match std::process::Command::new(open_cmd).arg(&local_path).spawn() {
-        Ok(_) => set_flash(&session, format!("Opened {}", local_path)).await,
-        Err(e) => {
-            set_flash(&session, format!("Failed to open '{}': {}", local_path, e)).await
-        }
-    }
-    redirect(&return_url)
-}
