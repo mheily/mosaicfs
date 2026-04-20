@@ -46,7 +46,7 @@ done
 echo ""
 
 # Excluded crates
-excludes=$(sed -n '/^exclude/,/]/p' Cargo.toml | grep '"' | sed 's/.*"\(.*\)".*/\1/' | tr '\n' ', ' | sed 's/,$//')
+excludes=$(sed -n '/^exclude/,/]/p' Cargo.toml | grep '"' | sed 's/.*"\(.*\)".*/\1/' | tr '\n' ', ' | sed 's/,$//' || true)
 if [ -n "$excludes" ]; then
     echo "**Excluded from workspace:** $excludes"
     echo ""
@@ -126,8 +126,8 @@ find . -name 'routes.rs' -not -path '*/target/*' 2>/dev/null | sort | while read
 done
 
 # Also check for embedded HTTP servers (not in routes.rs)
-find . -name '*.rs' -not -path '*/target/*' -not -name 'routes.rs' 2>/dev/null | \
-    xargs grep -l 'Router::new()' 2>/dev/null | while read -r file; do
+(find . -name '*.rs' -not -path '*/target/*' -not -name 'routes.rs' 2>/dev/null | \
+    xargs grep -l 'Router::new()' 2>/dev/null || true) | while read -r file; do
     route_count=$(grep -c '\.route(' "$file" 2>/dev/null || echo 0)
     if [ "$route_count" -gt 0 ]; then
         crate_dir=$(echo "$file" | sed 's|/src/.*||' | sed 's|^\./||')
@@ -182,9 +182,9 @@ echo "## Key Workspace Dependencies"
 echo ""
 # Show dependencies from [workspace.dependencies] that indicate architectural choices
 # (skip ubiquitous utility crates)
-sed -n '/\[workspace.dependencies\]/,/^\[/p' Cargo.toml | \
+(sed -n '/\[workspace.dependencies\]/,/^\[/p' Cargo.toml | \
     grep -E '^[a-z]' | \
-    grep -v -E '^(serde|serde_json|chrono|uuid|tokio|tokio-util|tracing|tracing-subscriber|rand|anyhow|thiserror|bytes|hex|sha2|hmac|async-trait|mime_guess|urlencoding) ' | \
+    grep -v -E '^(serde|serde_json|chrono|uuid|tokio|tokio-util|tracing|tracing-subscriber|rand|anyhow|thiserror|bytes|hex|sha2|hmac|async-trait|mime_guess|urlencoding) ' || true) | \
     while IFS= read -r line; do
         dep=$(echo "$line" | sed 's/ *=.*//')
         version=$(echo "$line" | sed -n 's/.*version *= *"\([^"]*\)".*/\1/p')
