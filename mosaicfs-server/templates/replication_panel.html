@@ -1,6 +1,6 @@
 <h3>Storage backends</h3>
 {% if backends | length == 0 %}
-<p class="muted">No backends configured. <a href="/admin/storage-backends">Manage backends →</a></p>
+<p class="muted">No backends configured. <a href="/ui/storage-backends">Manage backends →</a></p>
 {% else %}
 <table>
   <thead><tr><th>Name</th><th>Type</th><th>Enabled</th></tr></thead>
@@ -26,7 +26,7 @@
       <td>{{ r.target }}</td>
       <td>{{ r.enabled }}</td>
       <td>
-        <form method="post" action="/admin/replication/rules/{{ r.id }}/delete" style="margin:0"
+        <form method="post" action="/ui/replication/rules/{{ r.id }}/delete" style="margin:0"
               onsubmit="return confirm('Delete rule {{ r.id }}?');">
           <button type="submit" class="contrast outline" style="padding:0.15rem 0.5rem">Delete</button>
         </form>

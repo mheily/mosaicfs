@@ -1,6 +1,6 @@
 {% extends "layout.html" %}
 {% block content %}
-<p><a href="/admin/nodes">← Nodes</a></p>
+<p><a href="/ui/nodes">← Nodes</a></p>
 <h2>Node <code>{{ node_id }}</code></h2>
 
 {% if not exists %}
@@ -8,7 +8,7 @@
 {% else %}
 <article>
   <header><strong>Settings</strong></header>
-  <form method="post" action="/admin/nodes/{{ node_id }}/edit">
+  <form method="post" action="/ui/nodes/{{ node_id }}/edit">
     <label>Friendly name
       <input type="text" name="friendly_name" value="{{ friendly_name }}">
     </label>
@@ -35,7 +35,7 @@
       <td>{{ m.mount_type }}</td>
       <td>{{ m.priority }}</td>
       <td>
-        <form method="post" action="/admin/nodes/{{ node_id }}/mounts/{{ m.mount_id }}/delete"
+        <form method="post" action="/ui/nodes/{{ node_id }}/mounts/{{ m.mount_id }}/delete"
               onsubmit="return confirm('Delete mount {{ m.mount_id }}?');" style="margin:0">
           <button type="submit" class="contrast outline" style="padding:0.25rem 0.75rem">Delete</button>
         </form>
@@ -48,7 +48,7 @@
 
 <article>
   <header><strong>Add network mount</strong></header>
-  <form method="post" action="/admin/nodes/{{ node_id }}/mounts">
+  <form method="post" action="/ui/nodes/{{ node_id }}/mounts">
     <div class="grid">
       <label>Remote node ID
         <input type="text" name="remote_node_id" required>

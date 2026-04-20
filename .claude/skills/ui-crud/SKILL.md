@@ -1,13 +1,13 @@
 ---
-name: admin-crud
-description: CRUD UX pattern for the MosaicFS admin UI. Use this when adding any new resource type to the admin — nodes, backends, VFS directories, credentials, etc. Defines the page structure, navigation flow, flash message handling, and Rust code conventions.
+name: ui-crud
+description: CRUD UX pattern for the MosaicFS server-rendered UI. Use this when adding any new resource type — nodes, backends, VFS directories, credentials, etc. Defines the page structure, navigation flow, flash message handling, and Rust code conventions.
 user-invocable: true
 ---
 
-# Admin UI CRUD Pattern
+# Server-Rendered UI CRUD Pattern
 
 This skill captures the settled UX and implementation pattern for CRUD in the
-MosaicFS admin UI (`/admin/*`). Follow it exactly when adding new resource types
+MosaicFS server-rendered UI (`/ui/*`). Follow it exactly when adding new resource types
 so the UI stays consistent.
 
 ---
@@ -16,7 +16,7 @@ so the UI stays consistent.
 
 Every resource gets **three pages**, not one or two:
 
-### 1. List page — `GET /admin/{resource}`
+### 1. List page — `GET /ui/{resource}`
 
 - Heading + a single **"Create a {resource}"** button in the top-right, linked
   to the create page. No inline create form.
@@ -32,7 +32,7 @@ Every resource gets **three pages**, not one or two:
   <thead><tr><th>Name</th><th>...</th></tr></thead>
   <tbody>
     {% for r in items %}
-    <tr onclick="location.href='/admin/resources/{{ r.id }}'" style="cursor:pointer">
+    <tr onclick="location.href='/ui/resources/{{ r.id }}'" style="cursor:pointer">
       <td><code>{{ r.name }}</code></td>
       <td>...</td>
     </tr>
@@ -43,7 +43,7 @@ Every resource gets **three pages**, not one or two:
 
 Note: drop the `<a>` tag inside the cell — the whole row is already the link.
 
-### 2. Create page — `GET /admin/{resource}/new`
+### 2. Create page — `GET /ui/{resource}/new`
 
 - Back link to the list page.
 - Single focused form — one thing to fill out, nothing else on the page.
@@ -52,17 +52,17 @@ Note: drop the `<a>` tag inside the cell — the whole row is already the link.
 - Advanced/optional fields behind `<details>` with sensible server-side defaults
   so most users never need to open it.
 - **Submit button + Cancel link** (Cancel goes back to the list).
-- On success: redirect to the **list page** (`/admin/{resource}`) and flash a
+- On success: redirect to the **list page** (`/ui/{resource}`) and flash a
   success message. Do not redirect to the new item's detail page — the user
   just created it and is back in context.
-- On error: redirect back to this create page (`/admin/{resource}/new`) and
+- On error: redirect back to this create page (`/ui/{resource}/new`) and
   flash the error. Do not send the user to the list page on failure.
 
 ```html
-<p><a href="/admin/resources">← Resources</a></p>
+<p><a href="/ui/resources">← Resources</a></p>
 <h2>Create a resource</h2>
 <article>
-  <form method="post" action="/admin/resources/create">
+  <form method="post" action="/ui/resources/create">
     <label>
       Name
       <input type="text" name="name" required autofocus>
@@ -74,18 +74,18 @@ Note: drop the `<a>` tag inside the cell — the whole row is already the link.
     </details>
     <div style="display:flex;gap:1rem;align-items:center">
       <button type="submit">Create resource</button>
-      <a href="/admin/resources" class="secondary">Cancel</a>
+      <a href="/ui/resources" class="secondary">Cancel</a>
     </div>
   </form>
 </article>
 ```
 
-### 3. Detail/edit page — `GET /admin/{resource}/{id}` (or `?id=` / `?path=`)
+### 3. Detail/edit page — `GET /ui/{resource}/{id}` (or `?id=` / `?path=`)
 
 - Back link to the list page.
 - Read-first: show what the item *is* before presenting edit controls. Use a
   summary line or card header with the key facts, then put edit forms below.
-- Settings form for editable fields (POST to `/admin/{resource}/{id}/settings`).
+- Settings form for editable fields (POST to `/ui/{resource}/{id}/settings`).
 - **Delete button at the bottom of the settings form**, separated by `<hr>`,
   with a `confirm()` guard. Use `class="secondary outline"` not `class="contrast"`
   to avoid making it the most prominent element on the page.
@@ -93,17 +93,17 @@ Note: drop the `<a>` tag inside the cell — the whole row is already the link.
   delete which redirects to the list page.
 
 ```html
-<p><a href="/admin/resources">← Resources</a></p>
+<p><a href="/ui/resources">← Resources</a></p>
 <h2>{{ item.name }}</h2>
 
 <article>
   <header><strong>Settings</strong></header>
-  <form method="post" action="/admin/resources/{{ item.id }}/settings">
+  <form method="post" action="/ui/resources/{{ item.id }}/settings">
     <!-- editable fields -->
     <button type="submit">Save</button>
   </form>
   <hr>
-  <form method="post" action="/admin/resources/{{ item.id }}/delete"
+  <form method="post" action="/ui/resources/{{ item.id }}/delete"
         onsubmit="return confirm('Delete {{ item.name }}?');" style="margin:0">
     <button type="submit" class="secondary outline">Delete this resource</button>
   </form>
@@ -116,14 +116,14 @@ Note: drop the `<a>` tag inside the cell — the whole row is already the link.
 
 | Action | Method | URL |
 |--------|--------|-----|
-| List | GET | `/admin/{resource}` |
-| Create form | GET | `/admin/{resource}/new` |
-| Create submit | POST | `/admin/{resource}/create` |
-| Detail/edit | GET | `/admin/{resource}/{id}` |
-| Update settings | POST | `/admin/{resource}/{id}/settings` |
-| Delete | POST | `/admin/{resource}/{id}/delete` |
-| Sub-resource add | POST | `/admin/{resource}/{id}/{sub}/add` |
-| Sub-resource delete | POST | `/admin/{resource}/{id}/{sub}/delete` |
+| List | GET | `/ui/{resource}` |
+| Create form | GET | `/ui/{resource}/new` |
+| Create submit | POST | `/ui/{resource}/create` |
+| Detail/edit | GET | `/ui/{resource}/{id}` |
+| Update settings | POST | `/ui/{resource}/{id}/settings` |
+| Delete | POST | `/ui/{resource}/{id}/delete` |
+| Sub-resource add | POST | `/ui/{resource}/{id}/{sub}/add` |
+| Sub-resource delete | POST | `/ui/{resource}/{id}/{sub}/delete` |
 
 If the resource ID contains slashes (e.g. virtual filesystem paths), pass it as
 a form field (`<input type="hidden" name="id" value="...">`) rather than as a
@@ -136,9 +136,9 @@ URL path segment. Use a query param for GET pages (`?path=/foo/bar`). Use
 
 ### File layout
 
-- `src/admin/views.rs` — all GET handlers (read-only, render templates)
-- `src/admin/actions.rs` — all POST handlers (writes, then redirect)
-- `src/admin/mod.rs` — route registration + `tera()` template list
+- `src/ui/views.rs` — all GET handlers (read-only, render templates)
+- `src/ui/actions.rs` — all POST handlers (writes, then redirect)
+- `src/ui/mod.rs` — route registration + `tera()` template list
 - `templates/*.html` — Tera templates (extend `layout.html`)
 
 ### POST-Redirect-GET pattern
@@ -154,18 +154,18 @@ pub async fn create_thing_action(
     // 1. Validate input; on error flash and redirect back to the form page
     if form.name.trim().is_empty() {
         set_flash(&session, "Name is required.").await;
-        return redirect("/admin/things/new");
+        return redirect("/ui/things/new");
     }
 
     // 2. Write to CouchDB directly (not through the REST API)
     match state.db.put_document(&doc_id, &doc).await {
         Ok(_) => {
             set_flash(&session, format!("'{}' created.", name)).await;
-            redirect("/admin/things")          // success → list page
+            redirect("/ui/things")          // success → list page
         }
         Err(e) => {
             set_flash(&session, format!("Create failed: {e}")).await;
-            redirect("/admin/things/new")      // error → back to form
+            redirect("/ui/things/new")      // error → back to form
         }
     }
 }
@@ -210,12 +210,12 @@ Every new template must be added to the `tera()` `OnceLock` in `mod.rs`:
 And the routes registered in the `protected` router in `router()`:
 
 ```rust
-.route("/admin/things", get(views::things_page))
-.route("/admin/things/new", get(views::thing_new_page))
-.route("/admin/things/create", post(actions::create_thing_action))
-.route("/admin/things/:id", get(views::thing_detail_page))
-.route("/admin/things/:id/settings", post(actions::patch_thing_action))
-.route("/admin/things/:id/delete", post(actions::delete_thing_action))
+.route("/ui/things", get(views::things_page))
+.route("/ui/things/new", get(views::thing_new_page))
+.route("/ui/things/create", post(actions::create_thing_action))
+.route("/ui/things/:id", get(views::thing_detail_page))
+.route("/ui/things/:id/settings", post(actions::patch_thing_action))
+.route("/ui/things/:id/delete", post(actions::delete_thing_action))
 ```
 
 ---

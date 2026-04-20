@@ -8,18 +8,18 @@
       {% if c.is_current %}
         <strong>{{ c.label }}</strong>
       {% else %}
-        <a href="/admin/browse?path={{ c.path }}">{{ c.label }}</a>
+        <a href="/ui/browse?path={{ c.path }}">{{ c.label }}</a>
       {% endif %}
     {% endfor %}
   </h2>
-  <a href="/admin/vfs/new?parent={{ current_path }}" role="button">Create a directory here</a>
+  <a href="/ui/vfs/new?parent={{ current_path }}" role="button">Create a directory here</a>
 </div>
 
 {% if dir_exists %}
 <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:1.25rem;flex-wrap:wrap">
-  <a href="/admin/vfs/dir?path={{ current_path }}" role="button" class="outline">Edit this directory</a>
+  <a href="/ui/vfs/dir?path={{ current_path }}" role="button" class="outline">Edit this directory</a>
   {% if not is_system %}
-  <form method="post" action="/admin/vfs/dir/delete"
+  <form method="post" action="/ui/vfs/dir/delete"
         onsubmit="return confirm('Delete {{ current_path }} and all its sources?');" style="margin:0">
     <input type="hidden" name="virtual_path" value="{{ current_path }}">
     <button type="submit" class="secondary outline">Delete this directory</button>
@@ -28,7 +28,7 @@
   {% if mount_count > 0 %}
   <span class="muted">{{ mount_count }} source(s) configured</span>
   {% else %}
-  <span class="muted">No sources configured — <a href="/admin/vfs/dir?path={{ current_path }}">add one</a></span>
+  <span class="muted">No sources configured — <a href="/ui/vfs/dir?path={{ current_path }}">add one</a></span>
   {% endif %}
 </div>
 {% endif %}
@@ -41,7 +41,7 @@
   </thead>
   <tbody>
     {% for d in subdirs %}
-    <tr onclick="location.href='/admin/browse?path={{ d.virtual_path }}'" style="cursor:pointer">
+    <tr onclick="location.href='/ui/browse?path={{ d.virtual_path }}'" style="cursor:pointer">
       <td><strong>{{ d.name }}</strong></td>
       <td><code>{{ d.virtual_path }}</code></td>
       <td>{{ d.mount_count }}</td>
@@ -79,7 +79,7 @@
         {% endfor %}
       </td>
       <td>
-        <form method="post" action="/admin/vfs/open-file" style="margin:0">
+        <form method="post" action="/ui/vfs/open-file" style="margin:0">
           <input type="hidden" name="file_id" value="{{ f.file_id }}">
           <input type="hidden" name="return_path" value="{{ current_path }}">
           <button type="submit" class="outline" style="padding:0.15rem 0.6rem;font-size:0.85em">Open</button>
@@ -92,8 +92,8 @@
 {% endif %}
 
 {% if subdirs | length == 0 and files | length == 0 and mount_count == 0 %}
-<p><a href="/admin/vfs/new?parent={{ current_path }}">Create a subdirectory</a> or
-   <a href="/admin/vfs/dir?path={{ current_path }}">add a source</a> to this directory.</p>
+<p><a href="/ui/vfs/new?parent={{ current_path }}">Create a subdirectory</a> or
+   <a href="/ui/vfs/dir?path={{ current_path }}">add a source</a> to this directory.</p>
 {% endif %}
 
 {% endblock content %}

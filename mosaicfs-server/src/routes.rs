@@ -132,7 +132,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
 
     // Unauthenticated routes
     let public_routes = Router::new()
-        .route("/", get(|| async { axum::response::Redirect::to("/admin") }))
+        .route("/", get(|| async { axum::response::Redirect::to("/ui") }))
         .route("/api/auth/login", post(login))
         .route("/api/system/bootstrap-status", get(bootstrap_status))
         .route("/api/system/bootstrap", post(bootstrap))
@@ -155,7 +155,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .merge(public_routes)
         .merge(jwt_routes)
         .merge(hmac_routes)
-        .merge(crate::admin::router())
+        .merge(crate::ui::router())
         .layer(cors)
         .layer(middleware::from_fn(asset_cache_middleware))
         .with_state(state)

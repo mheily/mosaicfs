@@ -1,7 +1,7 @@
 {% extends "layout.html" %}
 {% block content %}
 <h2>Nodes</h2>
-<section hx-get="/admin/nodes/panel" hx-trigger="load, every 10s" hx-swap="innerHTML">
+<section hx-get="/ui/nodes/panel" hx-trigger="load, every 10s" hx-swap="innerHTML">
   <p class="muted" aria-busy="true">Loading…</p>
 </section>
 {% endblock content %}

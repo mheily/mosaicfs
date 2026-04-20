@@ -20,7 +20,7 @@ use tera::Context;
 use tower_sessions::Session;
 use uuid::Uuid;
 
-use crate::admin::{base_ctx, render, user_for_ctx, FLASH_KEY, NEW_SECRET_KEY};
+use crate::ui::{base_ctx, render, user_for_ctx, FLASH_KEY, NEW_SECRET_KEY};
 use crate::credentials;
 use crate::handlers::{replication as rephandlers, system as syshandlers, vfs::dir_id_for};
 use crate::state::AppState;
@@ -49,7 +49,7 @@ pub struct BootstrapForm {
 pub async fn bootstrap_page(State(state): State<Arc<AppState>>, session: Session) -> Response {
     let token_path = state.data_dir.join("bootstrap_token");
     if !token_path.exists() {
-        return redirect("/admin/login");
+        return redirect("/ui/login");
     }
     let new_secret: Option<(String, String)> = session
         .remove::<(String, String)>(NEW_SECRET_KEY)
@@ -86,7 +86,7 @@ pub async fn bootstrap_submit(
             let _ = session
                 .insert(NEW_SECRET_KEY, &(ak.clone(), sk.clone()))
                 .await;
-            redirect("/admin/bootstrap")
+            redirect("/ui/bootstrap")
         }
         Err(e) => {
             tracing::error!(error=%e, "bootstrap: create_credential failed");
@@ -97,7 +97,7 @@ pub async fn bootstrap_submit(
 
 async fn bootstrap_error(session: &Session, msg: &str) -> Response {
     set_flash(session, msg).await;
-    redirect("/admin/bootstrap")
+    redirect("/ui/bootstrap")
 }
 
 // ── Notifications ──
@@ -116,11 +116,11 @@ pub async fn ack_notification(
         Ok(d) => d,
         Err(CouchError::NotFound(_)) => {
             set_flash(&session, "Notification not found.").await;
-            return redirect("/admin/notifications");
+            return redirect("/ui/notifications");
         }
         Err(e) => {
             set_flash(&session, format!("Error: {e}")).await;
-            return redirect("/admin/notifications");
+            return redirect("/ui/notifications");
         }
     };
     doc["status"] = serde_json::Value::String("acknowledged".to_string());
@@ -130,7 +130,7 @@ pub async fn ack_notification(
     } else {
         set_flash(&session, "Notification acknowledged.").await;
     }
-    redirect("/admin/notifications")
+    redirect("/ui/notifications")
 }
 
 pub async fn ack_all_notifications(
@@ -141,7 +141,7 @@ pub async fn ack_all_notifications(
         Ok(r) => r,
         Err(e) => {
             set_flash(&session, format!("Read failed: {e}")).await;
-            return redirect("/admin/notifications");
+            return redirect("/ui/notifications");
         }
     };
     let now = Utc::now().to_rfc3339();
@@ -163,11 +163,11 @@ pub async fn ack_all_notifications(
     if !batch.is_empty() {
         if let Err(e) = state.db.bulk_docs(&batch).await {
             set_flash(&session, format!("Write failed: {e}")).await;
-            return redirect("/admin/notifications");
+            return redirect("/ui/notifications");
         }
     }
     set_flash(&session, format!("Acknowledged {n} notification(s).")).await;
-    redirect("/admin/notifications")
+    redirect("/ui/notifications")
 }
 
 // ── Credentials ──
@@ -185,7 +185,7 @@ pub async fn create_credential_action(
     let name = form.name.trim();
     if name.is_empty() {
         set_flash(&session, "Credential name is required.").await;
-        return redirect("/admin/settings/credentials");
+        return redirect("/ui/settings/credentials");
     }
     match credentials::create_credential(&state.db, name).await {
         Ok((ak, sk)) => {
@@ -196,7 +196,7 @@ pub async fn create_credential_action(
             set_flash(&session, format!("Create failed: {e}")).await;
         }
     }
-    redirect("/admin/settings/credentials")
+    redirect("/ui/settings/credentials")
 }
 
 pub async fn delete_credential_action(
@@ -208,7 +208,7 @@ pub async fn delete_credential_action(
         Ok(()) => set_flash(&session, format!("Credential {key_id} deleted.")).await,
         Err(e) => set_flash(&session, format!("Delete failed: {e}")).await,
     }
-    redirect("/admin/settings/credentials")
+    redirect("/ui/settings/credentials")
 }
 
 #[derive(Deserialize)]
@@ -231,7 +231,7 @@ pub async fn toggle_credential_action(
         }
         Err(e) => set_flash(&session, format!("Update failed: {e}")).await,
     }
-    redirect("/admin/settings/credentials")
+    redirect("/ui/settings/credentials")
 }
 
 // ── Nodes ──
@@ -252,7 +252,7 @@ pub async fn patch_node_action(
         Ok(d) => d,
         Err(_) => {
             set_flash(&session, "Node not found.").await;
-            return redirect("/admin/nodes");
+            return redirect("/ui/nodes");
         }
     };
     doc["friendly_name"] = serde_json::Value::String(form.friendly_name.trim().to_string());
@@ -261,7 +261,7 @@ pub async fn patch_node_action(
     } else {
         set_flash(&session, "Node updated.").await;
     }
-    redirect(&format!("/admin/nodes/{}", node_id))
+    redirect(&format!("/ui/nodes/{}", node_id))
 }
 
 #[derive(Deserialize)]
@@ -284,7 +284,7 @@ pub async fn add_mount_action(
         Ok(d) => d,
         Err(_) => {
             set_flash(&session, "Node not found.").await;
-            return redirect("/admin/nodes");
+            return redirect("/ui/nodes");
         }
     };
     let priority: i32 = form.priority.as_deref().and_then(|s| s.parse().ok()).unwrap_or(0);
@@ -310,7 +310,7 @@ pub async fn add_mount_action(
     } else {
         set_flash(&session, "Mount added.").await;
     }
-    redirect(&format!("/admin/nodes/{}", node_id))
+    redirect(&format!("/ui/nodes/{}", node_id))
 }
 
 pub async fn delete_mount_action(
@@ -323,7 +323,7 @@ pub async fn delete_mount_action(
         Ok(d) => d,
         Err(_) => {
             set_flash(&session, "Node not found.").await;
-            return redirect("/admin/nodes");
+            return redirect("/ui/nodes");
         }
     };
     if let Some(arr) = doc.get_mut("network_mounts").and_then(|v| v.as_array_mut()) {
@@ -334,7 +334,7 @@ pub async fn delete_mount_action(
     } else {
         set_flash(&session, "Mount removed.").await;
     }
-    redirect(&format!("/admin/nodes/{}", node_id))
+    redirect(&format!("/ui/nodes/{}", node_id))
 }
 
 // ── Storage backends ──
@@ -358,18 +358,18 @@ pub async fn create_backend_action(
     let name = form.name.trim().to_string();
     if name.is_empty() || name.contains("::") {
         set_flash(&session, "Invalid backend name.").await;
-        return redirect("/admin/storage-backends");
+        return redirect("/ui/storage-backends");
     }
     let valid = ["s3", "b2", "directory", "agent"];
     if !valid.contains(&form.backend.as_str()) {
         set_flash(&session, "Backend type must be one of: s3, b2, directory, agent.").await;
-        return redirect("/admin/storage-backends");
+        return redirect("/ui/storage-backends");
     }
 
     let doc_id = mosaicfs_common::replication::storage_backend_doc_id(&name);
     if state.db.get_document(&doc_id).await.is_ok() {
         set_flash(&session, "A backend with that name already exists.").await;
-        return redirect("/admin/storage-backends");
+        return redirect("/ui/storage-backends");
     }
 
     let backend_config = match form.backend.as_str() {
@@ -408,7 +408,7 @@ pub async fn create_backend_action(
         Ok(_) => set_flash(&session, format!("Backend '{name}' created.")).await,
         Err(e) => set_flash(&session, format!("Create failed: {e}")).await,
     }
-    redirect("/admin/storage-backends")
+    redirect("/ui/storage-backends")
 }
 
 pub async fn delete_backend_action(
@@ -421,19 +421,19 @@ pub async fn delete_backend_action(
         Ok(d) => d,
         Err(_) => {
             set_flash(&session, "Backend not found.").await;
-            return redirect("/admin/storage-backends");
+            return redirect("/ui/storage-backends");
         }
     };
     let rev = doc.get("_rev").and_then(|v| v.as_str()).unwrap_or("").to_string();
     if rev.is_empty() {
         set_flash(&session, "Backend has no _rev (corrupt doc).").await;
-        return redirect("/admin/storage-backends");
+        return redirect("/ui/storage-backends");
     }
     match state.db.delete_document(&doc_id, &rev).await {
         Ok(_) => set_flash(&session, format!("Backend '{name}' deleted.")).await,
         Err(e) => set_flash(&session, format!("Delete failed: {e}")).await,
     }
-    redirect("/admin/storage-backends")
+    redirect("/ui/storage-backends")
 }
 
 // ── Replication rules ──
@@ -454,7 +454,7 @@ pub async fn create_rule_action(
 ) -> Response {
     if form.target_name.trim().is_empty() {
         set_flash(&session, "Target backend is required.").await;
-        return redirect("/admin/replication");
+        return redirect("/ui/replication");
     }
     let rule_id = Uuid::new_v4().to_string();
     let name = form
@@ -489,7 +489,7 @@ pub async fn create_rule_action(
         Ok(_) => set_flash(&session, "Replication rule created.").await,
         Err(e) => set_flash(&session, format!("Create failed: {e}")).await,
     }
-    redirect("/admin/replication")
+    redirect("/ui/replication")
 }
 
 pub async fn delete_rule_action(
@@ -502,19 +502,19 @@ pub async fn delete_rule_action(
         Ok(d) => d,
         Err(_) => {
             set_flash(&session, "Rule not found.").await;
-            return redirect("/admin/replication");
+            return redirect("/ui/replication");
         }
     };
     let rev = doc.get("_rev").and_then(|v| v.as_str()).unwrap_or("").to_string();
     if rev.is_empty() {
         set_flash(&session, "Rule has no _rev.").await;
-        return redirect("/admin/replication");
+        return redirect("/ui/replication");
     }
     match state.db.delete_document(&doc_id, &rev).await {
         Ok(_) => set_flash(&session, "Rule deleted.").await,
         Err(e) => set_flash(&session, format!("Delete failed: {e}")).await,
     }
-    redirect("/admin/replication")
+    redirect("/ui/replication")
 }
 
 // ── Restore ──
@@ -537,7 +537,7 @@ pub async fn initiate_restore_action(
     let empty = |s: &str| s.trim().is_empty();
     if empty(&form.target_name) || empty(&form.source_node_id) || empty(&form.destination_node_id) {
         set_flash(&session, "target_name, source_node_id, destination_node_id are required.").await;
-        return redirect("/admin/replication");
+        return redirect("/ui/replication");
     }
     let body = rephandlers::InitiateRestoreRequest {
         target_name: form.target_name.trim().to_string(),
@@ -558,7 +558,7 @@ pub async fn initiate_restore_action(
             set_flash(&session, format!("Restore failed: {s}")).await;
         }
     }
-    redirect("/admin/replication")
+    redirect("/ui/replication")
 }
 
 pub async fn cancel_restore_action(
@@ -583,7 +583,7 @@ pub async fn cancel_restore_action(
         "not_running" => set_flash(&session, "Job not running.").await,
         _ => set_flash(&session, "Job not found.").await,
     }
-    redirect("/admin/replication")
+    redirect("/ui/replication")
 }
 
 // ── Backup download ──
@@ -598,7 +598,7 @@ pub async fn backup_download(
 // ── VFS Directories ──
 
 fn vfs_dir_url(path: &str) -> String {
-    format!("/admin/vfs/dir?path={}", urlencoding::encode(path))
+    format!("/ui/vfs/dir?path={}", urlencoding::encode(path))
 }
 
 #[derive(Deserialize)]
@@ -632,12 +632,12 @@ pub async fn create_vfs_dir_action(
     };
     if path.starts_with("/federation/") || path.contains("//") {
         set_flash(&session, "Invalid virtual path.").await;
-        return redirect("/admin/vfs/new");
+        return redirect("/ui/vfs/new");
     }
     let doc_id = dir_id_for(&path);
     if state.db.get_document(&doc_id).await.is_ok() {
         set_flash(&session, format!("Directory '{}' already exists.", path)).await;
-        return redirect("/admin/vfs/new");
+        return redirect("/ui/vfs/new");
     }
     let name = path
         .trim_end_matches('/')
@@ -679,11 +679,11 @@ pub async fn create_vfs_dir_action(
     match state.db.put_document(&doc_id, &doc).await {
         Ok(_) => {
             set_flash(&session, format!("Directory '{}' created.", path)).await;
-            redirect("/admin/vfs")
+            redirect("/ui/vfs")
         }
         Err(e) => {
             set_flash(&session, format!("Create failed: {e}")).await;
-            redirect("/admin/vfs/new")
+            redirect("/ui/vfs/new")
         }
     }
 }
@@ -747,19 +747,19 @@ pub async fn delete_vfs_dir_action(
         Ok(d) => d,
         Err(_) => {
             set_flash(&session, "Directory not found.").await;
-            return redirect("/admin/vfs");
+            return redirect("/ui/vfs");
         }
     };
     if doc.get("system").and_then(|v| v.as_bool()) == Some(true) {
         set_flash(&session, "Cannot delete system directory.").await;
-        return redirect("/admin/vfs");
+        return redirect("/ui/vfs");
     }
     let rev = doc.get("_rev").and_then(|v| v.as_str()).unwrap_or("").to_string();
     match state.db.delete_document(&doc_id, &rev).await {
         Ok(_) => set_flash(&session, format!("Directory '{}' deleted.", path)).await,
         Err(e) => set_flash(&session, format!("Delete failed: {e}")).await,
     }
-    redirect("/admin/vfs")
+    redirect("/ui/vfs")
 }
 
 #[derive(Deserialize)]
@@ -780,7 +780,7 @@ pub async fn patch_vfs_dir_action(
         Ok(d) => d,
         Err(_) => {
             set_flash(&session, "Directory not found.").await;
-            return redirect("/admin/vfs");
+            return redirect("/ui/vfs");
         }
     };
     if let Some(name) = form.name.as_deref().map(|s| s.trim()) {
@@ -822,7 +822,7 @@ pub async fn add_vfs_mount_action(
         Ok(d) => d,
         Err(_) => {
             set_flash(&session, "Directory not found.").await;
-            return redirect("/admin/vfs");
+            return redirect("/ui/vfs");
         }
     };
 
@@ -919,7 +919,7 @@ pub async fn delete_vfs_mount_action(
         Ok(d) => d,
         Err(_) => {
             set_flash(&session, "Directory not found.").await;
-            return redirect("/admin/vfs");
+            return redirect("/ui/vfs");
         }
     };
     if let Some(arr) = doc.get_mut("mounts").and_then(|v| v.as_array_mut()) {
@@ -1188,7 +1188,7 @@ pub async fn open_file_action(
     Form(form): Form<OpenFileForm>,
 ) -> Response {
     let return_url = format!(
-        "/admin/browse?path={}",
+        "/ui/browse?path={}",
         urlencoding::encode(&form.return_path)
     );
 

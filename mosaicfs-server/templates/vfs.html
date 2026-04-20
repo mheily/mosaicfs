@@ -3,7 +3,7 @@
 
 <div style="display:flex;align-items:center;justify-content:space-between;gap:1rem;margin-bottom:1rem">
   <h2 style="margin:0">Virtual Filesystem</h2>
-  <a href="/admin/vfs/new" role="button">Create a directory</a>
+  <a href="/ui/vfs/new" role="button">Create a directory</a>
 </div>
 
 {% if dirs | length == 0 %}
@@ -15,7 +15,7 @@
   </thead>
   <tbody>
     {% for d in dirs %}
-    <tr onclick="location.href='/admin/vfs/dir?path={{ d.virtual_path }}'" style="cursor:pointer">
+    <tr onclick="location.href='/ui/vfs/dir?path={{ d.virtual_path }}'" style="cursor:pointer">
       <td><code>{{ d.virtual_path }}</code></td>
       <td>{{ d.name }}</td>
       <td>{{ d.mount_count }}</td>

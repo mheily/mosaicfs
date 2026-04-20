@@ -1,13 +1,13 @@
 {% extends "layout.html" %}
 {% block content %}
 <h2>Replication</h2>
-<section hx-get="/admin/replication/panel" hx-trigger="load, every 10s" hx-swap="innerHTML">
+<section hx-get="/ui/replication/panel" hx-trigger="load, every 10s" hx-swap="innerHTML">
   <p class="muted" aria-busy="true">Loading…</p>
 </section>
 
 <article>
   <header><strong>Create replication rule</strong></header>
-  <form method="post" action="/admin/replication/rules/create">
+  <form method="post" action="/ui/replication/rules/create">
     <div class="grid">
       <label>Name
         <input type="text" name="name" placeholder="auto-generated if blank">
@@ -37,7 +37,7 @@
 
 <article>
   <header><strong>Initiate restore</strong></header>
-  <form method="post" action="/admin/replication/restore">
+  <form method="post" action="/ui/replication/restore">
     <div class="grid">
       <label>Target backend
         <input type="text" name="target_name" required>

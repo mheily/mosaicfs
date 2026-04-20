@@ -8,10 +8,10 @@
     <tr><th>Access Key</th><td><code>{{ created_access_key }}</code></td></tr>
     <tr><th>Secret Key</th><td><code>{{ created_secret_key }}</code></td></tr>
   </table>
-  <p><a href="/admin/login" role="button">Go to login</a></p>
+  <p><a href="/ui/login" role="button">Go to login</a></p>
   {% else %}
   <p class="muted">Paste the bootstrap token from the server log (<code>the bootstrap token is …</code>) to create the first admin credential.</p>
-  <form method="post" action="/admin/bootstrap">
+  <form method="post" action="/ui/bootstrap">
     <label>Bootstrap token
       <input type="text" name="token" required autofocus>
     </label>

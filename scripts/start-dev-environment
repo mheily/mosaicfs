@@ -244,7 +244,7 @@ cat <<EOF
 
 Dev environment up.
 
-  Admin UI     http://127.0.0.1:${WEB_UI_PORT}/admin
+  UI           http://127.0.0.1:${WEB_UI_PORT}/ui
   CouchDB      http://${DB_HOST}:${DB_PORT}/_utils  (${DB_USER} / ${DB_PASSWORD})
   Config       $CONFIG_FILE
   Log file     $LOG_FILE

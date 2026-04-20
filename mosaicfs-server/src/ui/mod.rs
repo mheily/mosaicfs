@@ -1,6 +1,6 @@
-//! Server-side rendered admin UI (change 005).
+//! Server-side rendered UI (change 005).
 //!
-//! Mounted under `/admin`. Uses Tera for templates, tower-sessions for
+//! Mounted under `/ui`. Uses Tera for templates, tower-sessions for
 //! cookie-based auth, and HTMX for in-page interactivity. Assets (Pico CSS,
 //! HTMX) are embedded at compile time.
 
@@ -137,112 +137,112 @@ fn insecure_http() -> bool {
         .unwrap_or(false)
 }
 
-/// Build the `/admin` router. Returns a state-typed router to be merged
+/// Build the `/ui` router. Returns a state-typed router to be merged
 /// before the main router applies its state.
 pub fn router() -> Router<Arc<AppState>> {
     let store = MemoryStore::default();
     let session_layer = SessionManagerLayer::new(store)
-        .with_name("mosaicfs_admin")
+        .with_name("mosaicfs_session")
         .with_same_site(SameSite::Lax)
         .with_secure(!insecure_http())
         .with_expiry(tower_sessions::Expiry::OnInactivity(Duration::hours(12)));
 
     let public: Router<Arc<AppState>> = Router::new()
-        .route("/admin/login", get(login_form).post(login_submit))
-        .route("/admin/logout", post(logout))
+        .route("/ui/login", get(login_form).post(login_submit))
+        .route("/ui/logout", post(logout))
         .route(
-            "/admin/bootstrap",
+            "/ui/bootstrap",
             get(actions::bootstrap_page).post(actions::bootstrap_submit),
         )
-        .route("/admin/assets/{*path}", get(serve_asset));
+        .route("/ui/assets/{*path}", get(serve_asset));
 
     let protected: Router<Arc<AppState>> = Router::new()
-        .route("/admin", get(|| async { Redirect::to("/admin/browse") }))
-        .route("/admin/browse", get(views::browse_page))
-        .route("/admin/status", get(views::status_page))
-        .route("/admin/status/panel", get(views::status_panel))
-        .route("/admin/nodes", get(views::nodes_page))
-        .route("/admin/nodes/panel", get(views::nodes_panel))
-        .route("/admin/nodes/{node_id}", get(views::node_detail_page))
-        .route("/admin/nodes/{node_id}/edit", post(actions::patch_node_action))
-        .route("/admin/nodes/{node_id}/mounts", post(actions::add_mount_action))
+        .route("/ui", get(|| async { Redirect::to("/ui/browse") }))
+        .route("/ui/browse", get(views::browse_page))
+        .route("/ui/status", get(views::status_page))
+        .route("/ui/status/panel", get(views::status_panel))
+        .route("/ui/nodes", get(views::nodes_page))
+        .route("/ui/nodes/panel", get(views::nodes_panel))
+        .route("/ui/nodes/{node_id}", get(views::node_detail_page))
+        .route("/ui/nodes/{node_id}/edit", post(actions::patch_node_action))
+        .route("/ui/nodes/{node_id}/mounts", post(actions::add_mount_action))
         .route(
-            "/admin/nodes/{node_id}/mounts/{mount_id}/delete",
+            "/ui/nodes/{node_id}/mounts/{mount_id}/delete",
             post(actions::delete_mount_action),
         )
-        .route("/admin/notifications", get(views::notifications_page))
+        .route("/ui/notifications", get(views::notifications_page))
         .route(
-            "/admin/notifications/panel",
+            "/ui/notifications/panel",
             get(views::notifications_panel),
         )
         .route(
-            "/admin/notifications/ack-all",
+            "/ui/notifications/ack-all",
             post(actions::ack_all_notifications),
         )
         .route(
-            "/admin/notifications/{id}/ack",
+            "/ui/notifications/{id}/ack",
             post(actions::ack_notification),
         )
-        .route("/admin/replication", get(views::replication_page))
-        .route("/admin/replication/panel", get(views::replication_panel))
+        .route("/ui/replication", get(views::replication_page))
+        .route("/ui/replication/panel", get(views::replication_panel))
         .route(
-            "/admin/replication/rules/create",
+            "/ui/replication/rules/create",
             post(actions::create_rule_action),
         )
         .route(
-            "/admin/replication/rules/{rule_id}/delete",
+            "/ui/replication/rules/{rule_id}/delete",
             post(actions::delete_rule_action),
         )
         .route(
-            "/admin/replication/restore",
+            "/ui/replication/restore",
             post(actions::initiate_restore_action),
         )
         .route(
-            "/admin/replication/restore/{job_id}/cancel",
+            "/ui/replication/restore/{job_id}/cancel",
             post(actions::cancel_restore_action),
         )
         .route(
-            "/admin/storage-backends",
+            "/ui/storage-backends",
             get(views::storage_backends_page),
         )
         .route(
-            "/admin/storage-backends/create",
+            "/ui/storage-backends/create",
             post(actions::create_backend_action),
         )
         .route(
-            "/admin/storage-backends/{name}/delete",
+            "/ui/storage-backends/{name}/delete",
             post(actions::delete_backend_action),
         )
         .route(
-            "/admin/settings/credentials",
+            "/ui/settings/credentials",
             get(views::settings_credentials_page),
         )
         .route(
-            "/admin/settings/credentials/create",
+            "/ui/settings/credentials/create",
             post(actions::create_credential_action),
         )
         .route(
-            "/admin/settings/credentials/{key_id}/delete",
+            "/ui/settings/credentials/{key_id}/delete",
             post(actions::delete_credential_action),
         )
         .route(
-            "/admin/settings/credentials/{key_id}/toggle",
+            "/ui/settings/credentials/{key_id}/toggle",
             post(actions::toggle_credential_action),
         )
-        .route("/admin/settings/backup", get(views::settings_backup_page))
-        .route("/admin/settings/backup/download", get(actions::backup_download))
-        .route("/admin/vfs", get(views::vfs_page))
-        .route("/admin/vfs/new", get(views::vfs_new_page))
-        .route("/admin/vfs/dir", get(views::vfs_dir_page))
-        .route("/admin/vfs/dir/create", post(actions::create_vfs_dir_action))
-        .route("/admin/vfs/dir/delete", post(actions::delete_vfs_dir_action))
-        .route("/admin/vfs/dir/settings", post(actions::patch_vfs_dir_action))
-        .route("/admin/vfs/dir/mounts/add", post(actions::add_vfs_mount_action))
-        .route("/admin/vfs/dir/mounts/delete", post(actions::delete_vfs_mount_action))
-        .route("/admin/vfs/dir/mounts/steps/add", post(actions::add_vfs_step_action))
-        .route("/admin/vfs/dir/mounts/steps/delete", post(actions::delete_vfs_step_action))
-        .route("/admin/vfs/dir/mounts/steps/move", post(actions::move_vfs_step_action))
-        .route("/admin/vfs/open-file", post(actions::open_file_action))
+        .route("/ui/settings/backup", get(views::settings_backup_page))
+        .route("/ui/settings/backup/download", get(actions::backup_download))
+        .route("/ui/vfs", get(views::vfs_page))
+        .route("/ui/vfs/new", get(views::vfs_new_page))
+        .route("/ui/vfs/dir", get(views::vfs_dir_page))
+        .route("/ui/vfs/dir/create", post(actions::create_vfs_dir_action))
+        .route("/ui/vfs/dir/delete", post(actions::delete_vfs_dir_action))
+        .route("/ui/vfs/dir/settings", post(actions::patch_vfs_dir_action))
+        .route("/ui/vfs/dir/mounts/add", post(actions::add_vfs_mount_action))
+        .route("/ui/vfs/dir/mounts/delete", post(actions::delete_vfs_mount_action))
+        .route("/ui/vfs/dir/mounts/steps/add", post(actions::add_vfs_step_action))
+        .route("/ui/vfs/dir/mounts/steps/delete", post(actions::delete_vfs_step_action))
+        .route("/ui/vfs/dir/mounts/steps/move", post(actions::move_vfs_step_action))
+        .route("/ui/vfs/open-file", post(actions::open_file_action))
         .layer(middleware::from_fn(require_auth));
 
     Router::new().merge(public).merge(protected).layer(session_layer)
@@ -256,12 +256,12 @@ async fn require_auth(session: Session, req: Request, next: Next) -> Response {
         Ok(Some(_)) => next.run(req).await,
         _ => {
             let path = req.uri().path();
-            if path.starts_with("/admin/") && path.ends_with("/panel") {
+            if path.starts_with("/ui/") && path.ends_with("/panel") {
                 // HTMX poll for an unauthed user: return a gentle 401 body that HTMX will swap.
                 return (StatusCode::UNAUTHORIZED, "Session expired. Reload.")
                     .into_response();
             }
-            Redirect::to("/admin/login").into_response()
+            Redirect::to("/ui/login").into_response()
         }
     }
 }
@@ -279,10 +279,10 @@ pub(crate) async fn user_for_ctx(session: &Session) -> Option<String> {
 
 async fn login_form(State(state): State<Arc<AppState>>, session: Session) -> Response {
     if current_user(&session).await.is_some() {
-        return Redirect::to("/admin/status").into_response();
+        return Redirect::to("/ui/status").into_response();
     }
     if state.data_dir.join("bootstrap_token").exists() {
-        return Redirect::to("/admin/bootstrap").into_response();
+        return Redirect::to("/ui/bootstrap").into_response();
     }
     let ctx = base_ctx(None);
     render("login.html", &ctx)
@@ -330,7 +330,7 @@ async fn login_submit(
         tracing::error!(error=%e, "session insert failed");
         return login_error("Session error");
     }
-    Redirect::to("/admin/status").into_response()
+    Redirect::to("/ui/status").into_response()
 }
 
 fn login_error(msg: &str) -> Response {
@@ -341,11 +341,11 @@ fn login_error(msg: &str) -> Response {
 
 async fn logout(session: Session) -> Response {
     let _ = session.flush().await;
-    Redirect::to("/admin/login").into_response()
+    Redirect::to("/ui/login").into_response()
 }
 
 async fn serve_asset(uri: Uri) -> Response {
-    let path = uri.path().trim_start_matches("/admin/assets/");
+    let path = uri.path().trim_start_matches("/ui/assets/");
     let (bytes, content_type): (&[u8], &str) = match path {
         "pico.min.css" => (
             include_bytes!("../../assets/pico.min.css"),

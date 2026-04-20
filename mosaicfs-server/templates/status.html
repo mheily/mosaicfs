@@ -4,7 +4,7 @@
   <h2>System status</h2>
   <p class="muted">Server-side rendered admin UI (change 005).</p>
 </hgroup>
-<section hx-get="/admin/status/panel" hx-trigger="load, every 5s" hx-swap="innerHTML">
+<section hx-get="/ui/status/panel" hx-trigger="load, every 5s" hx-swap="innerHTML">
   <p class="muted" aria-busy="true">Loading…</p>
 </section>
 {% endblock content %}

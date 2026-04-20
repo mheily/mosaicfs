@@ -4,7 +4,7 @@
 //! `mosaicfs` binary via [`start_web_ui`] when `features.web_ui = true`.
 
 pub mod access_cache;
-pub mod admin;
+pub mod ui;
 pub mod auth;
 pub mod credentials;
 pub mod handlers;

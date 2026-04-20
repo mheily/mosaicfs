@@ -105,14 +105,14 @@ t_health_endpoint_authenticated() {
         || { echo "health not ok: $body"; return 1; }
 }
 
-# /admin redirects (303) to /admin/status; follow with -L and verify the
+# /ui redirects (303) to /ui/status; follow with -L and verify the
 # final response is text/html.
 t_admin_ui_serves_html() {
     local headers
-    headers=$(curl -fsSIL "$SERVER_URL/admin" 2>&1) \
-        || { echo "GET /admin failed: $headers"; return 1; }
+    headers=$(curl -fsSIL "$SERVER_URL/ui" 2>&1) \
+        || { echo "GET /ui failed: $headers"; return 1; }
     echo "$headers" | grep -qi '^content-type:.*text/html' \
-        || { echo "/admin did not return text/html:"; echo "$headers"; return 1; }
+        || { echo "/ui did not return text/html:"; echo "$headers"; return 1; }
 }
 
 # Bootstrap a credential on first run and cache it. On subsequent runs we
@@ -208,7 +208,7 @@ t_readme_content() {
 run_test "CouchDB reachable"                 t_couchdb_reachable
 run_test "mosaicfs process alive"            t_mosaicfs_process_alive
 run_test "GET /api/system/bootstrap-status"  t_bootstrap_status_reachable
-run_test "GET /admin serves HTML"            t_admin_ui_serves_html
+run_test "GET /ui serves HTML"               t_admin_ui_serves_html
 run_test "bootstrap yields credentials"      t_bootstrap_credentials
 
 if [[ -f "$CREDS_FILE" ]]; then
