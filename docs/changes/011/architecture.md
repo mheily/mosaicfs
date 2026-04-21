@@ -40,7 +40,7 @@ The server no longer triggers native-app launches. The browse UI returns a virtu
 
 **Today:** `mosaicfs-server/src/ui/open.rs::open_file_by_id` resolves the file_id to a local path (via `network_mounts` in the node document), then calls `std::process::Command::new("open").arg(path)`. Any `file_id` the caller can route to this handler becomes a path the server process opens.
 
-**Proposed:** The handler resolves the file_id to a **virtual path** (the MosaicFS-internal path — the same string the VFS tree uses) and returns it to the caller. No subprocess spawn. The `network_mounts`-based local-path resolution is retained for the flash-message case (legacy caller in `actions.rs`) only as long as that caller exists; it is removed once the browse UI is the only caller.
+**Proposed:** The handler resolves the file_id to a **virtual path** (the MosaicFS-internal path — the same string the VFS tree uses) and returns it to the caller. No subprocess spawn. The import of `open_file_by_id` in `ui/actions.rs:22` has no call sites (compiler warns as unused) and is removed in the same phase. `open.rs` shrinks to virtual-path resolution; the `network_mounts`-based local-path resolution, the `Command::new("open")` call, and `summarize_open_error` all go away.
 
 **Justification:** The server currently runs as a separate build account specifically so it has limited blast radius. That containment is undermined when the server process calls `open` on attacker-controllable paths. Returning a string moves the open decision to a principal (the Tauri app + user session) that is already trusted with the user's files.
 
@@ -61,7 +61,7 @@ Write verbs (`PUT`, `DELETE`, `MKCOL`, `LOCK`, `UNLOCK`, `PROPPATCH`, `COPY`, `M
 
 Authentication: HTTP Basic against a new `dav_password` config field, distinct from the JWT session scheme. The password is seeded into the user's Keychain at first run (see Change 4).
 
-Implementation: Prefer the `dav-server` crate integrated behind the Axum router. Fall back to hand-rolled handlers only if the crate proves incompatible with the Axum 0.7 / tokio versions in the workspace. Budget: ~300 lines to wire up the crate, or ~1000 lines if hand-rolled.
+Implementation: Hand-rolled handlers on Axum. The read-only surface is four verbs and a single XML response shape (`<D:multistatus>` with `<D:response>` children); owning ~400–800 lines of code avoids a dependency on a niche crate for a protocol that rarely changes. Budget revisits if `PROPFIND` XML edge cases on real macOS clients prove more costly than expected — at which point the `dav-server` crate becomes the fallback, not the default.
 
 **Justification:** WebDAV is the smallest standard protocol that Finder, Quick Look, and native apps understand as a read-only network volume. It reuses the existing Axum runtime, HTTP port, TLS story, and file-content serving code. No new binary, no new container.
 
@@ -123,7 +123,7 @@ Both should be verified in practice on the target macOS version before accepting
 
 **Today:** N/A (no mount to reconnect).
 
-**Proposed:** When the Tauri plugin returns `MountNotAvailable`, the browse UI shows a flash message "Share not mounted" with a "Reconnect" button. The button invokes a second Tauri command that runs `launchctl kickstart -k gui/$(id -u)/com.mosaicfs.mount` and then retries the open. This handles the common cases: laptop just woke up, network just came back, NAS just rebooted.
+**Proposed:** When the Tauri plugin returns `MountNotAvailable`, the browse UI shows a flash message "Share not mounted" with a "Reconnect" button. The button invokes a second Tauri command that kicks the mount agent via the `SMAppService` Objective-C API (`SMAppService.agent(plistName:).unregister()` followed by `.register()`, or equivalent — the sandbox permits this because `SMAppService` is designed for sandboxed apps to manage their own bundled helpers). It then retries the open. Spawning `launchctl` as a subprocess is **not** an option — the Tauri sandbox blocks process execution, and adding an exception would widen the attack surface for the sake of a convenience the framework API already provides.
 
 **Justification:** With no temp-file fallback (deferred), auto-restart via `KeepAlive` plus a manual reconnect covers the realistic recovery scenarios without adding a degraded-open-a-copy code path.
 
@@ -192,4 +192,4 @@ Change `open_file_by_id` to return a virtual path. Remove the `std::process::Com
 
 4. **`SMAppService` on the minimum supported macOS.** The project targets modern macOS. `SMAppService` is macOS 13+. Older-macOS support requires the legacy `SMLoginItemSetEnabled` path, which is more complex. Settle the minimum target before phase 2.
 
-5. **First-run DAV password provisioning.** The server's `dav_password` config must be set before the Tauri app's first-run Keychain seed prompt is meaningful. Whether this is a config-file edit, a CLI command, or a one-time UI setup page is a phase-2 design call.
+5. **First-run DAV password provisioning.** The server's `dav_password` must exist before the Tauri app's first-run Keychain seed is meaningful — otherwise the user is typing a password into a Keychain dialog that doesn't match anything server-side. The existing bootstrap-token pattern (`actions.rs:41+`, writes `state.data_dir.join("bootstrap_token")` at first start) is the natural template: have the server generate `dav_password` on first launch and write it to a file (e.g. `dav_password`) that an admin reads once to configure the Tauri app, or that the Tauri app reads directly if it runs on the same host as the server. Avoid a design that requires a manual config-file edit between `mosaicfs` starting and the Tauri app launching.
