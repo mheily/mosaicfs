@@ -1,7 +1,7 @@
 <input type="hidden" id="browse-root" value="{{ path }}">
 
 {% if rows | length == 0 %}
-<p class="empty-msg">This directory is empty</p>
+<p class="empty-msg">{% if q %}No matching entries were found.{% else %}This directory is empty.{% endif %}</p>
 {% else %}
 <table>
   <thead>
@@ -37,7 +37,7 @@
         <span class="dir-name"
               hx-get="/ui/browse/navigate"
               hx-trigger="click"
-              hx-target="#main-content"
+              hx-target="#file-list"
               hx-swap="innerHTML"
               hx-push-url="true"
               hx-vals='{"path":"{{ row.virtual_path }}"}'>

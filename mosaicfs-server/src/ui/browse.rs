@@ -62,6 +62,9 @@ pub async fn list(
 
     for d in &subdirs {
         let name = d.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        if !q.is_empty() && !name.to_lowercase().contains(&q.to_lowercase()) {
+            continue;
+        }
         let vpath = d
             .get("virtual_path")
             .and_then(|v| v.as_str())
