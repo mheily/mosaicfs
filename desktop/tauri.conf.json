@@ -2,9 +2,6 @@
   "productName": "MosaicFS",
   "version": "0.1.0",
   "identifier": "com.mosaicfs.desktop",
-  "build": {
-    "beforeBuildCommand": "sh -c 'cd .. && cargo build --release --no-default-features --bin mosaicfs'"
-  },
   "app": {
     "withGlobalTauri": true,
     "windows": [],
