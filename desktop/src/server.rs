@@ -17,6 +17,53 @@ pub fn find_binary() -> PathBuf {
         .join("mosaicfs")
 }
 
+/// Walk up the directory tree from the executable looking for
+/// dev-config/mosaicfs.toml and extract the [couchdb] url from it.
+///
+/// Works for both dev builds (target/debug/…) and bundled releases
+/// (MosaicFS.app/Contents/MacOS/…) as long as the app is run from
+/// within the project directory.
+fn detect_dev_couchdb_url() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let mut dir = exe.parent()?;
+    for _ in 0..12 {
+        let candidate = dir.join("dev-config/mosaicfs.toml");
+        if let Ok(content) = std::fs::read_to_string(&candidate) {
+            if let Some(url) = parse_couchdb_url(&content) {
+                return Some(url);
+            }
+        }
+        dir = match dir.parent() {
+            Some(p) => p,
+            None => break,
+        };
+    }
+    None
+}
+
+fn parse_couchdb_url(toml: &str) -> Option<String> {
+    let mut in_couchdb = false;
+    for line in toml.lines() {
+        let t = line.trim();
+        if t == "[couchdb]" {
+            in_couchdb = true;
+            continue;
+        }
+        if t.starts_with('[') {
+            in_couchdb = false;
+        }
+        if in_couchdb && t.starts_with("url") {
+            if let Some(val) = t.splitn(2, '=').nth(1) {
+                let url = val.trim().trim_matches('"').to_string();
+                if !url.is_empty() {
+                    return Some(url);
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Write a default server.toml into `app_data_dir` if one does not already
 /// exist. Returns the path to the config file.
 pub fn ensure_config(app_data_dir: &Path) -> std::io::Result<PathBuf> {
@@ -27,6 +74,12 @@ pub fn ensure_config(app_data_dir: &Path) -> std::io::Result<PathBuf> {
         let socket_path = app_data_dir.join("server.sock");
         let data_dir_str = data_dir.to_string_lossy();
         let socket_path_str = socket_path.to_string_lossy();
+
+        // Use the dev environment's CouchDB URL when available; fall back to
+        // localhost for standalone / production installs.
+        let couchdb_url =
+            detect_dev_couchdb_url().unwrap_or_else(|| "http://localhost:5984".to_string());
+
         let toml = format!(
             r#"[features]
 agent  = false
@@ -34,7 +87,7 @@ vfs    = false
 web_ui = true
 
 [couchdb]
-url      = "http://localhost:5984"
+url      = "{couchdb_url}"
 user     = "admin"
 password = "changeme"
 
@@ -95,10 +148,53 @@ async fn run_proxy(listener: tokio::net::TcpListener, sock: PathBuf) {
         };
         let sock = sock.clone();
         tokio::spawn(async move {
-            let Ok(mut unix_stream) = tokio::net::UnixStream::connect(&sock).await else {
-                return;
-            };
-            let _ = tokio::io::copy_bidirectional(&mut tcp_stream, &mut unix_stream).await;
+            match connect_with_retry(&sock).await {
+                Some(mut unix_stream) => {
+                    let _ =
+                        tokio::io::copy_bidirectional(&mut tcp_stream, &mut unix_stream).await;
+                }
+                None => {
+                    // Return a real HTTP response so the browser shows an error
+                    // page rather than a blank white screen.
+                    use tokio::io::AsyncWriteExt;
+                    let config_path = sock.with_file_name("server.toml");
+                    let body = format!(
+                        "MosaicFS server is not running.\n\n\
+                         The server failed to start or could not connect to CouchDB.\n\
+                         Check the CouchDB URL in:\n  {}\n\n\
+                         Then restart the app.",
+                        config_path.display()
+                    );
+                    let _ = tcp_stream
+                        .write_all(
+                            format!(
+                                "HTTP/1.1 503 Service Unavailable\r\n\
+                                 Content-Type: text/plain; charset=utf-8\r\n\
+                                 Content-Length: {}\r\n\
+                                 Connection: close\r\n\
+                                 \r\n{}",
+                                body.len(),
+                                body
+                            )
+                            .as_bytes(),
+                        )
+                        .await;
+                }
+            }
         });
     }
+}
+
+/// Retry connecting to the Unix socket for up to 10 s to absorb server startup lag.
+#[cfg(unix)]
+async fn connect_with_retry(sock: &Path) -> Option<tokio::net::UnixStream> {
+    for _ in 0..100 {
+        match tokio::net::UnixStream::connect(sock).await {
+            Ok(s) => return Some(s),
+            Err(_) => {
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            }
+        }
+    }
+    None
 }
