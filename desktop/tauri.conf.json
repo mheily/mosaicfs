@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "identifier": "com.mosaicfs.desktop",
   "build": {
-    "beforeBuildCommand": "cargo build --release --no-default-features --manifest-path ../Cargo.toml --bin mosaicfs"
+    "beforeBuildCommand": "sh -c 'cd .. && cargo build --release --no-default-features --bin mosaicfs'"
   },
   "app": {
     "withGlobalTauri": true,
