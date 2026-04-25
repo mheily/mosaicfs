@@ -174,6 +174,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/ui/nodes/panel", get(views::nodes_panel))
         .route("/ui/nodes/{node_id}", get(views::node_detail_page))
         .route("/ui/nodes/{node_id}/edit", post(actions::patch_node_action))
+        .route("/ui/nodes/{node_id}/delete", post(actions::delete_node_action))
         .route("/ui/nodes/{node_id}/mounts", post(actions::add_mount_action))
         .route(
             "/ui/nodes/{node_id}/mounts/{mount_id}/delete",

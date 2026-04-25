@@ -15,6 +15,11 @@
     <button type="submit">Save</button>
   </form>
   <p class="muted">Last heartbeat: {{ last_heartbeat }}</p>
+  <hr>
+  <form method="post" action="/ui/nodes/{{ node_id }}/delete"
+        onsubmit="return confirm('Delete node {{ node_id }}? This cannot be undone.');" style="margin:0">
+    <button type="submit" class="secondary outline">Delete this node</button>
+  </form>
 </article>
 
 <h3>Network mounts</h3>

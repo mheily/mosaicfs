@@ -263,6 +263,27 @@ pub async fn patch_node_action(
     redirect(&format!("/ui/nodes/{}", node_id))
 }
 
+pub async fn delete_node_action(
+    State(state): State<Arc<AppState>>,
+    session: Session,
+    Path(node_id): Path<String>,
+) -> Response {
+    let doc_id = format!("node::{}", node_id);
+    let doc = match state.db.get_document(&doc_id).await {
+        Ok(d) => d,
+        Err(_) => {
+            set_flash(&session, "Node not found.").await;
+            return redirect("/ui/nodes");
+        }
+    };
+    let rev = doc.get("_rev").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    match state.db.delete_document(&doc_id, &rev).await {
+        Ok(_) => set_flash(&session, format!("Node {node_id} deleted.")).await,
+        Err(e) => set_flash(&session, format!("Delete failed: {e}")).await,
+    }
+    redirect("/ui/nodes")
+}
+
 #[derive(Deserialize)]
 pub struct AddMountForm {
     pub remote_node_id: String,
