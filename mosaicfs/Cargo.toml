@@ -4,11 +4,15 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = ["vfs"]
+vfs = ["dep:mosaicfs-vfs", "mosaicfs-vfs/fuse"]
+
 [dependencies]
 mosaicfs-common = { path = "../mosaicfs-common" }
 mosaicfs-server = { path = "../mosaicfs-server" }
 mosaicfs-agent  = { path = "../mosaicfs-agent" }
-mosaicfs-vfs    = { path = "../mosaicfs-vfs" }
+mosaicfs-vfs    = { path = "../mosaicfs-vfs", optional = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

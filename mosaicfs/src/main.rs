@@ -14,6 +14,7 @@ use mosaicfs_agent::start_agent;
 use mosaicfs_common::config::MosaicfsConfig;
 use mosaicfs_common::secrets::{self, SecretsBackend};
 use mosaicfs_server::{run_bootstrap, start_web_ui};
+#[cfg(feature = "vfs")]
 use mosaicfs_vfs::start_vfs;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
@@ -74,6 +75,7 @@ async fn main() -> anyhow::Result<()> {
         let secrets = Arc::clone(&secrets);
         set.spawn(async move { ("agent", start_agent(cfg, secrets).await) });
     }
+    #[cfg(feature = "vfs")]
     if cfg.features.vfs {
         let cfg = Arc::clone(&cfg);
         set.spawn(async move { ("vfs", start_vfs(cfg).await) });

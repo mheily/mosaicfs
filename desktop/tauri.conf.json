@@ -2,6 +2,9 @@
   "productName": "MosaicFS",
   "version": "0.1.0",
   "identifier": "com.mosaicfs.desktop",
+  "build": {
+    "beforeBuildCommand": "cargo build --release --no-default-features --manifest-path ../Cargo.toml --bin mosaicfs"
+  },
   "app": {
     "withGlobalTauri": true,
     "windows": [],
@@ -18,6 +21,9 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
+    ],
+    "externalBin": [
+      "../target/release/mosaicfs"
     ],
     "macOS": {
       "entitlements": "./Entitlements.plist",
