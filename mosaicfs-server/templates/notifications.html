@@ -1,10 +1,18 @@
 {% extends "layout.html" %}
 {% block content %}
 <h2>Notifications</h2>
-<form method="post" action="/ui/notifications/ack-all" style="margin-bottom:1rem"
-      onsubmit="return confirm('Acknowledge all active notifications?');">
-  <button type="submit" class="secondary outline">Acknowledge all</button>
-</form>
+<div style="margin-bottom:1rem;display:flex;align-items:center;gap:0.75rem">
+  <button type="button" class="secondary outline" id="ack-all-btn"
+          onclick="confirmReveal('ack-all-btn','ack-all-confirm')">Acknowledge all</button>
+  <div id="ack-all-confirm" style="display:none;align-items:center;gap:0.75rem">
+    <span>Acknowledge all active notifications?</span>
+    <form method="post" action="/ui/notifications/ack-all" style="margin:0">
+      <button type="submit" class="secondary outline" style="padding:0.2rem 0.75rem">Yes</button>
+    </form>
+    <button type="button" style="padding:0.2rem 0.75rem"
+            onclick="confirmCancel('ack-all-btn','ack-all-confirm')">Cancel</button>
+  </div>
+</div>
 <section hx-get="/ui/notifications/panel" hx-trigger="load, every 10s" hx-swap="innerHTML">
   <p class="muted" aria-busy="true">Loading…</p>
 </section>

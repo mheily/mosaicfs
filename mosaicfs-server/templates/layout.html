@@ -6,6 +6,10 @@
 <title>{{ title | default(value="MosaicFS Admin") }}</title>
 <link rel="stylesheet" href="/ui/assets/pico.min.css">
 <script src="/ui/assets/htmx.min.js" defer></script>
+<script>
+function confirmReveal(b,c){document.getElementById(b).style.display='none';document.getElementById(c).style.display='inline-flex';}
+function confirmCancel(b,c){document.getElementById(c).style.display='none';document.getElementById(b).style.display='';}
+</script>
 <style>
   .nav-flex { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
   .nav-flex .spacer { flex: 1; }

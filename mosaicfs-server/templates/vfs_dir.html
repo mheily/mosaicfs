@@ -27,11 +27,17 @@
   </form>
   {% if not dir.is_system %}
   <hr>
-  <form method="post" action="/ui/vfs/dir/delete"
-        onsubmit="return confirm('Delete {{ dir.virtual_path }} and all its sources?');" style="margin:0">
-    <input type="hidden" name="virtual_path" value="{{ dir.virtual_path }}">
-    <button type="submit" class="secondary outline">Delete this directory</button>
-  </form>
+  <button type="button" class="secondary outline" id="dir-del-btn"
+          onclick="confirmReveal('dir-del-btn','dir-del-confirm')">Delete this directory</button>
+  <div id="dir-del-confirm" style="display:none;align-items:center;gap:0.75rem;margin-top:0.5rem">
+    <span>Delete <code>{{ dir.virtual_path }}</code> and all its sources?</span>
+    <form method="post" action="/ui/vfs/dir/delete" style="margin:0">
+      <input type="hidden" name="virtual_path" value="{{ dir.virtual_path }}">
+      <button type="submit" class="secondary outline" style="padding:0.2rem 0.75rem">Yes, delete</button>
+    </form>
+    <button type="button" style="padding:0.2rem 0.75rem"
+            onclick="confirmCancel('dir-del-btn','dir-del-confirm')">Cancel</button>
+  </div>
   {% endif %}
 </article>
 
@@ -69,12 +75,20 @@
         {% endif %}
       </small>
     </div>
-    <form method="post" action="/ui/vfs/dir/mounts/delete"
-          onsubmit="return confirm('Remove this source?');" style="margin:0;flex-shrink:0">
-      <input type="hidden" name="virtual_path" value="{{ dir.virtual_path }}">
-      <input type="hidden" name="mount_id" value="{{ m.mount_id }}">
-      <button type="submit" class="secondary outline" style="padding:0.25rem 0.75rem">Remove</button>
-    </form>
+    <div style="flex-shrink:0;display:inline-flex;align-items:center;gap:0.4rem">
+      <button type="button" class="secondary outline" style="padding:0.25rem 0.75rem"
+              id="src-del-btn-{{ m.mount_id }}"
+              onclick="confirmReveal('src-del-btn-{{ m.mount_id }}','src-del-confirm-{{ m.mount_id }}')">Remove</button>
+      <div id="src-del-confirm-{{ m.mount_id }}" style="display:none;align-items:center;gap:0.4rem">
+        <form method="post" action="/ui/vfs/dir/mounts/delete" style="display:inline;margin:0">
+          <input type="hidden" name="virtual_path" value="{{ dir.virtual_path }}">
+          <input type="hidden" name="mount_id" value="{{ m.mount_id }}">
+          <button type="submit" class="secondary outline" style="padding:0.2rem 0.5rem">Yes, remove</button>
+        </form>
+        <button type="button" style="padding:0.2rem 0.5rem"
+                onclick="confirmCancel('src-del-btn-{{ m.mount_id }}','src-del-confirm-{{ m.mount_id }}')">Cancel</button>
+      </div>
+    </div>
   </div>
 
   <details {% if m.steps | length > 0 %}open{% endif %} style="margin-top:0.75rem">
@@ -122,13 +136,19 @@
             <button type="submit" style="padding:0.1rem 0.4rem" title="Move down">↓</button>
           </form>
           {% endif %}
-          <form method="post" action="/ui/vfs/dir/mounts/steps/delete"
-                onsubmit="return confirm('Delete this filter?');" style="display:inline;margin:0">
-            <input type="hidden" name="virtual_path" value="{{ dir.virtual_path }}">
-            <input type="hidden" name="mount_id" value="{{ m.mount_id }}">
-            <input type="hidden" name="step_idx" value="{{ loop.index0 }}">
-            <button type="submit" class="contrast outline" style="padding:0.1rem 0.4rem" title="Delete">×</button>
-          </form>
+          <button type="button" class="contrast outline" style="padding:0.1rem 0.4rem" title="Delete"
+                  id="step-del-btn-{{ m.mount_id }}-{{ loop.index0 }}"
+                  onclick="confirmReveal('step-del-btn-{{ m.mount_id }}-{{ loop.index0 }}','step-del-confirm-{{ m.mount_id }}-{{ loop.index0 }}')">×</button>
+          <div id="step-del-confirm-{{ m.mount_id }}-{{ loop.index0 }}" style="display:none;align-items:center;gap:0.25rem">
+            <form method="post" action="/ui/vfs/dir/mounts/steps/delete" style="display:inline;margin:0">
+              <input type="hidden" name="virtual_path" value="{{ dir.virtual_path }}">
+              <input type="hidden" name="mount_id" value="{{ m.mount_id }}">
+              <input type="hidden" name="step_idx" value="{{ loop.index0 }}">
+              <button type="submit" class="contrast outline" style="padding:0.1rem 0.35rem">✓</button>
+            </form>
+            <button type="button" style="padding:0.1rem 0.35rem"
+                    onclick="confirmCancel('step-del-btn-{{ m.mount_id }}-{{ loop.index0 }}','step-del-confirm-{{ m.mount_id }}-{{ loop.index0 }}')">✕</button>
+          </div>
         </td>
       </tr>
       {% endfor %}
