@@ -354,7 +354,7 @@ fn collect_storage_info(watch_paths: &[PathBuf]) -> Option<serde_json::Value> {
         .map(|p| {
             serde_json::json!({
                 "filesystem_id": p.to_string_lossy(),
-                "mount_point": "/",
+                "mount_point": p.to_string_lossy(),
                 "fs_type": "unknown",
                 "device": "unknown",
                 "capacity_bytes": 0,
