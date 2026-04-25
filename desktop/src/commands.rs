@@ -95,28 +95,32 @@ pub(crate) fn open_file_inner<A: MacosApi>(
     target: &OpenTarget,
     api: &A,
 ) -> Result<(), OpenError> {
-    let canonical_mount = std::fs::canonicalize(&target.local_mount_path).map_err(|_| {
-        OpenError::BookmarkNotAuthorized {
-            local_mount_path: target.local_mount_path.clone(),
-            node_id: target.node_id.clone(),
-        }
-    })?;
-
-    let canonical_key = canonical_mount.to_string_lossy().into_owned();
+    // local_mount_path is already canonical per the server write contract (Change 1a).
+    // Look up the bookmark before canonicalizing so that an offline mount produces
+    // PathNotAccessible rather than BookmarkNotAuthorized.
+    let key = target.local_mount_path.as_str();
 
     let bookmark_data = {
         let store = store.lock().unwrap();
-        store.get(&canonical_key).map(|b| b.to_vec())
+        store.get(key).map(|b| b.to_vec())
     }
     .ok_or_else(|| OpenError::BookmarkNotAuthorized {
         local_mount_path: target.local_mount_path.clone(),
         node_id: target.node_id.clone(),
     })?;
 
-    let (resolved_mount_path, _guard) = api.resolve_bookmark(&bookmark_data).map_err(|e| match e {
+    // Bookmark exists — verify the mount is reachable before resolving it.
+    let canonical_mount = std::fs::canonicalize(&target.local_mount_path).map_err(|_| {
+        OpenError::PathNotAccessible {
+            local_mount_path: target.local_mount_path.clone(),
+            relative_path: target.relative_path.clone(),
+        }
+    })?;
+
+    let (_resolved_path, _guard) = api.resolve_bookmark(&bookmark_data).map_err(|e| match e {
         ResolveBookmarkError::Stale => {
             let mut store = store.lock().unwrap();
-            let _ = store.remove(&canonical_key);
+            let _ = store.remove(key);
             OpenError::BookmarkNotAuthorized {
                 local_mount_path: target.local_mount_path.clone(),
                 node_id: target.node_id.clone(),
@@ -124,8 +128,6 @@ pub(crate) fn open_file_inner<A: MacosApi>(
         }
         ResolveBookmarkError::Other(msg) => OpenError::OpenFailed { message: msg },
     })?;
-
-    let _ = resolved_mount_path; // path is valid; _guard keeps security access alive
 
     // relative_path never begins with '/' per wire contract; join appends under the mount.
     let requested = canonical_mount.join(&target.relative_path);
