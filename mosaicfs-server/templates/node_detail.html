@@ -15,6 +15,21 @@
     <button type="submit">Save</button>
   </form>
   <p class="muted">Last heartbeat: {{ last_heartbeat }}</p>
+  <hr>
+  <button type="button" class="secondary outline" id="delete-node-btn"
+          onclick="document.getElementById('delete-node-confirm').style.display='flex';this.style.display='none'">
+    Delete this node
+  </button>
+  <div id="delete-node-confirm" style="display:none;align-items:center;gap:0.75rem">
+    <span>Delete node <code>{{ node_id }}</code>? This cannot be undone.</span>
+    <form method="post" action="/ui/nodes/{{ node_id }}/delete" style="margin:0">
+      <button type="submit" class="contrast outline" style="padding:0.2rem 0.75rem">Yes, delete</button>
+    </form>
+    <button type="button" class="secondary outline" style="padding:0.2rem 0.75rem"
+            onclick="document.getElementById('delete-node-confirm').style.display='none';document.getElementById('delete-node-btn').style.display=''">
+      Cancel
+    </button>
+  </div>
 </article>
 
 <h3>Network mounts</h3>
@@ -35,10 +50,16 @@
       <td>{{ m.mount_type }}</td>
       <td>{{ m.priority }}</td>
       <td>
-        <form method="post" action="/ui/nodes/{{ node_id }}/mounts/{{ m.mount_id }}/delete"
-              onsubmit="return confirm('Delete mount {{ m.mount_id }}?');" style="margin:0">
-          <button type="submit" class="contrast outline" style="padding:0.25rem 0.75rem">Delete</button>
-        </form>
+        <button type="button" class="contrast outline" style="padding:0.25rem 0.75rem"
+                id="del-btn-{{ m.mount_id }}"
+                onclick="document.getElementById('del-{{ m.mount_id }}').style.display='inline-flex';this.style.display='none'">Delete</button>
+        <div id="del-{{ m.mount_id }}" style="display:none;align-items:center;gap:0.4rem">
+          <form method="post" action="/ui/nodes/{{ node_id }}/mounts/{{ m.mount_id }}/delete" style="margin:0">
+            <button type="submit" class="contrast outline" style="padding:0.15rem 0.5rem">Yes</button>
+          </form>
+          <button type="button" style="padding:0.15rem 0.5rem"
+                  onclick="document.getElementById('del-{{ m.mount_id }}').style.display='none';document.getElementById('del-btn-{{ m.mount_id }}').style.display=''">No</button>
+        </div>
       </td>
     </tr>
     {% endfor %}

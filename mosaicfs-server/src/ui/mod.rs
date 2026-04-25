@@ -174,6 +174,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/ui/nodes/panel", get(views::nodes_panel))
         .route("/ui/nodes/{node_id}", get(views::node_detail_page))
         .route("/ui/nodes/{node_id}/edit", post(actions::patch_node_action))
+        .route("/ui/nodes/{node_id}/delete", post(actions::delete_node_action))
         .route("/ui/nodes/{node_id}/mounts", post(actions::add_mount_action))
         .route(
             "/ui/nodes/{node_id}/mounts/{mount_id}/delete",
@@ -363,6 +364,10 @@ async fn serve_asset(uri: Uri) -> Response {
             include_bytes!("../../assets/htmx.min.js"),
             "application/javascript; charset=utf-8",
         ),
+        "browse_open.js" => (
+            include_bytes!("../../assets/browse_open.js"),
+            "application/javascript; charset=utf-8",
+        ),
         _ => return (StatusCode::NOT_FOUND, "not found").into_response(),
     };
     (
@@ -384,4 +389,33 @@ fn tera_fmt_size(
         .or_else(|| value.as_i64().map(|v| v as u64))
         .ok_or_else(|| tera::Error::msg("fmt_size filter requires a numeric value"))?;
     Ok(tera::Value::String(crate::ui::browse::fmt_size(bytes)))
+}
+
+#[cfg(test)]
+mod tests {
+    // T3.7: browse_open.js is served as non-empty javascript
+    #[test]
+    fn t3_7_browse_open_js_bytes_non_empty() {
+        let bytes = include_bytes!("../../assets/browse_open.js");
+        assert!(!bytes.is_empty());
+        let src = std::str::from_utf8(bytes).expect("browse_open.js must be valid UTF-8");
+        // Sanity-check that the key exported function is present
+        assert!(src.contains("browseOpen"), "missing browseOpen function");
+        assert!(src.contains("application/x-www-form-urlencoded"), "missing content-type for POST");
+    }
+
+    // T3.8: browse_list.html uses data-browse-open, not hx-post, on file-name spans
+    #[test]
+    fn t3_8_browse_list_uses_data_attribute() {
+        let tmpl = include_str!("../../templates/browse_list.html");
+        // New attributes are present
+        assert!(tmpl.contains("data-browse-open"), "missing data-browse-open");
+        assert!(tmpl.contains("data-virtual-path"), "missing data-virtual-path");
+        // Old hx-post approach is gone from file-name spans
+        let file_name_block = tmpl.split("file-name").nth(1).unwrap_or("");
+        assert!(
+            !file_name_block.contains("hx-post"),
+            "file-name span must not use hx-post"
+        );
+    }
 }

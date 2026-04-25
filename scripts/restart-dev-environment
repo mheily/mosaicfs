@@ -1,0 +1,11 @@
+#!/bin/sh
+# 
+# Full restart of development environment
+#
+
+set -ex
+
+cd $(dirname "$0")/..
+cargo build
+./scripts/stop-dev-environment
+./scripts/start-dev-environment

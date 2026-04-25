@@ -26,10 +26,16 @@
       <td>{{ r.target }}</td>
       <td>{{ r.enabled }}</td>
       <td>
-        <form method="post" action="/ui/replication/rules/{{ r.id }}/delete" style="margin:0"
-              onsubmit="return confirm('Delete rule {{ r.id }}?');">
-          <button type="submit" class="contrast outline" style="padding:0.15rem 0.5rem">Delete</button>
-        </form>
+        <button type="button" class="contrast outline" style="padding:0.15rem 0.5rem"
+                id="rule-del-btn-{{ r.id }}"
+                onclick="confirmReveal('rule-del-btn-{{ r.id }}','rule-del-confirm-{{ r.id }}')">Delete</button>
+        <div id="rule-del-confirm-{{ r.id }}" style="display:none;align-items:center;gap:0.4rem">
+          <form method="post" action="/ui/replication/rules/{{ r.id }}/delete" style="display:inline;margin:0">
+            <button type="submit" class="contrast outline" style="padding:0.15rem 0.4rem">Yes</button>
+          </form>
+          <button type="button" style="padding:0.15rem 0.4rem"
+                  onclick="confirmCancel('rule-del-btn-{{ r.id }}','rule-del-confirm-{{ r.id }}')">No</button>
+        </div>
       </td>
     </tr>
     {% endfor %}

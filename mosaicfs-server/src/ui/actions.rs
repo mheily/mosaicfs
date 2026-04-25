@@ -19,7 +19,7 @@ use serde::Deserialize;
 use tower_sessions::Session;
 use uuid::Uuid;
 
-use crate::ui::{base_ctx, open::open_file_by_id, render, FLASH_KEY, NEW_SECRET_KEY};
+use crate::ui::{base_ctx, render, FLASH_KEY, NEW_SECRET_KEY};
 use crate::credentials;
 use crate::handlers::{replication as rephandlers, system as syshandlers, vfs::dir_id_for};
 use crate::state::AppState;
@@ -261,6 +261,27 @@ pub async fn patch_node_action(
         set_flash(&session, "Node updated.").await;
     }
     redirect(&format!("/ui/nodes/{}", node_id))
+}
+
+pub async fn delete_node_action(
+    State(state): State<Arc<AppState>>,
+    session: Session,
+    Path(node_id): Path<String>,
+) -> Response {
+    let doc_id = format!("node::{}", node_id);
+    let doc = match state.db.get_document(&doc_id).await {
+        Ok(d) => d,
+        Err(_) => {
+            set_flash(&session, "Node not found.").await;
+            return redirect("/ui/nodes");
+        }
+    };
+    let rev = doc.get("_rev").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    match state.db.delete_document(&doc_id, &rev).await {
+        Ok(_) => set_flash(&session, format!("Node {node_id} deleted.")).await,
+        Err(e) => set_flash(&session, format!("Delete failed: {e}")).await,
+    }
+    redirect("/ui/nodes")
 }
 
 #[derive(Deserialize)]
@@ -1173,4 +1194,3 @@ pub async fn move_vfs_step_action(
     redirect(&vfs_dir_url(&path))
 }
 
-// ── Open file ──

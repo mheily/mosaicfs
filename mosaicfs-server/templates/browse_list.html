@@ -49,11 +49,8 @@
       {% else %}
       <td>
         <span class="file-name"
-              hx-post="/ui/browse/open"
-              hx-trigger="click"
-              hx-target="#flash"
-              hx-swap="innerHTML"
-              hx-vals='{"path":"{{ row.virtual_path }}"}'>
+              data-browse-open
+              data-virtual-path="{{ row.virtual_path }}">
           {{ row.name }}
         </span>
       </td>

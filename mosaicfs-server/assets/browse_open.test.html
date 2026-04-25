@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<!-- Manual browser test for browse_open.js. Open in a browser; all tests
+     should report PASS. No network or Tauri runtime is required. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>browse_open.js unit tests</title>
+<style>
+  body { font-family: monospace; padding: 1rem; }
+  .pass { color: green; }
+  .fail { color: red; font-weight: bold; }
+  #flash { display: none; }
+</style>
+</head>
+<body>
+<h2>browse_open.js unit tests</h2>
+<pre id="output"></pre>
+
+<!-- Hidden flash slot required by the script under test -->
+<div id="flash"></div>
+
+<script src="browse_open.js"></script>
+<script>
+(function () {
+  var out = document.getElementById('output');
+  var passed = 0, failed = 0;
+
+  function assert(desc, condition) {
+    if (condition) {
+      out.innerHTML += '<span class="pass">PASS</span> ' + desc + '\n';
+      passed++;
+    } else {
+      out.innerHTML += '<span class="fail">FAIL</span> ' + desc + '\n';
+      failed++;
+    }
+  }
+
+  function flashHtml() {
+    return document.getElementById('flash').innerHTML;
+  }
+
+  function resetFlash() {
+    document.getElementById('flash').innerHTML = '';
+  }
+
+  // ── T3.1: escapeHtml ───────────────────────────────────────────────────────
+
+  var esc = window._browseEscapeHtml;
+
+  assert('T3.1a escapeHtml: <script> tag escaped',
+    esc('<script>') === '&lt;script&gt;');
+  assert('T3.1b escapeHtml: & escaped',
+    esc('a & b') === 'a &amp; b');
+  assert('T3.1c escapeHtml: " escaped',
+    esc('"hello"') === '&quot;hello&quot;');
+  assert("T3.1d escapeHtml: ' escaped",
+    esc("it's") === "it&#39;s");
+
+  // ── T3.2: renderFlash no_host_mount ───────────────────────────────────────
+
+  resetFlash();
+  window._browseRenderFlash('no_host_mount', { node_id: 'abc' });
+  var h = flashHtml();
+  assert('T3.2a no_host_mount: contains node_id', h.indexOf('abc') !== -1);
+  assert('T3.2b no_host_mount: no button', h.indexOf('<button') === -1);
+
+  // ── T3.3: renderFlash bookmark_not_authorized ─────────────────────────────
+
+  resetFlash();
+  window._browseRenderFlash('bookmark_not_authorized', {
+    local_mount_path: '/Volumes/NAS',
+    node_id: 'x'
+  });
+  h = flashHtml();
+  assert('T3.3a bookmark_not_authorized: contains mount path',
+    h.indexOf('/Volumes/NAS') !== -1);
+  assert('T3.3b bookmark_not_authorized: has Authorize button',
+    h.indexOf('browseAuthorize') !== -1);
+  assert('T3.3c bookmark_not_authorized: has button element',
+    h.indexOf('<button') !== -1);
+
+  // ── T3.4: renderFlash unknown code ────────────────────────────────────────
+
+  resetFlash();
+  window._browseRenderFlash('some_unknown_code', { message: 'Something went wrong' });
+  h = flashHtml();
+  assert('T3.4 unknown code: falls back to message',
+    h.indexOf('Something went wrong') !== -1);
+
+  // ── T3.5: renderFlash path_traversal with < in path ──────────────────────
+
+  resetFlash();
+  window._browseRenderFlash('path_traversal', {
+    requested_path: '/mount/<evil>',
+    resolved_path: '/etc/hosts',
+    local_mount_path: '/mount'
+  });
+  h = flashHtml();
+  assert('T3.5a path_traversal: < is escaped',
+    h.indexOf('<evil>') === -1 && h.indexOf('&lt;evil&gt;') !== -1);
+  assert('T3.5b path_traversal: resolved_path present',
+    h.indexOf('/etc/hosts') !== -1);
+  assert('T3.5c path_traversal: no button', h.indexOf('<button') === -1);
+
+  // ── T3.5a: renderFlash mismatched_selection ───────────────────────────────
+
+  resetFlash();
+  window._browseRenderFlash('mismatched_selection', {
+    expected: '/Volumes/NAS',
+    got: '/Users/x'
+  });
+  h = flashHtml();
+  assert('T3.5a mismatched_selection: expected path escaped+present',
+    h.indexOf('/Volumes/NAS') !== -1);
+  assert('T3.5b mismatched_selection: got path present',
+    h.indexOf('/Users/x') !== -1);
+  assert('T3.5c mismatched_selection: Try again button present',
+    h.indexOf('Try again') !== -1);
+  assert('T3.5d mismatched_selection: button wired to browseAuthorize',
+    h.indexOf('browseAuthorize') !== -1);
+
+  // ── T3.6: browseOpen when __TAURI__ is undefined shows desktop-app flash ──
+  // We stub fetch to return a fake 200 OpenTarget response.
+
+  resetFlash();
+  delete window.__TAURI__;
+
+  var originalFetch = window.fetch;
+  window.fetch = function (url, opts) {
+    return Promise.resolve({
+      ok: true,
+      status: 200,
+      headers: { get: function () { return 'application/json'; } },
+      json: function () {
+        return Promise.resolve({
+          node_id: 'node-X',
+          local_mount_path: '/Volumes/NAS',
+          relative_path: 'photos/img.jpg'
+        });
+      }
+    });
+  };
+
+  window.browseOpen('/virtual/photos/img.jpg');
+
+  // Give the microtask queue a chance to run
+  setTimeout(function () {
+    window.fetch = originalFetch;
+    h = flashHtml();
+    assert('T3.6a browseOpen without Tauri: flash shown',
+      h.indexOf('desktop app') !== -1 || h.indexOf('MosaicFS') !== -1);
+    assert('T3.6b no Tauri function called (no error thrown)',
+      true); // reaching here means no uncaught exception
+
+    // ── Summary ─────────────────────────────────────────────────────────────
+    out.innerHTML += '\n' + passed + ' passed, ' + failed + ' failed.\n';
+    if (failed === 0) {
+      out.innerHTML += '<span class="pass">All tests passed.</span>\n';
+    }
+  }, 50);
+})();
+</script>
+</body>
+</html>

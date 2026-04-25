@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use mosaicfs_common::couchdb::CouchError;
 use crate::state::AppState;
+use crate::ui::open::normalize_mount_path;
 
 #[derive(Deserialize, Default)]
 pub struct ListNodesQuery {
@@ -237,11 +238,12 @@ pub async fn add_mount(
     };
 
     let mount_id = Uuid::new_v4().to_string()[..8].to_string();
+    let local_mount_path = normalize_mount_path(&body.local_mount_path);
     let mount = serde_json::json!({
         "mount_id": mount_id,
         "remote_node_id": body.remote_node_id,
         "remote_base_export_path": body.remote_base_export_path,
-        "local_mount_path": body.local_mount_path,
+        "local_mount_path": local_mount_path,
         "mount_type": body.mount_type,
         "priority": body.priority,
     });
@@ -292,7 +294,14 @@ pub async fn patch_mount(
     // Apply updates
     if let Some(obj) = body.as_object() {
         for (k, v) in obj {
-            if k != "mount_id" {
+            if k == "mount_id" {
+                continue;
+            }
+            if k == "local_mount_path" {
+                if let Some(s) = v.as_str() {
+                    mount[k] = serde_json::json!(normalize_mount_path(s));
+                }
+            } else {
                 mount[k] = v.clone();
             }
         }
