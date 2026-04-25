@@ -99,26 +99,60 @@ async fn run_proxy(listener: tokio::net::TcpListener, sock: PathBuf) {
         };
         let sock = sock.clone();
         tokio::spawn(async move {
-            match connect_with_retry(&sock).await {
-                Some(mut unix_stream) => {
+            // Quick connect attempt — absorbs a brief startup race.
+            match tokio::net::UnixStream::connect(&sock).await {
+                Ok(mut unix_stream) => {
                     let _ =
                         tokio::io::copy_bidirectional(&mut tcp_stream, &mut unix_stream).await;
                 }
-                None => {
+                Err(_) => {
+                    // WKWebView silently blank-pages on non-2xx responses, so we
+                    // return 200 with an HTML page that retries via JS every 2 s.
+                    // After 30 s it shows the config path so the user knows what
+                    // to fix.
                     use tokio::io::AsyncWriteExt;
                     let config_path = sock.with_file_name("server.toml");
+                    let config_str = config_path
+                        .display()
+                        .to_string()
+                        .replace('\\', "\\\\")
+                        .replace('"', "\\\"");
                     let body = format!(
-                        "MosaicFS server is not running.\n\n\
-                         The server failed to start or could not connect to CouchDB.\n\
-                         Check the CouchDB URL in:\n  {}\n\n\
-                         Then restart the app.",
-                        config_path.display()
+                        r#"<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<title>MosaicFS — Connecting…</title>
+<style>
+  body{{font-family:-apple-system,system-ui,sans-serif;text-align:center;
+       padding:60px 40px;color:#555;}}
+  code{{background:#f0f0f0;padding:2px 6px;border-radius:4px;font-size:.85em;
+       word-break:break-all;}}
+  #err{{display:none;color:#c00;margin-top:20px;}}
+</style>
+</head><body>
+<h2>MosaicFS</h2>
+<p id="msg">Connecting to server…</p>
+<p id="err">The server did not start.<br>
+Check the CouchDB URL in<br><code>{config_str}</code><br>
+then choose <strong>Connection…</strong> from the menu bar.</p>
+<script>
+var t0 = Date.now();
+function retry() {{
+  if (Date.now() - t0 > 30000) {{
+    document.getElementById('msg').style.display = 'none';
+    document.getElementById('err').style.display = 'block';
+  }} else {{
+    location.reload();
+  }}
+}}
+setTimeout(retry, 2000);
+</script>
+</body></html>"#
                     );
                     let _ = tcp_stream
                         .write_all(
                             format!(
-                                "HTTP/1.1 503 Service Unavailable\r\n\
-                                 Content-Type: text/plain; charset=utf-8\r\n\
+                                "HTTP/1.1 200 OK\r\n\
+                                 Content-Type: text/html; charset=utf-8\r\n\
                                  Content-Length: {}\r\n\
                                  Connection: close\r\n\
                                  \r\n{}",
@@ -132,18 +166,4 @@ async fn run_proxy(listener: tokio::net::TcpListener, sock: PathBuf) {
             }
         });
     }
-}
-
-/// Retry connecting to the Unix socket for up to 10 s to absorb server startup lag.
-#[cfg(unix)]
-async fn connect_with_retry(sock: &Path) -> Option<tokio::net::UnixStream> {
-    for _ in 0..100 {
-        match tokio::net::UnixStream::connect(sock).await {
-            Ok(s) => return Some(s),
-            Err(_) => {
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-            }
-        }
-    }
-    None
 }
