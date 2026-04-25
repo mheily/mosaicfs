@@ -2,6 +2,9 @@
   "productName": "MosaicFS",
   "version": "0.1.0",
   "identifier": "com.mosaicfs.desktop",
+  "build": {
+    "frontendDist": "ui"
+  },
   "app": {
     "withGlobalTauri": true,
     "windows": [],

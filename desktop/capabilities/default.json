@@ -1,7 +1,7 @@
 {
   "identifier": "default",
   "description": "Default capability",
-  "windows": ["main"],
+  "windows": ["main", "setup"],
   "permissions": [
     "core:default",
     "core:event:default"
