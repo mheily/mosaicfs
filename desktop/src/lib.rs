@@ -108,7 +108,7 @@ pub fn run() {
             let app_data_dir = app.path().app_data_dir()?;
             let s = settings::load(&app_data_dir);
 
-            let proxy_port = server::start_proxy(server::socket_path(&app_data_dir))
+            let proxy_port = server::start_proxy(server::socket_path())
                 .map_err(|e| format!("proxy: {e}"))?;
             app.manage(server::ProxyPort(proxy_port));
 

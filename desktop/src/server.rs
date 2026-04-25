@@ -19,13 +19,19 @@ pub fn find_binary() -> PathBuf {
         .join("mosaicfs")
 }
 
+/// Returns the Unix socket path. Uses temp_dir so the path stays short —
+/// the sandboxed app_data_dir exceeds the 104-byte sockaddr_un limit on macOS.
+pub fn socket_path() -> PathBuf {
+    std::env::temp_dir().join("mosaicfs.sock")
+}
+
 /// Write server.toml from `settings`. Always overwrites so changes take effect
 /// on the next server start.
 pub fn write_config(app_data_dir: &Path, settings: &Settings) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(app_data_dir)?;
     let config_path = app_data_dir.join("server.toml");
     let data_dir = app_data_dir.join("server-data");
-    let socket_path = app_data_dir.join("server.sock");
+    let socket_path = socket_path();
 
     let toml = format!(
         r#"[features]
@@ -52,10 +58,6 @@ socket_path = "{}"
     Ok(config_path)
 }
 
-/// Returns the Unix socket path the server will bind on.
-pub fn socket_path(app_data_dir: &Path) -> PathBuf {
-    app_data_dir.join("server.sock")
-}
 
 /// Spawn the server process. Returns the `Child` handle.
 pub fn launch(config_path: &Path) -> std::io::Result<Child> {
