@@ -6,6 +6,7 @@ mod bookmarks;
 mod commands;
 #[cfg(target_os = "macos")]
 mod macos;
+mod server;
 #[allow(dead_code)]
 mod stub;
 
@@ -28,11 +29,31 @@ fn open_or_focus(app: &AppHandle, label: &str, title: &str, url: &str, w: f64, h
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
+            // ── Bookmarks store ───────────────────────────────────────────
             let store_path = app.path().app_data_dir()?.join("bookmarks.json");
             std::fs::create_dir_all(store_path.parent().unwrap()).ok();
             let store = bookmarks::BookmarkStore::load(store_path);
             app.manage(Mutex::new(store));
 
+            // ── Embedded web-UI server ────────────────────────────────────
+            let app_data_dir = app.path().app_data_dir()?;
+            match server::ensure_config(&app_data_dir) {
+                Ok(config_path) => match server::launch(&config_path) {
+                    Ok(child) => {
+                        app.manage(server::ServerProcess(Mutex::new(Some(child))));
+                    }
+                    Err(e) => {
+                        eprintln!("mosaicfs-desktop: failed to launch server: {e}");
+                        app.manage(server::ServerProcess(Mutex::new(None)));
+                    }
+                },
+                Err(e) => {
+                    eprintln!("mosaicfs-desktop: failed to write server config: {e}");
+                    app.manage(server::ServerProcess(Mutex::new(None)));
+                }
+            }
+
+            // ── macOS app menu ────────────────────────────────────────────
             #[cfg(target_os = "macos")]
             {
                 use tauri::menu::{MenuBuilder, MenuItem, SubmenuBuilder};
@@ -63,6 +84,7 @@ pub fn run() {
                 app.set_menu(menu)?;
             }
 
+            // ── System tray ───────────────────────────────────────────────
             {
                 use tauri::menu::{MenuBuilder, MenuItem};
                 use tauri::tray::TrayIconBuilder;
@@ -112,7 +134,7 @@ pub fn run() {
             Ok(())
         })
         .on_menu_event(|app, event| {
-            // Handles events from the macOS app menu bar (e.g. Cmd+,)
+            // Handles events from the macOS app menu bar (e.g. Cmd+,).
             if event.id().0 == "open_settings" {
                 open_or_focus(
                     app, "admin", "MosaicFS Settings",
@@ -127,10 +149,26 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
-        .run(|_app, event| {
-            // Keep the process alive when all windows are closed; the tray is the app.
-            if let tauri::RunEvent::ExitRequested { api, .. } = event {
-                api.prevent_exit();
+        .run(|app, event| match event {
+            // Keep the process alive when windows are closed; only a real
+            // quit request (code is Some) — e.g. from the tray Quit item —
+            // should actually exit.
+            tauri::RunEvent::ExitRequested { code, api, .. } => {
+                if code.is_none() {
+                    api.prevent_exit();
+                }
             }
+            // Clean up the server process before the app terminates.
+            tauri::RunEvent::Exit => {
+                if let Some(state) = app.try_state::<server::ServerProcess>() {
+                    if let Ok(mut guard) = state.0.lock() {
+                        if let Some(child) = guard.as_mut() {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                        }
+                    }
+                }
+            }
+            _ => {}
         });
 }
