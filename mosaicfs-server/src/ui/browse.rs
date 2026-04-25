@@ -9,8 +9,8 @@ use std::sync::Arc;
 use axum::{
     extract::{Query, State},
     http::StatusCode,
-    response::{Html, IntoResponse, Response},
-    Form,
+    response::{IntoResponse, Response},
+    Form, Json,
 };
 use chrono::Local;
 use serde::Deserialize;
@@ -21,7 +21,7 @@ use crate::handlers::vfs::dir_id_for;
 use crate::state::AppState;
 use crate::ui::{page_ctx, render};
 use crate::readdir::{self, ReaddirEntry};
-use crate::ui::open::open_file_by_id;
+use crate::ui::open::{open_file_by_id, OpenError};
 
 const PAGE_SIZE: usize = 50;
 
@@ -210,7 +210,6 @@ pub async fn navigate(
 
 pub async fn open(
     State(state): State<Arc<AppState>>,
-    session: Session,
     Form(form): Form<OpenForm>,
 ) -> Response {
     let virtual_path = form.path.clone();
@@ -218,15 +217,52 @@ pub async fn open(
     let entry = match lookup_entry_by_virtual_path(&state, &virtual_path).await {
         Some(e) => e,
         None => {
-            return flash_response(&session, "File not found.");
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "code": "not_found",
+                    "message": "virtual path does not exist"
+                })),
+            )
+                .into_response();
         }
     };
 
     let file_id = &entry.file_id;
     match open_file_by_id(&state, file_id).await {
-        Ok(local_path) => flash_response(&session, &format!("Opened {}", local_path)),
-        Err(e) => flash_response(&session, &e.to_string()),
+        Ok(target) => (StatusCode::OK, Json(target)).into_response(),
+        Err(e) => open_error_response(&e),
     }
+}
+
+fn open_error_response(e: &OpenError) -> Response {
+    let (status, body) = match e {
+        OpenError::NotFound(file_id) => (
+            StatusCode::NOT_FOUND,
+            serde_json::json!({
+                "code": "not_found",
+                "message": e.to_string(),
+                "file_id": file_id
+            }),
+        ),
+        OpenError::NoNodeId => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            serde_json::json!({ "code": "no_node_id", "message": e.to_string() }),
+        ),
+        OpenError::NodeNotRegistered => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            serde_json::json!({ "code": "node_not_registered", "message": e.to_string() }),
+        ),
+        OpenError::NoHostMount { source_node_id } => (
+            StatusCode::CONFLICT,
+            serde_json::json!({
+                "code": "no_host_mount",
+                "message": e.to_string(),
+                "node_id": source_node_id
+            }),
+        ),
+    };
+    (status, Json(body)).into_response()
 }
 
 #[derive(Deserialize)]
@@ -419,21 +455,6 @@ async fn lookup_entry_by_virtual_path(
         source_export_path: export_path,
         mount_id: String::new(),
     })
-}
-
-fn flash_response(_session: &Session, msg: &str) -> Response {
-    let flash_html = format!(
-        r#"<div class="flash" style="background:#fef2f2;border-left:4px solid #dc2626;color:#991b1b;padding:0.75rem 1rem;border-radius:4px">{}</div>"#,
-        html_escape(msg)
-    );
-    (StatusCode::OK, Html(flash_html)).into_response()
-}
-
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
 }
 
 /// Size formatting filter (§3.5).

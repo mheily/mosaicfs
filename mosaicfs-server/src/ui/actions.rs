@@ -19,7 +19,7 @@ use serde::Deserialize;
 use tower_sessions::Session;
 use uuid::Uuid;
 
-use crate::ui::{base_ctx, open::open_file_by_id, render, FLASH_KEY, NEW_SECRET_KEY};
+use crate::ui::{base_ctx, render, FLASH_KEY, NEW_SECRET_KEY};
 use crate::credentials;
 use crate::handlers::{replication as rephandlers, system as syshandlers, vfs::dir_id_for};
 use crate::state::AppState;
@@ -1173,4 +1173,3 @@ pub async fn move_vfs_step_action(
     redirect(&vfs_dir_url(&path))
 }
 
-// ── Open file ──
