@@ -39,9 +39,8 @@ user     = "admin"
 password = "changeme"
 
 [web_ui]
-insecure_http = true
-data_dir      = "{data_dir_str}"
-socket_path   = "{socket_path_str}"
+data_dir    = "{data_dir_str}"
+socket_path = "{socket_path_str}"
 "#
         );
         std::fs::write(&config_path, toml)?;

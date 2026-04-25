@@ -168,9 +168,13 @@ pub async fn start_web_ui(
     let app = routes::build_router(state).layer(TraceLayer::new_for_http());
 
     // Unix socket mode: skip TLS, bind directly to the socket path.
+    // Auth is unconditionally disabled — the socket's filesystem permissions
+    // are the security boundary, not credentials.
     #[cfg(unix)]
     if let Some(ref socket_path) = web.socket_path {
-        // Remove a stale socket file left by a previous run.
+        // Ensure the auth-bypass flag is set regardless of the config value,
+        // so callers don't need insecure_http = true in their TOML.
+        unsafe { std::env::set_var("MOSAICFS_INSECURE_HTTP", "1"); }
         let _ = std::fs::remove_file(socket_path);
         let listener = tokio::net::UnixListener::bind(socket_path)?;
         info!(socket = %socket_path.display(), "Listening on unix socket");
