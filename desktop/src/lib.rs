@@ -26,6 +26,12 @@ fn open_or_focus(app: &AppHandle, label: &str, title: &str, url: &str, w: f64, h
     }
 }
 
+/// Build the base URL the proxy listens on, e.g. `http://127.0.0.1:54321`.
+fn base_url(app: &AppHandle) -> String {
+    let port = app.state::<server::ProxyPort>().0;
+    format!("http://127.0.0.1:{port}")
+}
+
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
@@ -35,20 +41,19 @@ pub fn run() {
             let store = bookmarks::BookmarkStore::load(store_path);
             app.manage(Mutex::new(store));
 
-            // ── Embedded web-UI server ────────────────────────────────────
+            // ── Embedded web-UI server + proxy ────────────────────────────
             let app_data_dir = app.path().app_data_dir()?;
-            match server::ensure_config(&app_data_dir) {
-                Ok(config_path) => match server::launch(&config_path) {
-                    Ok(child) => {
-                        app.manage(server::ServerProcess(Mutex::new(Some(child))));
-                    }
-                    Err(e) => {
-                        eprintln!("mosaicfs-desktop: failed to launch server: {e}");
-                        app.manage(server::ServerProcess(Mutex::new(None)));
-                    }
-                },
+            let config_path = server::ensure_config(&app_data_dir)
+                .map_err(|e| format!("server config: {e}"))?;
+
+            let proxy_port = server::start_proxy(server::socket_path(&app_data_dir))
+                .map_err(|e| format!("proxy: {e}"))?;
+            app.manage(server::ProxyPort(proxy_port));
+
+            match server::launch(&config_path) {
+                Ok(child) => { app.manage(server::ServerProcess(Mutex::new(Some(child)))); }
                 Err(e) => {
-                    eprintln!("mosaicfs-desktop: failed to write server config: {e}");
+                    eprintln!("mosaicfs-desktop: failed to launch server: {e}");
                     app.manage(server::ServerProcess(Mutex::new(None)));
                 }
             }
@@ -112,21 +117,24 @@ pub fn run() {
                     .menu(&tray_menu)
                     .show_menu_on_left_click(true)
                     .tooltip("MosaicFS")
-                    .on_menu_event(|app, event| match event.id().0.as_str() {
-                        "tray_browse" => open_or_focus(
-                            app, "main", "MosaicFS",
-                            "http://localhost:8443/ui/browse", 1200.0, 800.0,
-                        ),
-                        "tray_status" => open_or_focus(
-                            app, "status", "MosaicFS Status",
-                            "http://localhost:8443/ui/status", 900.0, 600.0,
-                        ),
-                        "tray_settings" => open_or_focus(
-                            app, "admin", "MosaicFS Settings",
-                            "http://localhost:8443/ui/settings/credentials",
-                            1000.0, 700.0,
-                        ),
-                        _ => {}
+                    .on_menu_event(|app, event| {
+                        let base = base_url(app);
+                        match event.id().0.as_str() {
+                            "tray_browse" => open_or_focus(
+                                app, "main", "MosaicFS",
+                                &format!("{base}/ui/browse"), 1200.0, 800.0,
+                            ),
+                            "tray_status" => open_or_focus(
+                                app, "status", "MosaicFS Status",
+                                &format!("{base}/ui/status"), 900.0, 600.0,
+                            ),
+                            "tray_settings" => open_or_focus(
+                                app, "admin", "MosaicFS Settings",
+                                &format!("{base}/ui/settings/credentials"),
+                                1000.0, 700.0,
+                            ),
+                            _ => {}
+                        }
                     })
                     .build(app)?;
             }
@@ -136,9 +144,10 @@ pub fn run() {
         .on_menu_event(|app, event| {
             // Handles events from the macOS app menu bar (e.g. Cmd+,).
             if event.id().0 == "open_settings" {
+                let base = base_url(app);
                 open_or_focus(
                     app, "admin", "MosaicFS Settings",
-                    "http://localhost:8443/ui/settings/credentials",
+                    &format!("{base}/ui/settings/credentials"),
                     1000.0, 700.0,
                 );
             }
@@ -150,15 +159,14 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
         .run(|app, event| match event {
-            // Keep the process alive when windows are closed; only a real
-            // quit request (code is Some) — e.g. from the tray Quit item —
-            // should actually exit.
+            // Keep the process alive when windows are closed; only an
+            // explicit quit request (code is Some) should actually exit.
             tauri::RunEvent::ExitRequested { code, api, .. } => {
                 if code.is_none() {
                     api.prevent_exit();
                 }
             }
-            // Clean up the server process before the app terminates.
+            // Kill the embedded server before the process terminates.
             tauri::RunEvent::Exit => {
                 if let Some(state) = app.try_state::<server::ServerProcess>() {
                     if let Ok(mut guard) = state.0.lock() {

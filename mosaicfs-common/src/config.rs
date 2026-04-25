@@ -119,6 +119,10 @@ pub struct WebUiFeatureConfig {
     pub insecure_http: bool,
     #[serde(default)]
     pub developer_mode: bool,
+    /// Unix domain socket path. When set the server binds here instead of
+    /// the TCP `listen` address. Implies insecure (plain) HTTP.
+    #[serde(default)]
+    pub socket_path: Option<PathBuf>,
 }
 
 fn default_listen() -> String {

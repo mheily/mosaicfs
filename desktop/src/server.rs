@@ -5,6 +5,9 @@ use std::sync::Mutex;
 /// Tauri managed state holding the server child process.
 pub struct ServerProcess(pub Mutex<Option<Child>>);
 
+/// Tauri managed state: the localhost port the proxy listens on.
+pub struct ProxyPort(pub u16);
+
 /// Find the `mosaicfs` server binary. In dev and in production bundles it
 /// lives in the same directory as this executable.
 pub fn find_binary() -> PathBuf {
@@ -21,7 +24,9 @@ pub fn ensure_config(app_data_dir: &Path) -> std::io::Result<PathBuf> {
     let config_path = app_data_dir.join("server.toml");
     if !config_path.exists() {
         let data_dir = app_data_dir.join("server-data");
+        let socket_path = app_data_dir.join("server.sock");
         let data_dir_str = data_dir.to_string_lossy();
+        let socket_path_str = socket_path.to_string_lossy();
         let toml = format!(
             r#"[features]
 agent  = false
@@ -34,9 +39,9 @@ user     = "admin"
 password = "changeme"
 
 [web_ui]
-listen        = "127.0.0.1:8443"
 insecure_http = true
 data_dir      = "{data_dir_str}"
+socket_path   = "{socket_path_str}"
 "#
         );
         std::fs::write(&config_path, toml)?;
@@ -44,8 +49,12 @@ data_dir      = "{data_dir_str}"
     Ok(config_path)
 }
 
-/// Spawn the server process. Returns the `Child` handle; the caller is
-/// responsible for killing it on exit.
+/// Returns the Unix socket path the server will bind on.
+pub fn socket_path(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join("server.sock")
+}
+
+/// Spawn the server process. Returns the `Child` handle.
 pub fn launch(config_path: &Path) -> std::io::Result<Child> {
     let binary = find_binary();
     Command::new(&binary)
@@ -55,4 +64,42 @@ pub fn launch(config_path: &Path) -> std::io::Result<Child> {
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .spawn()
+}
+
+/// Bind a random localhost TCP port and start an async task that forwards
+/// every connection to the Unix socket at `sock`. Returns the port.
+#[cfg(unix)]
+pub fn start_proxy(sock: PathBuf) -> std::io::Result<u16> {
+    let std_listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = std_listener.local_addr()?.port();
+    std_listener.set_nonblocking(true)?;
+
+    tauri::async_runtime::spawn(async move {
+        let listener = match tokio::net::TcpListener::from_std(std_listener) {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("mosaicfs-desktop: proxy listener error: {e}");
+                return;
+            }
+        };
+        run_proxy(listener, sock).await;
+    });
+
+    Ok(port)
+}
+
+#[cfg(unix)]
+async fn run_proxy(listener: tokio::net::TcpListener, sock: PathBuf) {
+    loop {
+        let Ok((mut tcp_stream, _)) = listener.accept().await else {
+            break;
+        };
+        let sock = sock.clone();
+        tokio::spawn(async move {
+            let Ok(mut unix_stream) = tokio::net::UnixStream::connect(&sock).await else {
+                return;
+            };
+            let _ = tokio::io::copy_bidirectional(&mut tcp_stream, &mut unix_stream).await;
+        });
+    }
 }

@@ -167,7 +167,18 @@ pub async fn start_web_ui(
 
     let app = routes::build_router(state).layer(TraceLayer::new_for_http());
 
-    // Insecure HTTP binds to loopback only; otherwise honour the configured address.
+    // Unix socket mode: skip TLS, bind directly to the socket path.
+    #[cfg(unix)]
+    if let Some(ref socket_path) = web.socket_path {
+        // Remove a stale socket file left by a previous run.
+        let _ = std::fs::remove_file(socket_path);
+        let listener = tokio::net::UnixListener::bind(socket_path)?;
+        info!(socket = %socket_path.display(), "Listening on unix socket");
+        axum::serve(listener, app.into_make_service()).await?;
+        return Ok(());
+    }
+
+    // TCP mode: insecure HTTP binds to loopback only; TLS honours the configured address.
     let bind_addr = if insecure_http {
         SocketAddr::from(([127, 0, 0, 1], addr.port()))
     } else {
