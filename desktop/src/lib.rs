@@ -32,16 +32,6 @@ pub fn run() {
             std::fs::create_dir_all(store_path.parent().unwrap()).ok();
             let store = bookmarks::BookmarkStore::load(store_path);
             app.manage(Mutex::new(store));
-            WebviewWindowBuilder::new(
-                app,
-                "main",
-                tauri::WebviewUrl::External(
-                    "http://localhost:8443/ui/browse".parse().unwrap(),
-                ),
-            )
-            .title("MosaicFS")
-            .inner_size(1200.0, 800.0)
-            .build()?;
 
             #[cfg(target_os = "macos")]
             {
@@ -78,15 +68,19 @@ pub fn run() {
                 use tauri::tray::TrayIconBuilder;
 
                 let browse_item = MenuItem::with_id(
-                    app, "open_browse", "Browse", true, None::<&str>,
+                    app, "tray_browse", "Browse", true, None::<&str>,
                 )?;
                 let status_item = MenuItem::with_id(
-                    app, "open_status", "Status", true, None::<&str>,
+                    app, "tray_status", "Status", true, None::<&str>,
+                )?;
+                let settings_item = MenuItem::with_id(
+                    app, "tray_settings", "Settings...", true, None::<&str>,
                 )?;
 
                 let tray_menu = MenuBuilder::new(app)
                     .item(&browse_item)
                     .item(&status_item)
+                    .item(&settings_item)
                     .separator()
                     .quit()
                     .build()?;
@@ -97,13 +91,18 @@ pub fn run() {
                     .show_menu_on_left_click(true)
                     .tooltip("MosaicFS")
                     .on_menu_event(|app, event| match event.id().0.as_str() {
-                        "open_browse" => open_or_focus(
+                        "tray_browse" => open_or_focus(
                             app, "main", "MosaicFS",
                             "http://localhost:8443/ui/browse", 1200.0, 800.0,
                         ),
-                        "open_status" => open_or_focus(
+                        "tray_status" => open_or_focus(
                             app, "status", "MosaicFS Status",
                             "http://localhost:8443/ui/status", 900.0, 600.0,
+                        ),
+                        "tray_settings" => open_or_focus(
+                            app, "admin", "MosaicFS Settings",
+                            "http://localhost:8443/ui/settings/credentials",
+                            1000.0, 700.0,
                         ),
                         _ => {}
                     })
@@ -113,6 +112,7 @@ pub fn run() {
             Ok(())
         })
         .on_menu_event(|app, event| {
+            // Handles events from the macOS app menu bar (e.g. Cmd+,)
             if event.id().0 == "open_settings" {
                 open_or_focus(
                     app, "admin", "MosaicFS Settings",
@@ -125,6 +125,12 @@ pub fn run() {
             commands::open_file,
             commands::authorize_mount,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|_app, event| {
+            // Keep the process alive when all windows are closed; the tray is the app.
+            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+                api.prevent_exit();
+            }
+        });
 }
