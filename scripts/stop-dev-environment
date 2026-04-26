@@ -65,4 +65,10 @@ if [[ -n "$CONTAINER" ]]; then
     fi
 fi
 
+# Remove the desktop app state files
+statedir=$HOME/Library/Containers/com.mosaicfs.desktop
+if [[ -e $statedir ]] ; then
+	rm -rf $statedir || true
+fi
+
 log "Dev environment stopped."
