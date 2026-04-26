@@ -1,9 +1,10 @@
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use tauri::{AppHandle, Manager, WebviewWindowBuilder};
 
 mod bookmarks;
 mod commands;
+mod connection;
 #[cfg(target_os = "macos")]
 mod macos;
 mod server;
@@ -57,8 +58,19 @@ fn get_settings(app: AppHandle) -> settings::Settings {
     settings::load(&dir)
 }
 
+/// Probe CouchDB. On success returns the normalized URL (with default port
+/// applied) so the frontend can display what will actually be saved.
 #[tauri::command]
-fn save_settings(
+async fn test_connection(
+    couchdb_url: String,
+    couchdb_user: String,
+    couchdb_password: String,
+) -> Result<String, String> {
+    connection::test(&couchdb_url, &couchdb_user, &couchdb_password).await
+}
+
+#[tauri::command]
+async fn save_settings(
     app: AppHandle,
     couchdb_url: String,
     couchdb_user: String,
@@ -66,26 +78,24 @@ fn save_settings(
 ) -> Result<(), String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
 
-    let s = settings::Settings { couchdb_url, couchdb_user, couchdb_password };
+    // Re-test (and normalize) at save time so we never persist settings the
+    // server can't use. The frontend will normally have already tested, but
+    // this catches direct invocations and stale UI state.
+    let normalized = connection::test(&couchdb_url, &couchdb_user, &couchdb_password).await?;
+
+    let s = settings::Settings {
+        couchdb_url: normalized,
+        couchdb_user,
+        couchdb_password,
+    };
     settings::save(&dir, &s).map_err(|e| e.to_string())?;
 
-    let config_path = server::write_config(&dir, &s).map_err(|e| e.to_string())?;
-
-    // Kill the existing server process (if any) and start a fresh one.
-    if let Some(state) = app.try_state::<server::ServerProcess>() {
-        if let Ok(mut guard) = state.0.lock() {
-            if let Some(child) = guard.as_mut() {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
-            match server::launch(&config_path) {
-                Ok(child) => *guard = Some(child),
-                Err(e) => eprintln!("mosaicfs-desktop: server restart failed: {e}"),
-            }
-        }
+    // Build a fresh in-process router and atomically swap it in.
+    let router = server::build_router(&s, &dir).await.map_err(|e| e.to_string())?;
+    if let Some(slot) = app.try_state::<Arc<server::RouterSlot>>() {
+        slot.set(router);
     }
 
-    // Close the setup window — the server is restarting in the background.
     if let Some(win) = app.get_webview_window("setup") {
         let _ = win.close();
     }
@@ -96,6 +106,11 @@ fn save_settings(
 // ── App entry point ───────────────────────────────────────────────────────────
 
 pub fn run() {
+    // The mosaicfs-server crate calls into rustls (for TLS cert generation
+    // even in plain-HTTP mode). The crypto provider must be installed once,
+    // here, before any router is built.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     tauri::Builder::default()
         .setup(|app| {
             // ── Bookmarks store ───────────────────────────────────────────
@@ -104,27 +119,33 @@ pub fn run() {
             let store = bookmarks::BookmarkStore::load(store_path);
             app.manage(Mutex::new(store));
 
-            // ── Settings + server ─────────────────────────────────────────
+            // ── Settings + in-process server ──────────────────────────────
             let app_data_dir = app.path().app_data_dir()?;
             let s = settings::load(&app_data_dir);
 
-            let proxy_port = server::start_proxy(server::socket_path())
-                .map_err(|e| format!("proxy: {e}"))?;
+            let slot = Arc::new(server::RouterSlot::new());
+            let proxy_port = server::start(Arc::clone(&slot))
+                .map_err(|e| format!("listener: {e}"))?;
             app.manage(server::ProxyPort(proxy_port));
+            app.manage(Arc::clone(&slot));
 
             if s.is_configured() {
-                let config_path = server::write_config(&app_data_dir, &s)
-                    .map_err(|e| format!("server config: {e}"))?;
-                match server::launch(&config_path) {
-                    Ok(child) => { app.manage(server::ServerProcess(Mutex::new(Some(child)))); }
-                    Err(e) => {
-                        eprintln!("mosaicfs-desktop: failed to launch server: {e}");
-                        app.manage(server::ServerProcess(Mutex::new(None)));
+                let dir = app_data_dir.clone();
+                let slot = Arc::clone(&slot);
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    match server::build_router(&s, &dir).await {
+                        Ok(router) => slot.set(router),
+                        Err(e) => {
+                            eprintln!("mosaicfs-desktop: router build failed: {e}");
+                            // Show the setup window so the user can fix the
+                            // CouchDB connection. The router slot stays empty
+                            // and any open window keeps showing the retry page.
+                            open_setup_window(&handle);
+                        }
                     }
-                }
+                });
             } else {
-                // No settings yet — placeholder state, then prompt the user.
-                app.manage(server::ServerProcess(Mutex::new(None)));
                 let handle = app.handle().clone();
                 // Defer opening the window until after setup() returns so the
                 // tray is already visible when the form appears.
@@ -236,25 +257,15 @@ pub fn run() {
             commands::authorize_mount,
             get_settings,
             save_settings,
+            test_connection,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
-        .run(|app, event| match event {
-            tauri::RunEvent::ExitRequested { code, api, .. } => {
+        .run(|_app, event| {
+            if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
                 if code.is_none() {
                     api.prevent_exit();
                 }
             }
-            tauri::RunEvent::Exit => {
-                if let Some(state) = app.try_state::<server::ServerProcess>() {
-                    if let Ok(mut guard) = state.0.lock() {
-                        if let Some(child) = guard.as_mut() {
-                            let _ = child.kill();
-                            let _ = child.wait();
-                        }
-                    }
-                }
-            }
-            _ => {}
         });
 }

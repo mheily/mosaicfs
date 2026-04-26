@@ -17,4 +17,4 @@ pub mod tls;
 
 mod start;
 
-pub use start::{run_bootstrap, start_web_ui};
+pub use start::{build_app_router, run_bootstrap, start_web_ui};

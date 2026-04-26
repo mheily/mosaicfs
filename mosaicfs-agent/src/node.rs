@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use chrono::Utc;
 use mosaicfs_common::documents::FilesystemDocument;
+use mosaicfs_common::machine_id;
 use tracing::{info, warn};
 
 use mosaicfs_common::couchdb::{CouchClient, CouchError};
@@ -21,6 +22,7 @@ pub async fn register_node(
         .unwrap_or(node_id)
         .to_string();
     let platform = current_platform();
+    let mid = machine_id::get();
 
     let storage = collect_storage_info(watch_paths);
 
@@ -33,6 +35,7 @@ pub async fn register_node(
     let mut doc = if let Some(mut existing) = existing {
         existing["name"] = serde_json::Value::String(friendly_name);
         existing["platform"] = serde_json::Value::String(platform);
+        existing["machine_id"] = serde_json::Value::String(mid);
         existing["status"] = serde_json::Value::String("online".to_string());
         existing["last_heartbeat"] = serde_json::Value::String(Utc::now().to_rfc3339());
         if let Some(ref s) = storage {
@@ -45,6 +48,7 @@ pub async fn register_node(
             "type": "node",
             "name": friendly_name,
             "platform": platform,
+            "machine_id": mid,
             "status": "online",
             "last_heartbeat": Utc::now().to_rfc3339(),
             "vfs_capable": cfg!(target_os = "linux") || cfg!(target_os = "macos"),
@@ -87,6 +91,7 @@ pub async fn heartbeat(db: &CouchClient, node_id: &str) -> anyhow::Result<()> {
         Ok(mut doc) => {
             doc["last_heartbeat"] = serde_json::Value::String(Utc::now().to_rfc3339());
             doc["status"] = serde_json::Value::String("online".to_string());
+            doc["machine_id"] = serde_json::Value::String(machine_id::get());
             db.put_document(&doc_id, &doc).await?;
 
             // Re-publish filesystem availability on heartbeat

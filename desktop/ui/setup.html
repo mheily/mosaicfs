@@ -34,13 +34,25 @@
     font-size: 14px; font-weight: 500;
     cursor: pointer; margin-top: 8px;
   }
-  button:hover { background: #0077ed; }
+  button:hover:not(:disabled) { background: #0077ed; }
   button:disabled { background: #a0c4f0; cursor: default; }
-  .error {
+  button.secondary { background: #e5e5ea; color: #1d1d1f; }
+  button.secondary:hover:not(:disabled) { background: #d8d8dd; }
+  button.secondary:disabled { background: #efeff2; color: #a0a0a5; }
+  .status {
     margin-top: 10px; padding: 8px 10px;
-    background: #fff2f2; border: 1px solid #ffc9c9;
-    border-radius: 6px; color: #c0392b; font-size: 12px;
+    border-radius: 6px; font-size: 12px;
     display: none;
+  }
+  .status.error {
+    background: #fff2f2; border: 1px solid #ffc9c9; color: #c0392b;
+  }
+  .status.ok {
+    background: #effaf1; border: 1px solid #b9e6c4; color: #1a7a3a;
+  }
+  .status.ok::before {
+    content: "✓ ";
+    font-weight: 700;
   }
 </style>
 </head>
@@ -51,50 +63,116 @@
 <form id="form">
   <label>
     <span>CouchDB URL</span>
-    <input type="url" id="url" placeholder="http://localhost:5984" required>
+    <input type="text" id="url" placeholder="http://localhost:5984" required autocomplete="off">
   </label>
   <div class="row">
     <label>
       <span>Username</span>
-      <input type="text" id="user" placeholder="admin" required>
+      <input type="text" id="user" placeholder="admin" required autocomplete="off">
     </label>
     <label>
       <span>Password</span>
-      <input type="password" id="password" placeholder="changeme" required>
+      <input type="password" id="password" placeholder="changeme" required autocomplete="off">
     </label>
   </div>
-  <div class="error" id="error"></div>
-  <button type="submit" id="btn">Save &amp; Connect</button>
+  <div id="status" class="status"></div>
+  <button type="button" id="test-btn" class="secondary" disabled>Test connection</button>
+  <button type="submit" id="save-btn" disabled>Save &amp; Connect</button>
 </form>
 
 <script>
 const invoke = window.__TAURI__.core.invoke;
 
+const urlEl    = document.getElementById('url');
+const userEl   = document.getElementById('user');
+const passEl   = document.getElementById('password');
+const testBtn  = document.getElementById('test-btn');
+const saveBtn  = document.getElementById('save-btn');
+const statusEl = document.getElementById('status');
+
+let testedOk = false;
+
+function setStatus(kind, message) {
+  if (!kind) {
+    statusEl.style.display = 'none';
+    statusEl.className = 'status';
+    statusEl.textContent = '';
+  } else {
+    statusEl.style.display = 'block';
+    statusEl.className = 'status ' + kind;
+    statusEl.textContent = message;
+  }
+}
+
+function refreshButtons() {
+  const allFilled = urlEl.value.trim() && userEl.value.trim() && passEl.value.trim();
+  testBtn.disabled = !allFilled || testBtn.dataset.busy === '1';
+  saveBtn.disabled = !testedOk || saveBtn.dataset.busy === '1';
+}
+
+function invalidateTest() {
+  if (testedOk) {
+    testedOk = false;
+    setStatus(null);
+  }
+  refreshButtons();
+}
+
+[urlEl, userEl, passEl].forEach(el => {
+  el.addEventListener('input', invalidateTest);
+});
+
 invoke('get_settings').then(s => {
-  if (s.couchdb_url)      document.getElementById('url').value      = s.couchdb_url;
-  if (s.couchdb_user)     document.getElementById('user').value     = s.couchdb_user;
-  if (s.couchdb_password) document.getElementById('password').value = s.couchdb_password;
-}).catch(() => {});
+  if (s.couchdb_url)      urlEl.value  = s.couchdb_url;
+  if (s.couchdb_user)     userEl.value = s.couchdb_user;
+  if (s.couchdb_password) passEl.value = s.couchdb_password;
+  refreshButtons();
+}).catch(() => refreshButtons());
+
+testBtn.addEventListener('click', async () => {
+  testBtn.dataset.busy = '1';
+  testBtn.textContent = 'Testing…';
+  setStatus(null);
+  refreshButtons();
+  try {
+    const normalized = await invoke('test_connection', {
+      couchdbUrl:      urlEl.value,
+      couchdbUser:     userEl.value,
+      couchdbPassword: passEl.value,
+    });
+    if (normalized && normalized !== urlEl.value) {
+      urlEl.value = normalized;
+    }
+    testedOk = true;
+    setStatus('ok', 'Connection successful');
+  } catch (e) {
+    testedOk = false;
+    setStatus('error', String(e));
+  } finally {
+    delete testBtn.dataset.busy;
+    testBtn.textContent = 'Test connection';
+    refreshButtons();
+  }
+});
 
 document.getElementById('form').addEventListener('submit', async e => {
   e.preventDefault();
-  const btn = document.getElementById('btn');
-  const err = document.getElementById('error');
-  btn.disabled = true;
-  btn.textContent = 'Saving…';
-  err.style.display = 'none';
+  if (!testedOk) return;
+  saveBtn.dataset.busy = '1';
+  saveBtn.textContent = 'Saving…';
+  refreshButtons();
   try {
     await invoke('save_settings', {
-      couchdbUrl:      document.getElementById('url').value,
-      couchdbUser:     document.getElementById('user').value,
-      couchdbPassword: document.getElementById('password').value,
+      couchdbUrl:      urlEl.value,
+      couchdbUser:     userEl.value,
+      couchdbPassword: passEl.value,
     });
-    btn.textContent = 'Saved';
+    saveBtn.textContent = 'Saved';
   } catch (e) {
-    err.textContent = String(e);
-    err.style.display = 'block';
-    btn.disabled = false;
-    btn.textContent = 'Save & Connect';
+    setStatus('error', String(e));
+    delete saveBtn.dataset.busy;
+    saveBtn.textContent = 'Save & Connect';
+    refreshButtons();
   }
 });
 </script>

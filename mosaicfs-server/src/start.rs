@@ -23,15 +23,18 @@ use crate::tls;
 const DEFAULT_DATA_DIR: &str = "/var/lib/mosaicfs/server";
 const DB_NAME: &str = "mosaicfs";
 
-/// Start the web UI subsystem. Runs until the HTTP server shuts down.
+/// Build the axum [`Router`](axum::Router) for the web UI subsystem and spawn
+/// the long-lived background tasks (changes feed, access flush, control-plane
+/// health checks). The caller is responsible for installing the rustls crypto
+/// provider and for binding the returned router to a transport.
 ///
-/// Expects `features.web_ui = true` and a populated `[web_ui]` section.
-/// The caller is responsible for installing the rustls crypto provider
-/// exactly once before calling this function.
-pub async fn start_web_ui(
+/// Used both by [`start_web_ui`] (the binary path) and by the Tauri desktop
+/// app, which serves the router in-process to avoid sandbox/codesign issues
+/// that would otherwise be incurred by spawning the server as a child process.
+pub async fn build_app_router(
     cfg: Arc<MosaicfsConfig>,
     secrets: Arc<dyn SecretsBackend>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<axum::Router> {
     let web = cfg
         .web_ui
         .as_ref()
@@ -43,28 +46,9 @@ pub async fn start_web_ui(
         .unwrap_or_else(|| PathBuf::from(DEFAULT_DATA_DIR));
     std::fs::create_dir_all(&data_dir)?;
 
-    let addr: SocketAddr = web
-        .listen
-        .parse()
-        .map_err(|e| anyhow::anyhow!("[web_ui].listen invalid: {e}"))?;
-
-    let insecure_http = web.insecure_http;
-    let developer_mode = web.developer_mode;
-
-    // Admin session layer + middleware read this env var; propagate the
-    // config-resolved value so they stay in sync whether the binary was
-    // invoked with env overrides or a TOML-only config.
-    if insecure_http {
-        unsafe {
-            std::env::set_var("MOSAICFS_INSECURE_HTTP", "1");
-        }
-    }
-
-    if developer_mode {
+    if web.developer_mode {
         tracing::warn!("Developer mode enabled — DELETE /api/system/data is active");
     }
-
-    info!("mosaicfs web_ui starting");
 
     let couchdb_url = secrets.get(secrets::names::COUCHDB_URL)?;
     let couchdb_user = secrets.get(secrets::names::COUCHDB_USER)?;
@@ -76,15 +60,6 @@ pub async fn start_web_ui(
 
     mosaicfs_common::couchdb::create_indexes(&db).await?;
     info!("CouchDB indexes verified");
-
-    let rustls_config = if insecure_http {
-        tracing::warn!("web_ui.insecure_http is set — serving plain HTTP (dev only)");
-        None
-    } else {
-        let cfg = tls::ensure_tls_certs(&data_dir)?;
-        info!("TLS certificates ready");
-        Some(cfg)
-    };
 
     let jwt_secret = auth::jwt::ensure_jwt_secret(&data_dir)?;
     info!("JWT signing secret ready");
@@ -128,7 +103,7 @@ pub async fn start_web_ui(
         couchdb_password.clone(),
         Arc::clone(&label_cache),
         Arc::clone(&access_cache),
-        developer_mode,
+        web.developer_mode,
         node_id,
     ));
 
@@ -144,9 +119,7 @@ pub async fn start_web_ui(
                 flush_access_records(&state).await;
             }
         });
-        info!("Access tracking flush task started");
     }
-
     {
         let state = Arc::clone(&state);
         let label_cache = Arc::clone(&label_cache);
@@ -154,33 +127,78 @@ pub async fn start_web_ui(
         tokio::spawn(async move {
             changes_feed_watcher(&state, &label_cache, &access_cache).await;
         });
-        info!("Changes feed watcher started");
     }
-
     {
         let state = Arc::clone(&state);
         tokio::spawn(async move {
             control_plane_health_checks(&state).await;
         });
-        info!("Control plane health check task started");
+    }
+    info!("Background tasks started");
+
+    Ok(routes::build_router(state).layer(TraceLayer::new_for_http()))
+}
+
+/// Start the web UI subsystem. Runs until the HTTP server shuts down.
+///
+/// Expects `features.web_ui = true` and a populated `[web_ui]` section.
+/// The caller is responsible for installing the rustls crypto provider
+/// exactly once before calling this function.
+pub async fn start_web_ui(
+    cfg: Arc<MosaicfsConfig>,
+    secrets: Arc<dyn SecretsBackend>,
+) -> anyhow::Result<()> {
+    let web = cfg
+        .web_ui
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("[web_ui] section missing"))?
+        .clone();
+
+    let data_dir = web
+        .data_dir
+        .clone()
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_DATA_DIR));
+
+    let addr: SocketAddr = web
+        .listen
+        .parse()
+        .map_err(|e| anyhow::anyhow!("[web_ui].listen invalid: {e}"))?;
+
+    let insecure_http = web.insecure_http;
+
+    // Admin session layer + middleware read this env var; propagate the
+    // config-resolved value so they stay in sync whether the binary was
+    // invoked with env overrides or a TOML-only config.
+    if insecure_http {
+        unsafe { std::env::set_var("MOSAICFS_INSECURE_HTTP", "1"); }
     }
 
-    let app = routes::build_router(state).layer(TraceLayer::new_for_http());
+    info!("mosaicfs web_ui starting");
+
+    let rustls_config = if insecure_http {
+        tracing::warn!("web_ui.insecure_http is set — serving plain HTTP (dev only)");
+        None
+    } else {
+        let cfg = tls::ensure_tls_certs(&data_dir)?;
+        info!("TLS certificates ready");
+        Some(cfg)
+    };
 
     // Unix socket mode: skip TLS, bind directly to the socket path.
     // Auth is unconditionally disabled — the socket's filesystem permissions
     // are the security boundary, not credentials.
     #[cfg(unix)]
     if let Some(ref socket_path) = web.socket_path {
-        // Ensure the auth-bypass flag is set regardless of the config value,
-        // so callers don't need insecure_http = true in their TOML.
         unsafe { std::env::set_var("MOSAICFS_INSECURE_HTTP", "1"); }
+        let app = build_app_router(cfg, secrets).await?;
         let _ = std::fs::remove_file(socket_path);
         let listener = tokio::net::UnixListener::bind(socket_path)?;
         info!(socket = %socket_path.display(), "Listening on unix socket");
         axum::serve(listener, app.into_make_service()).await?;
         return Ok(());
     }
+
+    let app = build_app_router(cfg, secrets).await?;
 
     // TCP mode: insecure HTTP binds to loopback only; TLS honours the configured address.
     let bind_addr = if insecure_http {

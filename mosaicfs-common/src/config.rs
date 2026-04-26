@@ -160,6 +160,11 @@ impl MosaicfsConfig {
     /// - `MOSAICFS_STATE_DIR` → `[agent].state_dir`
     /// - `MOSAICFS_INSECURE_HTTP` → `[web_ui].insecure_http`
     fn apply_env_overrides(&mut self) {
+        if let Ok(v) = std::env::var("MOSAICFS_NODE_ID") {
+            if !v.is_empty() {
+                self.node.node_id = Some(v);
+            }
+        }
         if let Ok(v) = std::env::var("COUCHDB_URL") {
             self.couchdb.url = v;
         }
@@ -577,6 +582,7 @@ password = ""
                 "COUCHDB_URL",
                 "COUCHDB_USER",
                 "COUCHDB_PASSWORD",
+                "MOSAICFS_NODE_ID",
                 "MOSAICFS_PORT",
                 "MOSAICFS_DATA_DIR",
                 "MOSAICFS_STATE_DIR",

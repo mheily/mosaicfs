@@ -1364,6 +1364,7 @@ dependencies = [
  "chrono",
  "glob",
  "keyring",
+ "libc",
  "rand 0.8.5",
  "regex",
  "reqwest",
