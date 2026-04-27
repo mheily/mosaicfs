@@ -16,6 +16,7 @@ use uuid::Uuid;
 use crate::crawler;
 use crate::node;
 use crate::replication_subsystem;
+use crate::WatchPathProvider;
 
 const DEFAULT_STATE_DIR: &str = "/var/lib/mosaicfs";
 const DB_NAME: &str = "mosaicfs";
@@ -30,6 +31,7 @@ const REPLICATION_FULL_SCAN_INTERVAL_S: u64 = 86400; // daily
 pub async fn start_agent(
     cfg: Arc<MosaicfsConfig>,
     secrets: Arc<dyn SecretsBackend>,
+    provider: Arc<dyn WatchPathProvider>,
 ) -> anyhow::Result<()> {
     let agent_cfg = cfg
         .agent
@@ -74,14 +76,20 @@ pub async fn start_agent(
     };
 
     info!("Starting initial filesystem crawl");
+    let opened = provider.open().unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "watch path provider failed for initial crawl");
+        vec![]
+    });
+    let crawl_paths: Vec<PathBuf> = opened.iter().map(|o| o.path.clone()).collect();
     let result = crawler::crawl(
         &db,
         &node_id,
-        &agent_cfg.watch_paths,
+        &crawl_paths,
         &agent_cfg.excluded_paths,
         replication_handle.as_ref(),
     )
     .await?;
+    drop(opened);
     info!(
         new = result.files_new,
         updated = result.files_updated,
@@ -121,15 +129,21 @@ pub async fn start_agent(
                 }
             }
             _ = crawl_interval.tick() => {
+                let opened = provider.open().unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "watch path provider failed for periodic crawl");
+                    vec![]
+                });
+                let crawl_paths: Vec<PathBuf> = opened.iter().map(|o| o.path.clone()).collect();
                 if let Err(e) = crawler::crawl(
                     &db,
                     &node_id,
-                    &agent_cfg.watch_paths,
+                    &crawl_paths,
                     &agent_cfg.excluded_paths,
                     replication_handle.as_ref(),
                 ).await {
                     error!(error = %e, "Periodic crawl failed");
                 }
+                drop(opened);
             }
             _ = health_check_interval.tick() => {
                 check_inotify_limits(&db, &node_id).await;

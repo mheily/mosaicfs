@@ -2,6 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use tauri::{AppHandle, Manager, WebviewWindowBuilder};
 
+mod agent;
 mod bookmarks;
 mod commands;
 mod connection;
@@ -11,6 +12,8 @@ mod server;
 mod settings;
 #[allow(dead_code)]
 mod stub;
+#[cfg(target_os = "macos")]
+mod watch_paths;
 
 fn open_or_focus(app: &AppHandle, label: &str, title: &str, url: &str, w: f64, h: f64) {
     if let Some(win) = app.get_webview_window(label) {
@@ -24,6 +27,23 @@ fn open_or_focus(app: &AppHandle, label: &str, title: &str, url: &str, w: f64, h
         )
         .title(title)
         .inner_size(w, h)
+        .build();
+    }
+}
+
+fn open_agent_window(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window("agent") {
+        let _ = win.show();
+        let _ = win.set_focus();
+    } else {
+        let _ = WebviewWindowBuilder::new(
+            app,
+            "agent",
+            tauri::WebviewUrl::App("agent.html".into()),
+        )
+        .title("MosaicFS — Watch Folders")
+        .inner_size(480.0, 380.0)
+        .resizable(true)
         .build();
     }
 }
@@ -83,15 +103,18 @@ async fn save_settings(
     // this catches direct invocations and stale UI state.
     let normalized = connection::test(&couchdb_url, &couchdb_user, &couchdb_password).await?;
 
-    let s = settings::Settings {
-        couchdb_url: normalized,
-        couchdb_user,
-        couchdb_password,
-    };
+    // Load current settings so we preserve agent fields (watch_paths etc.)
+    // that the connection form does not touch.
+    let mut s = settings::load(&dir);
+    s.couchdb_url = normalized;
+    s.couchdb_user = couchdb_user;
+    s.couchdb_password = couchdb_password;
     settings::save(&dir, &s).map_err(|e| e.to_string())?;
 
     // Build a fresh in-process router and atomically swap it in.
-    let router = server::build_router(&s, &dir).await.map_err(|e| e.to_string())?;
+    // Note: agent is NOT restarted here — watch_paths changes require an app
+    // restart. See docs/changes/014/discussion.md.
+    let (router, _node_id) = server::build_router(&s, &dir).await.map_err(|e| e.to_string())?;
     if let Some(slot) = app.try_state::<Arc<server::RouterSlot>>() {
         slot.set(router);
     }
@@ -116,8 +139,8 @@ pub fn run() {
             // ── Bookmarks store ───────────────────────────────────────────
             let store_path = app.path().app_data_dir()?.join("bookmarks.json");
             std::fs::create_dir_all(store_path.parent().unwrap()).ok();
-            let store = bookmarks::BookmarkStore::load(store_path);
-            app.manage(Mutex::new(store));
+            let store_arc = Arc::new(Mutex::new(bookmarks::BookmarkStore::load(store_path)));
+            app.manage(Arc::clone(&store_arc));
 
             // ── Settings + in-process server ──────────────────────────────
             let app_data_dir = app.path().app_data_dir()?;
@@ -133,9 +156,24 @@ pub fn run() {
                 let dir = app_data_dir.clone();
                 let slot = Arc::clone(&slot);
                 let handle = app.handle().clone();
+                #[cfg(target_os = "macos")]
+                let store_for_agent = Arc::clone(&store_arc);
                 tauri::async_runtime::spawn(async move {
                     match server::build_router(&s, &dir).await {
-                        Ok(router) => slot.set(router),
+                        Ok((router, node_id)) => {
+                            slot.set(router);
+                            #[cfg(target_os = "macos")]
+                            let provider: Arc<dyn mosaicfs_agent::WatchPathProvider> = Arc::new(
+                                watch_paths::BookmarkedWatchPathProvider::new(store_for_agent, dir.clone()),
+                            );
+                            #[cfg(not(target_os = "macos"))]
+                            let provider: Arc<dyn mosaicfs_agent::WatchPathProvider> = Arc::new(
+                                mosaicfs_agent::BareWatchPathProvider::new(
+                                    s.watch_paths.iter().map(std::path::PathBuf::from).collect(),
+                                ),
+                            );
+                            agent::start(&s, &dir, node_id, provider);
+                        }
                         Err(e) => {
                             eprintln!("mosaicfs-desktop: router build failed: {e}");
                             // Show the setup window so the user can fix the
@@ -202,12 +240,16 @@ pub fn run() {
                 let connection_item = MenuItem::with_id(
                     app, "tray_connection", "Connection...", true, None::<&str>,
                 )?;
+                let agent_item = MenuItem::with_id(
+                    app, "tray_agent", "Watch Folders...", true, None::<&str>,
+                )?;
 
                 let tray_menu = MenuBuilder::new(app)
                     .item(&browse_item)
                     .item(&status_item)
                     .item(&settings_item)
                     .item(&connection_item)
+                    .item(&agent_item)
                     .separator()
                     .quit()
                     .build()?;
@@ -234,6 +276,7 @@ pub fn run() {
                                 1000.0, 700.0,
                             ),
                             "tray_connection" => open_setup_window(app),
+                            "tray_agent" => open_agent_window(app),
                             _ => {}
                         }
                     })
@@ -255,6 +298,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::open_file,
             commands::authorize_mount,
+            commands::list_watch_paths,
+            commands::add_watch_path,
+            commands::authorize_watch_path,
+            commands::remove_watch_path,
             get_settings,
             save_settings,
             test_connection,

@@ -1,0 +1,273 @@
+;;; mosaicfs-desktop.sb — REFERENCE ONLY — not used for runtime enforcement
+;;;
+;;; sandbox-exec is deprecated on modern macOS and has silent failure modes
+;;; (anonymous mmap for thread stacks fails without logging a denial) that
+;;; make it unreliable for Tauri/Rust binaries.  Runtime sandboxing is handled
+;;; by the App Sandbox entitlements in Entitlements.plist, which are embedded
+;;; by codesigning and enforced by the kernel.
+;;;
+;;; This file documents the full set of resources the app uses, derived from
+;;; reading the source, so that the entitlements in Entitlements.plist can be
+;;; audited and kept accurate.  See docs/MacOS-Seatbelt.md for the full picture.
+;;;
+;;; MosaicFS Desktop is a Tauri 2.0 application (com.mosaicfs.desktop) that:
+;;;   • Serves a local HTTP server on 127.0.0.1:<ephemeral port> for WKWebView
+;;;   • Connects outbound to a user-configured CouchDB instance
+;;;   • Reads/writes app data under ~/Library/Application Support/com.mosaicfs.desktop/
+;;;   • Reads/writes ~/.mosaicfs/node-id.toml (persistent machine ID fallback)
+;;;   • Presents NSOpenPanel to let users select mount-point directories
+;;;   • Opens files/URLs via NSWorkspace (LaunchServices)
+;;;   • Displays a system-tray (NSStatusItem) icon
+;;;   • Reads kern.uuid via sysctl for machine identity (no child process)
+;;;
+;;; Usage (development / ad-hoc testing):
+;;;
+;;;   BIN=./target/debug/mosaicfs-desktop
+;;;   sandbox-exec -f desktop/mosaicfs-desktop.sb \
+;;;     -D HOME_DIR="$HOME" \
+;;;     -D TMPDIR="${TMPDIR%/}" \
+;;;     -D BINARY_PATH="$(realpath $BIN)" \
+;;;     "$BIN"
+;;;
+;;; For production, the App Sandbox entitlements in Entitlements.plist are the
+;;; primary enforcement mechanism (enforced by the kernel after codesigning).
+;;; This profile can be layered on top as a supplemental policy via the
+;;; com.apple.security.temporary-exception.sbpl entitlement.
+;;;
+;;; Tuning: set the environment variable SANDBOX_LOG=ALL before sandbox-exec
+;;; to capture denials to syslog.  Use `log show --predicate 'process == "sandboxd"'`
+;;; to review them, then add allow rules as needed before tightening
+;;; `(debug deny)` → `(deny default)`.
+
+(version 1)
+
+;;; Start with a default-deny stance; (debug deny) logs violations without
+;;; terminating the process so you can audit with a live app.
+;;; Replace with (deny default) for production.
+(deny default)
+(debug deny)
+
+;;; ─── Process self ──────────────────────────────────────────────────────────
+
+(allow process-exec (literal (param "BINARY_PATH")))
+(allow signal (target self))
+(allow process-info-pidinfo)
+(allow process-info-pidfdinfo)
+(allow process-info-setcontrol (target self))
+
+;;; Rust runtime needs the privileged host port to set up thread exception
+;;; ports and the alternate signal stack used for stack-overflow detection.
+(allow mach-priv-host-port)
+
+;;; ─── Sysctl ────────────────────────────────────────────────────────────────
+
+;;; kern.uuid is read by mosaicfs-common::machine_id (machine_id.rs:31-38) to
+;;; obtain the IOPlatformUUID without spawning ioreg.  The remaining keys are
+;;; read by the Tokio runtime and system frameworks during initialisation.
+(allow sysctl-read
+  (literal "kern.uuid")
+  (literal "kern.ostype")
+  (literal "kern.osrelease")
+  (literal "kern.version")
+  (literal "kern.hostname")
+  (literal "hw.machine")
+  (literal "hw.ncpu")
+  (literal "hw.physicalcpu")
+  (literal "hw.logicalcpu")
+  (literal "hw.memsize"))
+
+;;; ─── System file reads ─────────────────────────────────────────────────────
+
+;;; Broad metadata reads are required for the dynamic linker, Objective-C
+;;; runtime, and WebKit framework bundle loads.
+(allow file-read-metadata)
+
+(allow file-read*
+  (literal "/")
+  (literal "/usr")
+  (subpath "/usr/lib")
+  (subpath "/usr/share/locale")
+  (subpath "/usr/share/zoneinfo")
+  (subpath "/System/Library")
+  (subpath "/System/Volumes/Preboot/Cryptexes/OS/System/Library")
+  (subpath "/Library/Apple")
+  (subpath "/Library/ColorSync")
+  (subpath "/Library/Fonts")
+  (literal "/dev/null")
+  (literal "/dev/zero")
+  (literal "/dev/random")
+  (literal "/dev/urandom")
+  (literal "/dev/dtracehelper"))
+
+;;; dyld shared-cache region and per-user session temp under /private/var/folders
+(allow file-read*
+  (subpath "/private/var/db/dyld")
+  (subpath "/private/var/folders")
+  (literal "/private/var/db/timezone"))
+
+;;; ─── App data directories ──────────────────────────────────────────────────
+
+;;; Tauri data root: settings.json, bookmarks.json (bookmarks.rs:81),
+;;; bookmarks.json.corrupt.<ts>, server-data/{tls-cert,tls-key,jwt-secret}
+(allow file-read* file-write*
+  (subpath (string-append (param "HOME_DIR")
+                          "/Library/Application Support/com.mosaicfs.desktop")))
+
+;;; Fallback machine-ID file written when kern.uuid is unavailable
+;;; (machine_id.rs:109-114): ~/.mosaicfs/node-id.toml
+(allow file-read* file-write*
+  (subpath (string-append (param "HOME_DIR") "/.mosaicfs")))
+
+;;; Per-process temp dir: atomic rename target for bookmarks.json.tmp
+(allow file-read* file-write*
+  (subpath (param "TMPDIR")))
+
+;;; WebKit website data store and process-pool state
+(allow file-read* file-write*
+  (subpath (string-append (param "HOME_DIR")
+                          "/Library/WebKit/com.mosaicfs.desktop")))
+
+;;; URL and image caches
+(allow file-read* file-write*
+  (subpath (string-append (param "HOME_DIR")
+                          "/Library/Caches/com.mosaicfs.desktop")))
+
+;;; NSUserDefaults persistence
+(allow file-read* file-write*
+  (literal (string-append (param "HOME_DIR")
+                          "/Library/Preferences/com.mosaicfs.desktop.plist")))
+
+;;; Cocoa window auto-save state
+(allow file-read* file-write*
+  (subpath (string-append (param "HOME_DIR")
+                          "/Library/Saved Application State/com.mosaicfs.desktop.savedState")))
+
+;;; System preference reads needed by Cocoa (locale, accessibility, dark mode)
+(allow file-read*
+  (literal (string-append (param "HOME_DIR")
+                          "/Library/Preferences/.GlobalPreferences.plist"))
+  (literal (string-append (param "HOME_DIR")
+                          "/Library/Preferences/com.apple.universalaccess.plist")))
+
+;;; ─── User-selected files (NSOpenPanel + security-scoped bookmarks) ─────────
+
+;;; When the app is signed and sandboxed, NSOpenPanel runs in a separate XPC
+;;; broker process with the com.apple.security.files.user-selected.read-only
+;;; entitlement.  Our process only needs to start/stop access on the resolved
+;;; URL (macos.rs:40-41).  For sandbox-exec use (unsigned / development) the
+;;; broker is absent, so we allow HOME reads so the panel can function at all.
+(allow file-read*
+  (subpath (param "HOME_DIR")))
+
+;;; ─── Network ───────────────────────────────────────────────────────────────
+
+;;; Loopback inbound — Axum HTTP/1.1 server on 127.0.0.1:0 (server.rs:55)
+;;; that serves the WKWebView-hosted UI.
+(allow network-bind
+  (local tcp "localhost:*"))
+(allow network-inbound
+  (local tcp "localhost:*"))
+
+;;; Loopback outbound — WKWebView connecting to the embedded Axum server
+(allow network-outbound
+  (local tcp "localhost:*"))
+
+;;; Outbound CouchDB — connection.rs:47-67 probes user-configured URL.
+;;; Default is http://localhost:5984; the user may configure any host/port.
+;;; Allow the three most common ports; tighten if your deployment is fixed.
+(allow network-outbound
+  (remote tcp "*:5984")     ; CouchDB default
+  (remote tcp "*:80")       ; HTTP
+  (remote tcp "*:443"))     ; HTTPS
+
+;;; DNS resolution
+(allow network-outbound
+  (remote udp "*:53")
+  (remote tcp "*:53"))
+
+;;; ─── Mach IPC ──────────────────────────────────────────────────────────────
+
+;;; WindowServer — required by every GUI app on macOS
+(allow mach-lookup
+  (global-name "com.apple.windowserver.active"))
+
+;;; Remote view controllers — WKWebView host/client XPC split
+(allow mach-lookup
+  (global-name "com.apple.ViewBridgeAuxiliary"))
+
+;;; CFPreferences / NSUserDefaults daemon
+(allow mach-lookup
+  (global-name "com.apple.cfprefsd.agent")
+  (global-name "com.apple.cfprefsd.daemon"))
+
+;;; NSDistributedNotificationCenter (cross-process Cocoa notifications)
+(allow mach-lookup
+  (global-name "com.apple.distributed_notifications40"))
+
+;;; LaunchServices — NSWorkspace.openURL() (macos.rs:118-124)
+(allow mach-lookup
+  (global-name "com.apple.lsd.mapdb")
+  (global-name "com.apple.lsd.modifydb"))
+
+;;; Dock / NSStatusItem — system-tray icon (lib.rs:189-241)
+(allow mach-lookup
+  (global-name "com.apple.dock.server"))
+
+;;; TCC daemon — permission prompts (Files & Folders, Network, etc.)
+(allow mach-lookup
+  (global-name "com.apple.tccd")
+  (global-name "com.apple.tccd.system"))
+
+;;; GPU / Metal compositor — WKWebView hardware-accelerated rendering
+(allow mach-lookup
+  (global-name "com.apple.gpsd")
+  (global-name "com.apple.MTLCompilerService"))
+
+;;; WebKit helper processes (GPU process, Networking process)
+(allow mach-lookup
+  (global-name "com.apple.WebKit.GPU")
+  (global-name "com.apple.WebKit.Networking"))
+
+;;; Font server
+(allow mach-lookup
+  (global-name "com.apple.fonts"))
+
+;;; SystemConfiguration — network interface / reachability queries
+(allow mach-lookup
+  (global-name "com.apple.SystemConfiguration.configd"))
+
+;;; Pasteboard — Tauri clipboard support
+(allow mach-lookup
+  (global-name "com.apple.pbs"))
+
+;;; UserNotifications — system notification banners (remove if not used)
+(allow mach-lookup
+  (global-name "com.apple.usernotifications.usernotificationservice"))
+
+;;; CoreServices — URL handling, file metadata
+(allow mach-lookup
+  (global-name "com.apple.CoreServices.coreservicesd"))
+
+;;; ─── IOKit ─────────────────────────────────────────────────────────────────
+
+;;; IOSurface — shared GPU compositor surfaces (WKWebView rendering pipeline)
+(allow iokit-open
+  (iokit-user-client-class "IOSurfaceRootUserClient"))
+
+;;; Metal / AGX GPU device (Apple Silicon) and legacy accelerator
+(allow iokit-open
+  (iokit-user-client-class "AGXDeviceUserClient")
+  (iokit-user-client-class "IOAccelerator")
+  (iokit-user-client-class "IOAccelerationUserClient"))
+
+;;; HID — keyboard and mouse events for the app window
+(allow iokit-open
+  (iokit-user-client-class "IOHIDLibUserClient"))
+
+;;; ─── POSIX IPC ─────────────────────────────────────────────────────────────
+
+;;; Tokio async runtime and WebKit internals use POSIX semaphores and,
+;;; on Apple Silicon, shared memory regions prefixed with "com.apple.".
+(allow ipc-posix-sem)
+(allow ipc-posix-shm-read-data ipc-posix-shm-write-data
+  (ipc-posix-name-regex #"^com\.apple\."))

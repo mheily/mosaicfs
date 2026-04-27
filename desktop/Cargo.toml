@@ -23,6 +23,7 @@ tokio = { version = "1", features = ["sync", "net", "io-util", "rt", "time", "ma
 url = "2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 mosaicfs-server = { path = "../mosaicfs-server" }
+mosaicfs-agent = { path = "../mosaicfs-agent" }
 mosaicfs-common = { path = "../mosaicfs-common" }
 axum = "0.8"
 hyper = { version = "1", features = ["server", "http1"] }

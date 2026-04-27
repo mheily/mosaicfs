@@ -1,8 +1,9 @@
 use std::any::Any;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
+use tauri::Manager;
 use thiserror::Error;
 
 use crate::bookmarks::BookmarkStore;
@@ -43,6 +44,26 @@ pub enum ResolveBookmarkError {
     Stale,
     #[error("{0}")]
     Other(String),
+}
+
+// ── WatchPathError ─────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "code", rename_all = "snake_case")]
+pub enum WatchPathError {
+    UserCancelled,
+    CanonicalizeFailed { message: String },
+    BookmarkFailed { message: String },
+    SettingsFailed { message: String },
+    MismatchedSelection { expected: String, got: String },
+}
+
+// ── WatchPathEntry ─────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+pub struct WatchPathEntry {
+    pub path: String,
+    pub authorized: bool,
 }
 
 // ── MacosApi trait (used by inner logic for testability) ───────────────────
@@ -189,15 +210,109 @@ pub(crate) fn authorize_mount_inner<A: MacosApi>(
     Ok(())
 }
 
+// ── Watch path inner logic ─────────────────────────────────────────────────
+
+pub(crate) fn list_watch_paths_inner(
+    store: &Mutex<BookmarkStore>,
+    app_data_dir: &Path,
+) -> Vec<WatchPathEntry> {
+    let s = crate::settings::load(app_data_dir);
+    let store = store.lock().unwrap();
+    s.watch_paths
+        .iter()
+        .map(|p| WatchPathEntry {
+            path: p.clone(),
+            authorized: store.get(p).is_some(),
+        })
+        .collect()
+}
+
+pub(crate) fn add_watch_path_inner<A: MacosApi>(
+    store: &Mutex<BookmarkStore>,
+    app_data_dir: &Path,
+    selection: PathBuf,
+    api: &A,
+) -> Result<(), WatchPathError> {
+    let canonical = std::fs::canonicalize(&selection)
+        .map_err(|e| WatchPathError::CanonicalizeFailed { message: e.to_string() })?;
+    let key = canonical.to_string_lossy().into_owned();
+
+    let data = api
+        .create_bookmark(&canonical)
+        .map_err(|msg| WatchPathError::BookmarkFailed { message: msg })?;
+    {
+        let mut lock = store.lock().unwrap();
+        lock.insert(key.clone(), data)
+            .map_err(|e| WatchPathError::BookmarkFailed { message: e.to_string() })?;
+    }
+
+    let mut s = crate::settings::load(app_data_dir);
+    if !s.watch_paths.contains(&key) {
+        s.watch_paths.push(key.clone());
+    }
+    crate::settings::save(app_data_dir, &s).map_err(|e| {
+        let _ = store.lock().unwrap().remove(&key);
+        WatchPathError::SettingsFailed { message: e.to_string() }
+    })?;
+
+    Ok(())
+}
+
+pub(crate) fn authorize_watch_path_inner<A: MacosApi>(
+    store: &Mutex<BookmarkStore>,
+    canonical_path: &str,
+    selection: PathBuf,
+    api: &A,
+) -> Result<(), WatchPathError> {
+    let canonical_selection = std::fs::canonicalize(&selection).unwrap_or(selection);
+    let canonical_selection_str = canonical_selection.to_string_lossy();
+
+    if canonical_selection_str != canonical_path {
+        return Err(WatchPathError::MismatchedSelection {
+            expected: canonical_path.to_string(),
+            got: canonical_selection_str.into_owned(),
+        });
+    }
+
+    let data = api
+        .create_bookmark(&canonical_selection)
+        .map_err(|msg| WatchPathError::BookmarkFailed { message: msg })?;
+
+    store
+        .lock()
+        .unwrap()
+        .insert(canonical_path.to_string(), data)
+        .map_err(|e| WatchPathError::BookmarkFailed { message: e.to_string() })?;
+
+    Ok(())
+}
+
+pub(crate) fn remove_watch_path_inner(
+    store: &Mutex<BookmarkStore>,
+    app_data_dir: &Path,
+    path: &str,
+) -> Result<(), WatchPathError> {
+    let mut s = crate::settings::load(app_data_dir);
+    s.watch_paths.retain(|p| p != path);
+    crate::settings::save(app_data_dir, &s)
+        .map_err(|e| WatchPathError::SettingsFailed { message: e.to_string() })?;
+
+    if let Err(e) = store.lock().unwrap().remove(path) {
+        tracing::warn!(path = %path, error = %e, "failed to remove watch path bookmark (orphaned)");
+    }
+
+    Ok(())
+}
+
 // ── Tauri commands ─────────────────────────────────────────────────────────
 
 #[tauri::command]
 pub async fn open_file(
-    state: tauri::State<'_, Mutex<BookmarkStore>>,
+    state: tauri::State<'_, Arc<Mutex<BookmarkStore>>>,
     target: OpenTarget,
 ) -> Result<(), OpenError> {
     #[cfg(target_os = "macos")]
-    return open_file_inner(&state, &target, &MacosApiImpl);
+    return open_file_inner(&**state, &target, &MacosApiImpl);
 
     #[cfg(not(target_os = "macos"))]
     Err(OpenError::OpenFailed {
@@ -207,7 +322,7 @@ pub async fn open_file(
 
 #[tauri::command]
 pub async fn authorize_mount(
-    state: tauri::State<'_, Mutex<BookmarkStore>>,
+    state: tauri::State<'_, Arc<Mutex<BookmarkStore>>>,
     app: tauri::AppHandle,
     local_mount_path: String,
 ) -> Result<(), AuthorizeError> {
@@ -232,7 +347,7 @@ pub async fn authorize_mount(
             })?
             .ok_or(AuthorizeError::UserCancelled)?;
 
-        return authorize_mount_inner(&state, &preselect, selection, &MacosApiImpl);
+        return authorize_mount_inner(&**state, &preselect, selection, &MacosApiImpl);
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -242,6 +357,104 @@ pub async fn authorize_mount(
             message: "desktop open not implemented on this platform".into(),
         })
     }
+}
+
+#[tauri::command]
+pub async fn list_watch_paths(
+    state: tauri::State<'_, Arc<Mutex<BookmarkStore>>>,
+    app: tauri::AppHandle,
+) -> Result<Vec<WatchPathEntry>, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    Ok(list_watch_paths_inner(&**state, &dir))
+}
+
+#[tauri::command]
+pub async fn add_watch_path(
+    state: tauri::State<'_, Arc<Mutex<BookmarkStore>>>,
+    app: tauri::AppHandle,
+) -> Result<(), WatchPathError> {
+    #[cfg(target_os = "macos")]
+    {
+        let dir = app
+            .path()
+            .app_data_dir()
+            .map_err(|e| WatchPathError::SettingsFailed { message: e.to_string() })?;
+
+        let home = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".to_string()));
+        let (tx, rx) = tokio::sync::oneshot::channel::<Option<PathBuf>>();
+        app.run_on_main_thread(move || {
+            let _ = tx.send(crate::macos::show_open_panel_sync(&home));
+        })
+        .map_err(|e| WatchPathError::BookmarkFailed {
+            message: format!("run_on_main_thread: {e}"),
+        })?;
+
+        let selection = rx
+            .await
+            .map_err(|e| WatchPathError::BookmarkFailed {
+                message: format!("oneshot recv: {e}"),
+            })?
+            .ok_or(WatchPathError::UserCancelled)?;
+
+        return add_watch_path_inner(&**state, &dir, selection, &MacosApiImpl);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (state, app);
+        Err(WatchPathError::BookmarkFailed {
+            message: "watch paths not supported on this platform".into(),
+        })
+    }
+}
+
+#[tauri::command]
+pub async fn authorize_watch_path(
+    state: tauri::State<'_, Arc<Mutex<BookmarkStore>>>,
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<(), WatchPathError> {
+    #[cfg(target_os = "macos")]
+    {
+        let preselect = PathBuf::from(&path);
+        let (tx, rx) = tokio::sync::oneshot::channel::<Option<PathBuf>>();
+        app.run_on_main_thread(move || {
+            let _ = tx.send(crate::macos::show_open_panel_sync(&preselect));
+        })
+        .map_err(|e| WatchPathError::BookmarkFailed {
+            message: format!("run_on_main_thread: {e}"),
+        })?;
+
+        let selection = rx
+            .await
+            .map_err(|e| WatchPathError::BookmarkFailed {
+                message: format!("oneshot recv: {e}"),
+            })?
+            .ok_or(WatchPathError::UserCancelled)?;
+
+        return authorize_watch_path_inner(&**state, &path, selection, &MacosApiImpl);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (state, app, path);
+        Err(WatchPathError::BookmarkFailed {
+            message: "watch paths not supported on this platform".into(),
+        })
+    }
+}
+
+#[tauri::command]
+pub async fn remove_watch_path(
+    state: tauri::State<'_, Arc<Mutex<BookmarkStore>>>,
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<(), WatchPathError> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| WatchPathError::SettingsFailed { message: e.to_string() })?;
+    remove_watch_path_inner(&**state, &dir, &path)
 }
 
 // ── Unit tests ─────────────────────────────────────────────────────────────

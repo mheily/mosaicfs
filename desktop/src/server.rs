@@ -148,16 +148,21 @@ pub fn config_from_settings(settings: &Settings, app_data_dir: &std::path::Path)
 /// Build the in-process router for the given settings. Sets the auth-bypass
 /// env var first (the loopback TCP listener is the trust boundary, the same
 /// way the unix-socket mode treated socket fs perms).
+///
+/// Returns the router and the resolved node_id so the caller can share the
+/// same identity with the in-process agent.
 pub async fn build_router(
     settings: &Settings,
     app_data_dir: &std::path::Path,
-) -> anyhow::Result<Router> {
+) -> anyhow::Result<(Router, Option<String>)> {
     unsafe { std::env::set_var("MOSAICFS_INSECURE_HTTP", "1"); }
+    let node_id = resolve_node_id(settings).await;
     let mut cfg = config_from_settings(settings, app_data_dir);
-    cfg.node.node_id = resolve_node_id(settings).await;
+    cfg.node.node_id = node_id.clone();
     let cfg = Arc::new(cfg);
     let secrets = Arc::new(InlineBackend::from_config(&cfg, None));
-    mosaicfs_server::build_app_router(cfg, secrets).await
+    let router = mosaicfs_server::build_app_router(cfg, secrets).await?;
+    Ok((router, node_id))
 }
 
 /// Resolve the desktop's node identity.
@@ -167,7 +172,7 @@ pub async fn build_router(
 ///   2. CouchDB lookup by `machine_id` field on `node::*` docs.
 ///
 /// Returns `None` when no match is found (open-file will degrade gracefully).
-async fn resolve_node_id(settings: &Settings) -> Option<String> {
+pub async fn resolve_node_id(settings: &Settings) -> Option<String> {
     if let Ok(id) = std::env::var("MOSAICFS_NODE_ID") {
         if !id.is_empty() {
             tracing::info!(node_id = %id, "Node identity from MOSAICFS_NODE_ID");

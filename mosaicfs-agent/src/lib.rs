@@ -9,7 +9,9 @@ pub mod crawler;
 pub mod node;
 pub mod replication;
 pub mod replication_subsystem;
+pub mod watch_path_provider;
 
 mod start;
 
 pub use start::start_agent;
+pub use watch_path_provider::{BareWatchPathProvider, OpenedWatchPath, WatchPathProvider};

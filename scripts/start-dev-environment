@@ -207,7 +207,10 @@ if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
     log "mosaicfs already running (pid $(cat "$PID_FILE")); leaving it alone"
 else
     log "Starting mosaicfs (logs: $LOG_FILE)"
-    nohup "$BINARY" --config "$CONFIG_FILE" >"$LOG_FILE" 2>&1 &
+    # Prevent the dev node from registering with the real hardware machine_id.
+    # Without this, the desktop app (same machine) would adopt this node's
+    # identity and its agent would overwrite the dev file index on restart.
+    nohup env MOSAICFS_MACHINE_ID=dev-machine "$BINARY" --config "$CONFIG_FILE" >"$LOG_FILE" 2>&1 &
     echo $! > "$PID_FILE"
     disown || true
     sleep 1

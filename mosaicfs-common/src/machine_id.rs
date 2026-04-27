@@ -1,18 +1,25 @@
 //! Stable per-machine identity, used as a lookup key on node documents.
 //!
 //! Resolution order:
-//!   1. Platform hardware UUID:
+//!   1. `MOSAICFS_MACHINE_ID` env var — for dev/test environments where two
+//!      processes on the same machine must not share a node identity.
+//!   2. Platform hardware UUID:
 //!        macOS   — `kern.uuid` via sysctlbyname(3) — the IOPlatformUUID,
 //!                  read as a direct kernel call (works inside the app sandbox)
 //!        Linux   — `/etc/machine-id` (readable without root)
 //!        Windows — `HKLM\SOFTWARE\Microsoft\Cryptography\MachineGuid`
-//!   2. Persisted random UUID at `~/.mosaicfs/node-id.toml` — generated once
+//!   3. Persisted random UUID at `~/.mosaicfs/node-id.toml` — generated once
 //!      and reused on all subsequent calls when the platform source is unavailable.
 
 use std::path::PathBuf;
 
 /// Return this machine's stable ID.
 pub fn get() -> String {
+    if let Ok(id) = std::env::var("MOSAICFS_MACHINE_ID") {
+        if !id.is_empty() {
+            return id;
+        }
+    }
     platform_id()
         .filter(|s| !s.is_empty())
         .unwrap_or_else(persisted_id)

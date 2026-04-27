@@ -10,7 +10,7 @@ use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use mosaicfs_agent::start_agent;
+use mosaicfs_agent::{BareWatchPathProvider, start_agent};
 use mosaicfs_common::config::MosaicfsConfig;
 use mosaicfs_common::secrets::{self, SecretsBackend};
 use mosaicfs_server::{run_bootstrap, start_web_ui};
@@ -73,7 +73,9 @@ async fn main() -> anyhow::Result<()> {
     if cfg.features.agent {
         let cfg = Arc::clone(&cfg);
         let secrets = Arc::clone(&secrets);
-        set.spawn(async move { ("agent", start_agent(cfg, secrets).await) });
+        let agent_paths = cfg.agent.as_ref().map(|a| a.watch_paths.clone()).unwrap_or_default();
+        let provider = Arc::new(BareWatchPathProvider::new(agent_paths));
+        set.spawn(async move { ("agent", start_agent(cfg, secrets, provider).await) });
     }
     #[cfg(feature = "vfs")]
     if cfg.features.vfs {

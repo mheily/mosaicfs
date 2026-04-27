@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MosaicFS — Watch Folders</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 14px;
+    background: #f5f5f7;
+    color: #1d1d1f;
+    margin: 0;
+    padding: 28px 24px 24px;
+  }
+  h2 { margin: 0 0 4px; font-size: 17px; font-weight: 600; }
+  p.subtitle { margin: 0 0 16px; color: #6e6e73; font-size: 13px; }
+  .folder-list {
+    background: #fff;
+    border: 1px solid #d2d2d7;
+    border-radius: 8px;
+    overflow: hidden;
+    margin-bottom: 14px;
+    min-height: 48px;
+  }
+  .folder-row {
+    display: flex;
+    align-items: center;
+    padding: 9px 12px;
+    border-bottom: 1px solid #f0f0f0;
+    gap: 8px;
+  }
+  .folder-row:last-child { border-bottom: none; }
+  .folder-path {
+    flex: 1;
+    font-size: 13px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+  }
+  .badge {
+    font-size: 11px;
+    font-weight: 500;
+    padding: 2px 7px;
+    border-radius: 4px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .badge.authorized { background: #effaf1; color: #1a7a3a; }
+  .badge.needs-auth { background: #fff9eb; color: #9a6700; }
+  .row-actions {
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+  .empty-state {
+    padding: 20px;
+    text-align: center;
+    color: #6e6e73;
+    font-size: 13px;
+    line-height: 48px;
+  }
+  button {
+    padding: 6px 12px;
+    background: #0071e3;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+  }
+  button:hover:not(:disabled) { background: #0077ed; }
+  button:disabled { background: #a0c4f0; cursor: default; }
+  button.secondary { background: #e5e5ea; color: #1d1d1f; }
+  button.secondary:hover:not(:disabled) { background: #d8d8dd; }
+  button.secondary:disabled { background: #efeff2; color: #a0a0a5; }
+  button.danger { background: #e5e5ea; color: #c0392b; }
+  button.danger:hover:not(:disabled) { background: #ffd9d9; }
+  .add-btn {
+    width: 100%;
+    padding: 9px;
+    font-size: 14px;
+    margin-bottom: 12px;
+  }
+  .restart-banner {
+    display: none;
+    background: #fff9eb;
+    border: 1px solid #f5d98c;
+    border-radius: 6px;
+    padding: 9px 12px;
+    font-size: 12px;
+    color: #7a5700;
+  }
+  .restart-banner.visible { display: block; }
+</style>
+</head>
+<body>
+<h2>Watch Folders</h2>
+<p class="subtitle">Folders MosaicFS will index on this Mac.</p>
+
+<div id="folder-list" class="folder-list">
+  <div class="empty-state">No folders added yet.</div>
+</div>
+
+<button class="add-btn" id="add-btn">+ Add Folder…</button>
+
+<div id="restart-banner" class="restart-banner">
+  ⓘ Restart MosaicFS to apply changes.
+</div>
+
+<script>
+const invoke = window.__TAURI__.core.invoke;
+
+function showRestart() {
+  document.getElementById('restart-banner').classList.add('visible');
+}
+
+async function render() {
+  let paths;
+  try {
+    paths = await invoke('list_watch_paths');
+  } catch (e) {
+    console.error('list_watch_paths failed:', e);
+    return;
+  }
+
+  const list = document.getElementById('folder-list');
+  if (paths.length === 0) {
+    list.innerHTML = '<div class="empty-state">No folders added yet.</div>';
+    return;
+  }
+
+  list.innerHTML = paths.map(entry => {
+    const escapedPath = entry.path.replace(/"/g, '&quot;').replace(/</g, '&lt;');
+    const badge = entry.authorized
+      ? '<span class="badge authorized">✓ Authorized</span>'
+      : '<span class="badge needs-auth">⚠ Needs auth</span>';
+    const authorizeBtn = entry.authorized
+      ? ''
+      : `<button class="secondary" data-action="authorize" data-path="${escapedPath}">Authorize…</button>`;
+    return `<div class="folder-row">
+      <span class="folder-path" title="${escapedPath}">${escapedPath}</span>
+      ${badge}
+      <div class="row-actions">
+        ${authorizeBtn}
+        <button class="danger" data-action="remove" data-path="${escapedPath}">Remove</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+document.getElementById('folder-list').addEventListener('click', async e => {
+  const btn = e.target.closest('button[data-action]');
+  if (!btn) return;
+  const action = btn.dataset.action;
+  const path = btn.dataset.path;
+  btn.disabled = true;
+  try {
+    if (action === 'authorize') {
+      await invoke('authorize_watch_path', { path });
+      showRestart();
+      await render();
+    } else if (action === 'remove') {
+      await invoke('remove_watch_path', { path });
+      showRestart();
+      await render();
+    }
+  } catch (e) {
+    if (e && e.code === 'user_cancelled') { btn.disabled = false; return; }
+    console.error(action + ' failed:', e);
+    btn.disabled = false;
+  }
+});
+
+document.getElementById('add-btn').addEventListener('click', async e => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  try {
+    await invoke('add_watch_path');
+    showRestart();
+    await render();
+  } catch (e) {
+    if (e && e.code === 'user_cancelled') { btn.disabled = false; return; }
+    console.error('add_watch_path failed:', e);
+  }
+  btn.disabled = false;
+});
+
+render();
+</script>
+</body>
+</html>

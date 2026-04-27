@@ -10,6 +10,12 @@ pub struct Settings {
     pub couchdb_user: String,
     #[serde(default)]
     pub couchdb_password: String,
+    /// Paths the agent will crawl. Agent does not start if this is empty.
+    #[serde(default)]
+    pub watch_paths: Vec<String>,
+    /// Paths excluded from crawling (optional).
+    #[serde(default)]
+    pub excluded_paths: Vec<String>,
 }
 
 impl Settings {
