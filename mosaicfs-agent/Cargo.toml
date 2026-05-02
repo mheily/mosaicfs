@@ -27,3 +27,4 @@ hmac = { workspace = true }
 hex = { workspace = true }
 async-trait = { workspace = true }
 tempfile = "3"
+nix = { workspace = true }
