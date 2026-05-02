@@ -24,3 +24,8 @@ landlock     = "0.4"
 caps         = "0.5"
 libc         = "0.2"
 seccompiler  = "0.5"
+
+[[test]]
+name    = "sandbox_linux"
+path    = "tests/sandbox_linux.rs"
+harness = false
