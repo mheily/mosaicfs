@@ -1,0 +1,28 @@
+# MosaicFS agent configuration for Linux / NAS deployment.
+# Copy to /etc/mosaicfs/mosaicfs.toml and edit before starting the service.
+
+[node]
+# node_id is auto-generated on first run if omitted.
+# node_id = "my-nas"
+
+[features]
+agent  = true
+web_ui = false
+vfs    = false
+
+[agent]
+state_dir   = "/var/lib/mosaicfs"
+watch_paths = [
+    # Add the directories you want indexed, e.g.:
+    # "/srv/storage/photos",
+    # "/srv/storage/documents",
+]
+excluded_paths = []
+
+[couchdb]
+url      = "http://127.0.0.1:5984"
+user     = "mosaicfs"
+password = "changeme"
+
+[secrets]
+manager = "inline"

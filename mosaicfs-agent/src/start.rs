@@ -227,29 +227,27 @@ async fn check_inotify_limits(db: &CouchClient, node_id: &str) {
 
 async fn check_storage_capacity(db: &CouchClient, node_id: &str, watch_paths: &[PathBuf]) {
     for watch_path in watch_paths {
-        if let Ok(output) = tokio::process::Command::new("df")
-            .arg("--output=pcent")
-            .arg(watch_path)
-            .output()
-            .await
-        {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            if let Some(line) = stdout.lines().nth(1) {
-                if let Some(pct) = line
-                    .trim()
-                    .strip_suffix('%')
-                    .and_then(|s| s.trim().parse::<u32>().ok())
-                {
-                    if pct >= 90 {
-                        notifications::emit_notification(
-                            db, node_id, "storage", "storage_near_capacity",
-                            "warning", "Storage near capacity",
-                            &format!("Disk usage at {}% for {}.", pct, watch_path.display()),
-                            None,
-                        ).await;
-                        return;
-                    }
-                }
+        let path = watch_path.clone();
+        let pct = tokio::task::spawn_blocking(move || {
+            nix::sys::statvfs::statvfs(&path).ok().map(|s| {
+                let total = s.blocks() as u64;
+                let avail = s.blocks_available() as u64;
+                if total == 0 { 0u32 } else { ((total - avail) * 100 / total) as u32 }
+            })
+        })
+        .await
+        .ok()
+        .flatten();
+
+        if let Some(pct) = pct {
+            if pct >= 90 {
+                notifications::emit_notification(
+                    db, node_id, "storage", "storage_near_capacity",
+                    "warning", "Storage near capacity",
+                    &format!("Disk usage at {}% for {}.", pct, watch_path.display()),
+                    None,
+                ).await;
+                return;
             }
         }
     }

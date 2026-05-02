@@ -12,6 +12,8 @@ use std::sync::Arc;
 
 use mosaicfs_agent::{BareWatchPathProvider, start_agent};
 use mosaicfs_common::config::MosaicfsConfig;
+
+mod sandbox;
 use mosaicfs_common::secrets::{self, SecretsBackend};
 use mosaicfs_server::{run_bootstrap, start_web_ui};
 #[cfg(feature = "vfs")]
@@ -62,6 +64,9 @@ async fn main() -> anyhow::Result<()> {
         secrets_backend = secrets.kind(),
         "mosaicfs starting"
     );
+
+    let watch_paths = cfg.agent.as_ref().map(|a| a.watch_paths.clone()).unwrap_or_default();
+    sandbox::apply(&watch_paths)?;
 
     let mut set: tokio::task::JoinSet<(&'static str, anyhow::Result<()>)> = tokio::task::JoinSet::new();
 
