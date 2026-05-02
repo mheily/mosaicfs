@@ -12,11 +12,13 @@ grep -q landlock /sys/kernel/security/lsm || {
     exit 1
 }
 
-# 1. system user
+# 1. system user — home-dir becomes pw_dir, used by the XDG_DATA_HOME
+#    fallback in the sandbox code to locate the state directory.
+#    Admins can point the data at any path by adjusting pw_dir in /etc/passwd.
 id mosaicfs &>/dev/null || \
-    useradd --system --shell /usr/sbin/nologin --home-dir /nonexistent mosaicfs
+    useradd --system --shell /usr/sbin/nologin --home-dir /var/lib/mosaicfs mosaicfs
 
-# 2. directories (StateDirectory= will create /var/lib/mosaicfs, but
+# 2. directories (StateDirectory= will also create /var/lib/mosaicfs, but
 #    /etc/mosaicfs is on us)
 install -d -o mosaicfs -g mosaicfs -m 0750 /etc/mosaicfs
 install -d -o mosaicfs -g mosaicfs -m 0750 /var/lib/mosaicfs

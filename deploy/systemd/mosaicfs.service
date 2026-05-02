@@ -17,6 +17,7 @@ StartLimitBurst=3
 StateDirectory=mosaicfs
 RuntimeDirectory=mosaicfs
 LogsDirectory=mosaicfs
+Environment="XDG_DATA_HOME=%S"
 Environment="XDG_RUNTIME_DIR=%t/mosaicfs"
 
 # --- privilege ---

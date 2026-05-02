@@ -45,6 +45,47 @@ fn drop_capabilities() -> Result<()> {
     Ok(())
 }
 
+/// Resolve the data directory for the Landlock allowlist.
+///
+/// Priority:
+///   1. `$XDG_DATA_HOME/mosaicfs` — set by the service unit or the user's session.
+///   2. `pw_dir` from `getpwuid_r` — the home directory recorded in /etc/passwd,
+///      letting the admin choose the data location by setting the service account's
+///      home dir without touching the config file.
+#[cfg(target_os = "linux")]
+fn resolve_data_dir() -> Result<std::path::PathBuf> {
+    if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
+        if !xdg.is_empty() {
+            return Ok(std::path::PathBuf::from(xdg).join("mosaicfs"));
+        }
+    }
+    // getpwuid_r is the thread-safe variant; getpwuid is not safe to call
+    // once tokio has started its thread pool.
+    let uid = unsafe { libc::getuid() };
+    let mut pw: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut buf = vec![0u8; 4096];
+    let mut result: *mut libc::passwd = std::ptr::null_mut();
+    let rc = unsafe {
+        libc::getpwuid_r(
+            uid,
+            &mut pw,
+            buf.as_mut_ptr() as *mut libc::c_char,
+            buf.len(),
+            &mut result,
+        )
+    };
+    if rc != 0 {
+        anyhow::bail!("getpwuid_r: {}", std::io::Error::from_raw_os_error(rc));
+    }
+    if result.is_null() {
+        anyhow::bail!("getpwuid_r: no passwd entry for uid {uid}");
+    }
+    let home = unsafe { std::ffi::CStr::from_ptr(pw.pw_dir) }
+        .to_str()
+        .context("pw_dir contains invalid UTF-8")?;
+    Ok(std::path::PathBuf::from(home))
+}
+
 #[cfg(target_os = "linux")]
 fn apply_landlock(watch_paths: &[std::path::PathBuf]) -> Result<()> {
     use landlock::{
@@ -60,12 +101,13 @@ fn apply_landlock(watch_paths: &[std::path::PathBuf]) -> Result<()> {
         .handle_access(AccessFs::from_all(abi))?
         .create()?;
 
+    let data_dir = resolve_data_dir().context("resolve data dir")?;
     let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
         .unwrap_or_else(|_| "/run/mosaicfs".to_owned());
 
     let mut ruleset = ruleset
         // state, runtime: read+write
-        .add_rule(PathBeneath::new(PathFd::new("/var/lib/mosaicfs")?, AccessFs::from_all(abi)))?
+        .add_rule(PathBeneath::new(PathFd::new(&data_dir)?, AccessFs::from_all(abi)))?
         .add_rule(PathBeneath::new(PathFd::new(runtime_dir.as_str())?, AccessFs::from_all(abi)))?
         // config, certs, zoneinfo: read-only
         .add_rule(PathBeneath::new(PathFd::new("/etc/mosaicfs")?, AccessFs::from_read(abi)))?
