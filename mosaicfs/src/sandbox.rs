@@ -52,7 +52,10 @@ fn apply_landlock(watch_paths: &[std::path::PathBuf]) -> Result<()> {
         RulesetCreatedAttr,
     };
 
-    let abi = ABI::new_current();
+    // V3 = kernel 6.2+ (truncate control). BestEffort compatibility (the
+    // default) means older kernels silently apply only what they support.
+    // install.sh enforces kernel ≥ 6.1, so V2 is the floor in practice.
+    let abi = ABI::V3;
     let ruleset = Ruleset::default()
         .handle_access(AccessFs::from_all(abi))?
         .create()?;
