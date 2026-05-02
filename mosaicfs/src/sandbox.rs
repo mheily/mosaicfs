@@ -60,10 +60,13 @@ fn apply_landlock(watch_paths: &[std::path::PathBuf]) -> Result<()> {
         .handle_access(AccessFs::from_all(abi))?
         .create()?;
 
+    let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
+        .unwrap_or_else(|_| "/run/mosaicfs".to_owned());
+
     let mut ruleset = ruleset
         // state, runtime: read+write
         .add_rule(PathBeneath::new(PathFd::new("/var/lib/mosaicfs")?, AccessFs::from_all(abi)))?
-        .add_rule(PathBeneath::new(PathFd::new("/run/mosaicfs")?, AccessFs::from_all(abi)))?
+        .add_rule(PathBeneath::new(PathFd::new(runtime_dir.as_str())?, AccessFs::from_all(abi)))?
         // config, certs, zoneinfo: read-only
         .add_rule(PathBeneath::new(PathFd::new("/etc/mosaicfs")?, AccessFs::from_read(abi)))?
         .add_rule(PathBeneath::new(PathFd::new("/etc/ssl/certs")?, AccessFs::from_read(abi)))?
