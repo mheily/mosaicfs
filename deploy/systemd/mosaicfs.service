@@ -54,5 +54,10 @@ MemoryMax=512M
 CPUQuota=75%
 TasksMax=256
 
+# --- network ---
+IPAddressDeny=any
+IPAddressAllow=127.0.0.0/8
+IPAddressAllow=::1/128
+
 [Install]
 WantedBy=multi-user.target
