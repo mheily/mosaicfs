@@ -18,5 +18,41 @@ StateDirectory=mosaicfs
 RuntimeDirectory=mosaicfs
 LogsDirectory=mosaicfs
 
+# --- privilege ---
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# --- filesystem ---
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ReadWritePaths=/var/lib/mosaicfs /run/mosaicfs
+
+# --- proc/kernel ---
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+
+# --- misc ---
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+MemoryDenyWriteExecute=yes
+UMask=0027
+
+# --- resource caps ---
+MemoryMax=512M
+CPUQuota=75%
+TasksMax=256
+
 [Install]
 WantedBy=multi-user.target
