@@ -20,6 +20,7 @@ anyhow = { workspace = true }
 rustls = "0.23"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-landlock    = "0.4"
-caps        = "0.5"
-libc        = "0.2"
+landlock     = "0.4"
+caps         = "0.5"
+libc         = "0.2"
+seccompiler  = "0.5"

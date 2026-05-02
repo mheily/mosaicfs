@@ -18,6 +18,7 @@ pub fn apply(watch_paths: &[std::path::PathBuf]) -> Result<()> {
     set_no_new_privs().context("PR_SET_NO_NEW_PRIVS")?;
     drop_capabilities().context("drop capabilities")?;
     apply_landlock(watch_paths).context("Landlock")?;
+    apply_seccomp().context("seccomp")?;
     Ok(())
 }
 
@@ -76,5 +77,65 @@ fn apply_landlock(watch_paths: &[std::path::PathBuf]) -> Result<()> {
 
     let status = ruleset.restrict_self()?;
     tracing::info!(?status, "Landlock applied");
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn apply_seccomp() -> Result<()> {
+    use seccompiler::{BpfProgram, SeccompAction, SeccompFilter, TargetArch};
+    use std::collections::BTreeMap;
+
+    // Default-allow with explicit denies. See design-notes §"Seccomp deny list".
+    // An empty condition list means "deny this syscall unconditionally".
+    let denied: &[i64] = &[
+        libc::SYS_execve,
+        libc::SYS_execveat,
+        libc::SYS_ptrace,
+        libc::SYS_mount,
+        libc::SYS_umount2,
+        libc::SYS_bpf,
+        libc::SYS_kexec_load,
+        libc::SYS_kexec_file_load,
+        libc::SYS_init_module,
+        libc::SYS_finit_module,
+        libc::SYS_delete_module,
+        libc::SYS_unshare,
+        libc::SYS_setns,
+        libc::SYS_keyctl,
+        libc::SYS_add_key,
+        libc::SYS_request_key,
+        libc::SYS_pivot_root,
+        libc::SYS_chroot,
+        libc::SYS_perf_event_open,
+    ];
+
+    let mut rules: BTreeMap<i64, Vec<seccompiler::SeccompRule>> = BTreeMap::new();
+    for s in denied {
+        rules.insert(*s, vec![]);
+    }
+
+    let deny_action = if std::env::var("MOSAICFS_SECCOMP_LOG").is_ok() {
+        SeccompAction::Log
+    } else {
+        SeccompAction::Errno(libc::EPERM as u32)
+    };
+
+    let target = if cfg!(target_arch = "x86_64") {
+        TargetArch::x86_64
+    } else if cfg!(target_arch = "aarch64") {
+        TargetArch::aarch64
+    } else {
+        anyhow::bail!("seccomp: unsupported target_arch");
+    };
+
+    let filter = SeccompFilter::new(
+        rules,
+        SeccompAction::Allow, // mismatch: allow by default
+        deny_action,          // match: deny (or log)
+        target,
+    )?;
+    let program: BpfProgram = filter.try_into()?;
+    seccompiler::apply_filter(&program)?;
+    tracing::info!("seccomp filter applied");
     Ok(())
 }
