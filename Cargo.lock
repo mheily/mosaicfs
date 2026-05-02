@@ -266,6 +266,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
 
 [[package]]
+name = "caps"
+version = "0.5.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd1ddba47aba30b6a889298ad0109c3b8dcb0e8fc993b459daa7067d46f865e0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "cc"
 version = "1.2.56"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -430,6 +439,26 @@ name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
+
+[[package]]
+name = "enumflags2"
+version = "0.7.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1027f7680c853e056ebcec683615fb6fbbc07dbaa13b4d5d9442b146ded4ecef"
+dependencies = [
+ "enumflags2_derive",
+]
+
+[[package]]
+name = "enumflags2_derive"
+version = "0.7.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "67c78a4d8fdf9953a5c9d458f9efe940fd97a0cab0941c075a813ac594733827"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "equivalent"
@@ -1189,6 +1218,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "landlock"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "49fefd6652c57d68aaa32544a4c0e642929725bdc1fd929367cdeb673ab81088"
+dependencies = [
+ "enumflags2",
+ "libc",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1316,6 +1356,9 @@ name = "mosaicfs"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "caps",
+ "landlock",
+ "libc",
  "mosaicfs-agent",
  "mosaicfs-common",
  "mosaicfs-server",
