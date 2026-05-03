@@ -1,11 +1,12 @@
 # Change 016: Replace CouchDB with SQLite + Custom Peer-to-Peer Sync
 
 > **Multi-part change.** This directory holds the umbrella architecture.
-> Implementation is split across `docs/changes/{016,017,018,019,020}/` per
-> the project's "one moving part at a time" rule. Each numbered part below
-> will get its own `architecture.md` and `design-notes.md`. Each part is
-> intentionally not deployable on its own — the system runs CouchDB until
-> part 020 lands, then runs SQLite. There is no dual-write transition.
+> Implementation is split across `docs/changes/{016,017,018,019,020,021}/`
+> per the project's "one moving part at a time" rule. Each numbered part
+> below will get its own `architecture.md` and `design-notes.md`. Each
+> part is intentionally not deployable on its own — the system runs
+> CouchDB until part 021 lands, then runs SQLite. There is no dual-write
+> transition.
 
 Companion documents:
 - `intent.md` — motivation and goals
@@ -234,38 +235,111 @@ Each phase becomes its own numbered change directory. Cross-phase
 dependencies are listed; intermediate states are not expected to ship.
 
 ### Part 016 — Architecture umbrella (this document)
-Schema audit, intent log design, sync protocol design, and the umbrella
-plan. **Deliverable:** this `architecture.md` plus a `design-notes.md`
-that finalizes the schema mapping (every document type categorized as
-either node-sharded or shared-config), the intent log row format, and
-the sync protocol wire format. No code in this part.
+Schema audit, three-database split design, intent-log design, sync
+protocol design, and the umbrella plan. **Deliverable:** this
+`architecture.md` plus a `design-notes.md` that finalizes the database
+split (`mosaicfs-local.db`, `mosaicfs-cluster.db`, `mosaicfs-config.db`),
+the schema for each, the views that bridge local and cluster sharded
+data, the intent-log row format, and the sync protocol wire format. No
+code in this part.
 
-### Part 017 — SQLite storage layer
-Implement the new `mosaicfs.db` schema and a typed query API in
-`mosaicfs-common::db` covering all current document types. Wire the
-unified process to use it as the **only** metadata store — CouchDB
-reads/writes are removed in this phase. The intent log is populated but
-not yet exchanged. The continuous-replication setup
-(`mosaicfs-agent/src/replication.rs`) and the `_changes` watcher
-(`mosaicfs-server/src/start.rs`) are deleted; cache invalidations move
-to direct in-process notifications. **Deliverable:** the system runs as
-a single-node store on SQLite. Multi-node scenarios are broken until
-part 018 lands.
+### Part 017 — Database testsuite (validate the strategy before writing app schema)
+A standalone test crate (`mosaicfs-db-prototype/` or similar — does not
+ship in the final binary) that builds toy databases mirroring the
+*structural* patterns from `design-notes.md` (UNION ALL views over
+attached databases, composite-PK sharded tables, version-stamped
+config snapshots) and exercises them at realistic scale to verify the
+plan is sound *before* the application schema is written. Specifically:
 
-### Part 018 — Sync protocol
-Add `/sync/*` HTTP endpoints, the sync client task, full-sync snapshot
-generation and restore, intent-log compaction. Includes a fault-injection
-test harness (two-node sim with controllable partitions, replay,
-crash-mid-replay, compaction-during-snapshot). **Deliverable:** two nodes
-can federate. Auth is still trusted-LAN only; secured in part 019.
+- **View performance at scale.** Populate test fixtures with 100k rows
+  in `local.file` and 500k rows in `cluster.file`, both with the
+  schema-shape we plan to use. Time and `EXPLAIN QUERY PLAN`:
+  PK lookups, `WHERE source_export_parent = ?`, `ORDER BY name LIMIT
+  100`, `WHERE status = 'active' AND source_export_parent = ?`,
+  aggregates (`COUNT(*)`, `COUNT(*) GROUP BY status`). Both branches of
+  every UNION ALL must use indexes; full-table scans are a hard fail.
+- **ORDER BY + UNION ALL behavior.** Verify whether SQLite merges two
+  index-ordered branches or sorts the result. Document the cases that
+  produce a `USE TEMP B-TREE FOR ORDER BY` plan and decide whether
+  pagination needs application-side merge logic.
+- **LIMIT pushdown.** Confirm that `SELECT * FROM file_view ORDER BY
+  name LIMIT 50` doesn't read all 600k rows.
+- **Atomic file swap.** While reads are running against the view,
+  rename the attached cluster file and re-ATTACH. Verify no reader
+  sees a half-swapped state. Validate the quiesce/close/rename/reopen
+  pattern survives concurrent FUSE-style read pressure.
+- **Cross-database transaction safety (negative test).** Simulate a
+  crash mid-write across two attached databases (write to A, panic
+  before committing to B). Confirm WAL does not provide cross-DB
+  atomicity, then verify the §1 invariant ("one transaction per
+  file") sidesteps the issue.
+- **VACUUM INTO snapshot consistency.** Run `VACUUM INTO` against a
+  database under concurrent write load; verify the snapshot is a
+  consistent point-in-time and not affected by writes that arrive
+  during the copy.
+- **Read-only enforcement.** Open a database with
+  `SQLITE_OPEN_READONLY` and verify writes fail cleanly with the
+  expected error code. Verify the connection can be closed and
+  reopened READWRITE without leaking state (covers the leader-change
+  path for `mosaicfs-config.db`).
+- **CHECK / accessor-level disjointness enforcement.** Verify the
+  accessor pattern that prevents `local.file` from ever holding a
+  row with `origin_node_id != my_node_id` (and vice versa for
+  `cluster.file`).
+- **Schema migration over views.** ALTER TABLE on a column referenced
+  by a view: does the view need to be dropped and recreated, or does
+  SQLite handle it? Document the migration recipe.
+- **Property: replay reconstructs derived tables.** Generate a
+  random sequence of intent-log events, replay them into an empty
+  pair of databases, and assert the resulting derived tables match a
+  reference oracle. (Toy schema; full-schema property test lives in
+  Part 018.)
+- **Config snapshot install/rollback.** Write a config.db, "ship" it
+  to a second instance via file copy, atomic-swap it in, verify the
+  receiver reads the new state and the swap is reversible if the
+  receiver rejects the manifest after the file is on disk.
+- **WAL checkpoint behavior with multiple ATTACHes.** Confirm that
+  `wal_checkpoint(TRUNCATE)` on one attached database doesn't disrupt
+  reads on others.
 
-### Part 019 — Peer auth (Ed25519 + TOFU + rustls)
+**Deliverable:** a markdown report (`docs/changes/017/findings.md`)
+that records each test's result, the indexes required, the query
+patterns to avoid, the schema-migration recipe, and any design-note
+revisions the results force. The prototype crate is kept (not merged
+into the production tree) as a regression harness for future schema
+changes. **No application code is written in this part.** Findings
+that contradict §5 or §7 of `design-notes.md` block Part 018 until the
+design is revised.
+
+### Part 018 — SQLite storage layer
+Implement the three-database schema (`mosaicfs-local.db`,
+`mosaicfs-cluster.db`, `mosaicfs-config.db`) and the typed query API
+in `mosaicfs-common::db` covering all current document types,
+informed by Part 017 findings. Wire the unified process to use it as
+the **only** metadata store — CouchDB reads/writes are removed in
+this phase. The intent log is populated but not yet exchanged. The
+continuous-replication setup (`mosaicfs-agent/src/replication.rs`)
+and the `_changes` watcher (`mosaicfs-server/src/start.rs`) are
+deleted; cache invalidations move to direct in-process notifications.
+**Deliverable:** the system runs as a single-node store on SQLite.
+Multi-node scenarios are broken until Part 019 lands.
+
+### Part 019 — Sync protocol
+Add `/sync/*` and `/config/*` HTTP endpoints, the sync client task,
+cluster.db full-sync snapshot generation and restore, config.db
+version-stamped snapshot replication, intent-log compaction. Includes
+a fault-injection test harness (two-node sim with controllable
+partitions, replay, crash-mid-replay, compaction-during-snapshot,
+split-brain leader detection). **Deliverable:** two nodes can
+federate. Auth is still trusted-LAN only; secured in Part 020.
+
+### Part 020 — Peer auth (Ed25519 + TOFU + rustls)
 Generate per-node keypair, implement TOFU pairing UX (fingerprint
-display + entry), add custom rustls cert verifier. Sync endpoints reject
-unpaired peers. Config-leader forwarding uses paired auth.
+display + entry), add custom rustls cert verifier. Sync endpoints
+reject unpaired peers. Config-leader forwarding uses paired auth.
 **Deliverable:** cross-LAN sync is safe.
 
-### Part 020 — Init UX, deployment, doc cleanup
+### Part 021 — Init UX, deployment, doc cleanup
 Replace `desktop/ui/setup.html` with create-or-join screens. Add
 equivalent web-UI bootstrap flow. Update `deploy/mosaicfs.yaml`
 (drop CouchDB container) and systemd example TOML. Update
@@ -282,8 +356,9 @@ to remove "CouchDB stays." Delete `mosaicfs-common/src/couchdb.rs` and
 - **Workspace layout**: same five crates, same boundaries. The unified-binary
   direction proceeds independently of this change.
 - **REST API surface**: the 91 existing routes mostly stay. The CouchDB-proxy
-  route `/db/{*path}` is removed (part 020). Sync routes `/sync/*` are added
-  (part 018). Some handler internals change to use the new `db` module
+  route `/db/{*path}` is removed (part 021). Sync routes `/sync/*` and
+  `/config/*` are added (part 019). Some handler internals change to use
+  the new `db` module
   instead of `CouchClient`, but URL paths and request/response shapes are
   preserved where possible.
 - **UI framework**: Tera + HTMX (per decisions doc). 21 existing templates
