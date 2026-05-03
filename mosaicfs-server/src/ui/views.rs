@@ -235,84 +235,6 @@ pub async fn notifications_panel(State(state): State<Arc<AppState>>) -> Response
     render("notifications_panel.html", &ctx)
 }
 
-// ── replication ──
-
-pub async fn replication_page(session: Session) -> Response {
-    let mut ctx = page_ctx(&session).await;
-    ctx.insert("title", "Replication — MosaicFS");
-    render("replication.html", &ctx)
-}
-
-pub async fn replication_panel(State(state): State<Arc<AppState>>) -> Response {
-    let backends: Vec<serde_json::Value> = match state
-        .db
-        .all_docs_by_prefix("storage_backend::", true)
-        .await
-    {
-        Ok(r) => r
-            .rows
-            .into_iter()
-            .filter_map(|row| row.doc)
-            .filter(|d| d.get("type").and_then(|v| v.as_str()) == Some("storage_backend"))
-            .map(|d| {
-                serde_json::json!({
-                    "name": d.get("name").and_then(|v| v.as_str()).unwrap_or(""),
-                    "kind": d.get("backend").and_then(|v| v.as_str())
-                        .or_else(|| d.get("backend_type").and_then(|v| v.as_str()))
-                        .or_else(|| d.get("kind").and_then(|v| v.as_str()))
-                        .unwrap_or(""),
-                    "enabled": d.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false),
-                })
-            })
-            .collect(),
-        Err(_) => vec![],
-    };
-
-    let rules: Vec<serde_json::Value> = match state
-        .db
-        .all_docs_by_prefix("replication_rule::", true)
-        .await
-    {
-        Ok(r) => r
-            .rows
-            .into_iter()
-            .filter_map(|row| row.doc)
-            .filter(|d| d.get("type").and_then(|v| v.as_str()) == Some("replication_rule"))
-            .map(|d| {
-                let id = d
-                    .get("_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .trim_start_matches("replication_rule::")
-                    .to_string();
-                let source = d
-                    .get("source")
-                    .and_then(|v| v.get("node_id"))
-                    .and_then(|v| v.as_str())
-                    .or_else(|| d.get("source_path").and_then(|v| v.as_str()))
-                    .unwrap_or("")
-                    .to_string();
-                serde_json::json!({
-                    "id": id,
-                    "source": source,
-                    "target": d.get("target_name").and_then(|v| v.as_str())
-                        .or_else(|| d.get("target_backend").and_then(|v| v.as_str()))
-                        .or_else(|| d.get("target").and_then(|v| v.as_str()))
-                        .unwrap_or(""),
-                    "enabled": d.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false),
-                })
-            })
-            .collect(),
-        Err(_) => vec![],
-    };
-
-    let mut ctx = Context::new();
-    ctx.insert("backends", &backends);
-    ctx.insert("rules", &rules);
-    ctx.insert("now", &now_str());
-    render("replication_panel.html", &ctx)
-}
-
 // ── Node detail ──
 
 pub async fn node_detail_page(
@@ -351,40 +273,6 @@ pub async fn node_detail_page(
         }
     }
     render("node_detail.html", &ctx)
-}
-
-// ── Storage backends ──
-
-pub async fn storage_backends_page(
-    State(state): State<Arc<AppState>>,
-    session: Session,
-) -> Response {
-    let mut ctx = page_ctx(&session).await;
-    ctx.insert("title", "Storage backends — MosaicFS");
-
-    let backends: Vec<serde_json::Value> = match state
-        .db
-        .all_docs_by_prefix("storage_backend::", true)
-        .await
-    {
-        Ok(r) => r
-            .rows
-            .into_iter()
-            .filter_map(|row| row.doc)
-            .filter(|d| d.get("type").and_then(|v| v.as_str()) == Some("storage_backend"))
-            .map(|d| {
-                serde_json::json!({
-                    "name": d.get("name").and_then(|v| v.as_str()).unwrap_or(""),
-                    "backend": d.get("backend").and_then(|v| v.as_str()).unwrap_or(""),
-                    "enabled": d.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false),
-                    "created_at": d.get("created_at").and_then(|v| v.as_str()).unwrap_or(""),
-                })
-            })
-            .collect(),
-        Err(_) => vec![],
-    };
-    ctx.insert("backends", &backends);
-    render("storage_backends.html", &ctx)
 }
 
 // ── Settings: credentials ──

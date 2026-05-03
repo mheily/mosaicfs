@@ -1375,21 +1375,14 @@ name = "mosaicfs-agent"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-trait",
- "bytes",
  "chrono",
- "hex",
- "hmac",
  "mime_guess",
  "mosaicfs-common",
  "nix",
  "rand 0.8.5",
  "reqwest",
- "rusqlite",
  "serde",
  "serde_json",
- "sha2",
- "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
@@ -1404,8 +1397,6 @@ name = "mosaicfs-common"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-trait",
- "bytes",
  "chrono",
  "glob",
  "keyring",

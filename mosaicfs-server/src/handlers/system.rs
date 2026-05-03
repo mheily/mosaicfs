@@ -80,32 +80,12 @@ const MINIMAL_TYPES: &[&str] = &[
     "virtual_directory",
     "label_assignment",
     "label_rule",
-    "annotation",
     "credential",
-    "plugin",
-    "storage_backend",
-    "replication_rule",
     "node",
 ];
 
 /// For node documents in minimal backup, keep only these fields.
 const NODE_PARTIAL_FIELDS: &[&str] = &["_id", "type", "friendly_name", "network_mounts"];
-
-/// Redact plugin secrets based on settings_schema.
-fn redact_plugin_secrets(doc: &mut serde_json::Value) {
-    let schema = doc.get("settings_schema").cloned();
-    if let Some(serde_json::Value::Object(schema_map)) = schema {
-        if let Some(serde_json::Value::Object(settings)) = doc.get_mut("settings") {
-            for (key, field_def) in &schema_map {
-                if field_def.get("type").and_then(|v| v.as_str()) == Some("secret") {
-                    if settings.contains_key(key) {
-                        settings.insert(key.clone(), serde_json::json!("__REDACTED__"));
-                    }
-                }
-            }
-        }
-    }
-}
 
 pub async fn backup(
     State(state): State<Arc<AppState>>,
@@ -153,11 +133,6 @@ pub async fn backup(
         if let Some(obj) = doc.as_object_mut() {
             obj.remove("_rev");
             obj.remove("_conflicts");
-        }
-
-        // Redact plugin secrets (both minimal and full)
-        if doc_type == "plugin" {
-            redact_plugin_secrets(&mut doc);
         }
 
         // For minimal backup, node documents are partial
@@ -236,11 +211,6 @@ const RECOGNIZED_TYPES: &[&str] = &[
     "credential",
     "label_assignment",
     "label_rule",
-    "plugin",
-    "annotation",
-    "storage_backend",
-    "replication_rule",
-    "replica",
     "access",
     "agent_status",
     "utilization_snapshot",

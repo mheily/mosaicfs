@@ -5,7 +5,6 @@ use std::time::Instant;
 
 use crate::access_cache::AccessCache;
 use mosaicfs_common::couchdb::CouchClient;
-use crate::handlers::replication::{RestoreJob, RestoreJobStore};
 use crate::label_cache::LabelCache;
 use crate::readdir_cache::ReaddirCache;
 
@@ -70,8 +69,6 @@ pub struct AppState {
     pub access_cache: Arc<AccessCache>,
     /// Short-lived readdir cache
     pub readdir_cache: Arc<ReaddirCache>,
-    /// In-memory restore job store
-    pub restore_jobs: RestoreJobStore,
     /// Developer mode enables destructive endpoints (DELETE /api/system/data)
     pub developer_mode: bool,
     /// Server startup time for uptime calculation
@@ -106,7 +103,6 @@ impl AppState {
             label_cache,
             access_cache,
             readdir_cache: Arc::new(ReaddirCache::new()),
-            restore_jobs: Arc::new(Mutex::new(HashMap::new())),
             developer_mode,
             started_at: Instant::now(),
             node_id,

@@ -59,14 +59,6 @@ fn tera() -> &'static Tera {
                 include_str!("../../templates/notifications_panel.html"),
             ),
             (
-                "replication.html",
-                include_str!("../../templates/replication.html"),
-            ),
-            (
-                "replication_panel.html",
-                include_str!("../../templates/replication_panel.html"),
-            ),
-            (
                 "bootstrap.html",
                 include_str!("../../templates/bootstrap.html"),
             ),
@@ -81,10 +73,6 @@ fn tera() -> &'static Tera {
             (
                 "node_detail.html",
                 include_str!("../../templates/node_detail.html"),
-            ),
-            (
-                "storage_backends.html",
-                include_str!("../../templates/storage_backends.html"),
             ),
             ("browse_app.html", include_str!("../../templates/browse_app.html")),
             ("browse_list.html", include_str!("../../templates/browse_list.html")),
@@ -192,36 +180,6 @@ pub fn router() -> Router<Arc<AppState>> {
         .route(
             "/ui/notifications/{id}/ack",
             post(actions::ack_notification),
-        )
-        .route("/ui/replication", get(views::replication_page))
-        .route("/ui/replication/panel", get(views::replication_panel))
-        .route(
-            "/ui/replication/rules/create",
-            post(actions::create_rule_action),
-        )
-        .route(
-            "/ui/replication/rules/{rule_id}/delete",
-            post(actions::delete_rule_action),
-        )
-        .route(
-            "/ui/replication/restore",
-            post(actions::initiate_restore_action),
-        )
-        .route(
-            "/ui/replication/restore/{job_id}/cancel",
-            post(actions::cancel_restore_action),
-        )
-        .route(
-            "/ui/storage-backends",
-            get(views::storage_backends_page),
-        )
-        .route(
-            "/ui/storage-backends/create",
-            post(actions::create_backend_action),
-        )
-        .route(
-            "/ui/storage-backends/{name}/delete",
-            post(actions::delete_backend_action),
         )
         .route(
             "/ui/settings/credentials",

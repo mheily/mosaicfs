@@ -15,15 +15,12 @@ use uuid::Uuid;
 
 use crate::crawler;
 use crate::node;
-use crate::replication_subsystem;
 use crate::WatchPathProvider;
 
 const DEFAULT_STATE_DIR: &str = "/var/lib/mosaicfs";
 const DB_NAME: &str = "mosaicfs";
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 const CRAWL_INTERVAL: Duration = Duration::from_secs(15);
-const REPLICATION_FLUSH_INTERVAL_S: u64 = 60;
-const REPLICATION_FULL_SCAN_INTERVAL_S: u64 = 86400; // daily
 
 /// Start the agent subsystem. Runs until a shutdown signal is received.
 ///
@@ -58,23 +55,6 @@ pub async fn start_agent(
 
     node::register_node(&db, &node_id, &agent_cfg.watch_paths).await?;
 
-    let replication_handle = match replication_subsystem::start(replication_subsystem::ReplicationConfig {
-        node_id: node_id.clone(),
-        state_dir: state_dir.clone(),
-        db: db.clone(),
-        flush_interval_s: REPLICATION_FLUSH_INTERVAL_S,
-        full_scan_interval_s: REPLICATION_FULL_SCAN_INTERVAL_S,
-    }) {
-        Ok(h) => {
-            info!("Replication subsystem started");
-            Some(h)
-        }
-        Err(e) => {
-            error!(error = %e, "Failed to start replication subsystem");
-            None
-        }
-    };
-
     info!("Starting initial filesystem crawl");
     let opened = provider.open().unwrap_or_else(|e| {
         tracing::warn!(error = %e, "watch path provider failed for initial crawl");
@@ -86,7 +66,6 @@ pub async fn start_agent(
         &node_id,
         &crawl_paths,
         &agent_cfg.excluded_paths,
-        replication_handle.as_ref(),
     )
     .await?;
     drop(opened);
@@ -139,7 +118,6 @@ pub async fn start_agent(
                     &node_id,
                     &crawl_paths,
                     &agent_cfg.excluded_paths,
-                    replication_handle.as_ref(),
                 ).await {
                     error!(error = %e, "Periodic crawl failed");
                 }
